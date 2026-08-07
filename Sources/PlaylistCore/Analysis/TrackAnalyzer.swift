@@ -41,9 +41,12 @@ public enum TrackAnalyzer {
     /// Also returns duration in seconds, matching the `duration_sec` column —
     /// callers writing a fresh `Track` row need both the features and this.
     public static func duration(ofFileAt url: URL) throws -> Double {
+        // Uses the synchronous `duration` property rather than the newer
+        // `load(.duration)` async API, to match the rest of this file (and
+        // its callers, per the not-yet-written background-scan wiring) being
+        // plain synchronous `throws` functions, not `async`.
         let asset = AVURLAsset(url: url)
-        let duration = try asset.load(.duration)
-        return CMTimeGetSeconds(duration)
+        return CMTimeGetSeconds(asset.duration)
     }
 
     /// Decodes `url` to mono Float32 PCM at `targetSampleRate`, using
