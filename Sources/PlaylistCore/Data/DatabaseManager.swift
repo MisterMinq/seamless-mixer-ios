@@ -72,7 +72,16 @@ public final class DatabaseManager {
             try db.create(table: "playlist_tracks") { t in
                 t.autoIncrementedPrimaryKey("id")
                 t.belongsTo("playlist", inTable: "playlists", onDelete: .cascade).notNull()
-                t.belongsTo("track", inTable: "tracks", column: "track_persistent_id", onDelete: .restrict).notNull()
+                // GRDB's belongsTo(...) always auto-names its FK column from
+                // the table name (would give "track_id"), with no way to
+                // override it — but this column must be named
+                // "track_persistent_id" to match tracks.persistent_id (not
+                // an autoincrement id). So this is spelled out explicitly
+                // via .column(...).references(...) instead of belongsTo.
+                t.column("track_persistent_id", .integer)
+                    .notNull()
+                    .indexed()
+                    .references("tracks", column: "persistent_id", onDelete: .restrict)
                 t.column("position", .integer).notNull()
                 t.column("crossfade_start_offset_sec", .double).notNull()
                 t.column("tempo_nudge_pct", .double).notNull()
