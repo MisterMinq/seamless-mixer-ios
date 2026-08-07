@@ -55,7 +55,7 @@ public struct Playlist: Codable, Equatable, Identifiable {
 extension Playlist: FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "playlists"
 
-    enum Columns: String, CodingKey {
+    enum Columns: String, ColumnExpression {
         case id
         case name
         case mode

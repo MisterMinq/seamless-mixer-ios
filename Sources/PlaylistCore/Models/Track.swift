@@ -75,7 +75,7 @@ public struct Track: Codable, Equatable, Identifiable {
 extension Track: FetchableRecord, PersistableRecord {
     public static let databaseTableName = "tracks"
 
-    enum Columns: String, CodingKey {
+    enum Columns: String, ColumnExpression {
         case persistentID = "persistent_id"
         case title
         case artist
