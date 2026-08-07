@@ -62,7 +62,13 @@ public final class DatabaseManager {
 
             try db.create(table: "playlist_sources") { t in
                 t.autoIncrementedPrimaryKey("id")
-                t.belongsTo("playlist", inTable: "playlists", onDelete: .cascade).notNull()
+                // Not belongsTo(...) — its auto-generated FK column name
+                // doesn't come out as the snake_case "playlist_id" this
+                // schema (and the explicit index right below) expect. Same
+                // issue as track_persistent_id below; fixed the same way.
+                t.column("playlist_id", .integer)
+                    .notNull()
+                    .references("playlists", onDelete: .cascade)
                 t.column("source_type", .text).notNull()
                 t.column("source_value", .text).notNull()
                 t.column("source_label", .text).notNull()
@@ -71,7 +77,11 @@ public final class DatabaseManager {
 
             try db.create(table: "playlist_tracks") { t in
                 t.autoIncrementedPrimaryKey("id")
-                t.belongsTo("playlist", inTable: "playlists", onDelete: .cascade).notNull()
+                // Same fix as playlist_sources above — belongsTo(...)'s
+                // auto-generated column name doesn't come out as "playlist_id".
+                t.column("playlist_id", .integer)
+                    .notNull()
+                    .references("playlists", onDelete: .cascade)
                 // GRDB's belongsTo(...) always auto-names its FK column from
                 // the table name (would give "track_id"), with no way to
                 // override it — but this column must be named
