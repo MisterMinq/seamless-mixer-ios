@@ -1,0 +1,24 @@
+workflows:
+  playlistcore-tests:
+    name: PlaylistCore Tests
+    # Not verified against Codemagic's live schema — this environment has no
+    # way to reach Codemagic's build service to test it. If Codemagic's
+    # dashboard flags a syntax error, check their current "Swift Package"
+    # quickstart docs for the field name that changed; the intent (macOS
+    # runner, swift test at the repo root) will still be right even if a
+    # keyword below has drifted.
+    #
+    # Package.swift sits at the repo root (not inside a PlaylistCore/
+    # subfolder) — confirmed against the actual repo layout on GitHub,
+    # 2026-08-07. No `cd` needed.
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Run PlaylistCore unit tests
+        script: |
+          swift test --enable-code-coverage
+    # If this step fails on "no such module 'GRDB'", the package resolution
+    # step needs to run first — try adding `swift package resolve` as its
+    # own script step before `swift test`.
