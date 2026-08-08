@@ -10,9 +10,9 @@ let package = Package(
     dependencies: [
         // Local SQLite wrapper. Confirmed by Andy as the default choice for the
         // data layer per CLAUDE.md's SQLite schema section (tracks / playlists /
-        // playlist_sources / playlist_tracks). Not compiled or tested here — no
-        // Xcode/Swift toolchain is available in this environment. Build in Xcode
-        // to confirm the version resolves and the API surface below is correct.
+        // playlist_sources / playlist_tracks). Resolves and builds clean as of
+        // the 2026-08-07 Codemagic build (all 19 PlaylistCoreTests passing,
+        // GRDB 6.29.3 resolved) — see CLAUDE.md Version History 0.13.6.
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.29.0"),
     ],
     targets: [
@@ -22,7 +22,15 @@ let package = Package(
         ),
         .testTarget(
             name: "PlaylistCoreTests",
-            dependencies: ["PlaylistCore"]
+            dependencies: ["PlaylistCore"],
+            // A small, deliberately curated set of real tracks for
+            // RealAudioValidationTests — a one-time, narrow exception to
+            // keeping this repo free of audio-sample clutter (see CLAUDE.md
+            // Rule 5 / "Build & Verification Pipeline"). Needed because
+            // there is no way to run Swift anywhere except via this repo's
+            // Codemagic build — Andy has no Mac, and the environment these
+            // files were written in has no Swift toolchain either.
+            resources: [.copy("Fixtures")]
         ),
     ]
 )
