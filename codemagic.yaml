@@ -22,3 +22,39 @@ workflows:
     # If this step fails on "no such module 'GRDB'", the package resolution
     # step needs to run first — try adding `swift package resolve` as its
     # own script step before `swift test`.
+
+  seamless-mixer-app:
+    name: SeamlessMixer App Build
+    # Second, deliberately separate workflow from playlistcore-tests above
+    # (which keeps validating just the Swift package on its own). This one
+    # generates and builds the actual Xcode app target from
+    # SeamlessMixer/project.yml via XcodeGen, per CLAUDE.md's "Build &
+    # Verification Pipeline — No Mac" — Andy never opens Xcode's GUI, this
+    # cloud Mac generates the .xcodeproj and builds it. Same caveat as the
+    # workflow above: not verified against a live Codemagic/XcodeGen run,
+    # since this environment can't reach either service.
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          which xcodegen || brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd SeamlessMixer
+          xcodegen generate
+      - name: Build SeamlessMixer (Simulator, unsigned)
+        script: |
+          cd SeamlessMixer
+          xcodebuild build \
+            -project SeamlessMixer.xcodeproj \
+            -scheme SeamlessMixer \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+    # If `xcodegen generate` fails resolving the local PlaylistCore package,
+    # double check SeamlessMixer/project.yml's `packages: PlaylistCore:
+    # path: ../` still points at the repo root — that assumes Package.swift
+    # stays at the repo root (confirmed 2026-08-07), not nested under a
+    # PlaylistCore/ subfolder.

@@ -36,7 +36,7 @@ public struct PlaylistSource: Codable, Equatable, Identifiable {
 extension PlaylistSource: FetchableRecord, MutablePersistableRecord {
     public static let databaseTableName = "playlist_sources"
 
-    enum Columns: String, ColumnExpression {
+    public enum Columns: String, ColumnExpression {
         case id
         case playlistID = "playlist_id"
         case sourceType = "source_type"

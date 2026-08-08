@@ -1,0 +1,65 @@
+# XcodeGen spec for the SeamlessMixer app target — Andy has no Mac, so this
+# YAML file *is* the Xcode project (per CLAUDE.md's "Build & Verification
+# Pipeline — No Mac"). Codemagic runs `xcodegen generate` on its cloud Mac to
+# turn this into a real .xcodeproj; nobody ever opens Xcode's New Project
+# wizard by hand. Not verified against a live `xcodegen` install — this
+# environment can't run it — so if Codemagic's build log shows a schema
+# error, check XcodeGen's own docs (github.com/yonaskolb/XcodeGen) for a
+# renamed key; the intent below should still be right even if a keyword
+# has drifted.
+#
+# Expected layout once this is copied into the seamless-mixer-ios repo:
+#   seamless-mixer-ios/
+#     Package.swift          <- PlaylistCore (repo root, confirmed 2026-08-07)
+#     Sources/ Tests/         <- PlaylistCore
+#     SeamlessMixer/
+#       project.yml           <- this file
+#       App/                  <- SwiftUI sources below
+# i.e. this file sits one level below the package root, hence `path: ../`
+# in the `packages:` section.
+
+name: SeamlessMixer
+options:
+  bundleIdPrefix: com.misterminq
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+packages:
+  PlaylistCore:
+    path: ../
+
+targets:
+  SeamlessMixer:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: App
+    dependencies:
+      - package: PlaylistCore
+        product: PlaylistCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.misterminq.SeamlessMixer
+        # No signing on CI — Codemagic has no distribution certs for this
+        # personal-use app, and a Simulator build doesn't need one. Andy
+        # signs locally with his own Apple ID only if/when he sideloads to
+        # his own phone — not part of this CI loop.
+        CODE_SIGNING_ALLOWED: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.10"
+        ENABLE_PREVIEWS: YES
+    info:
+      path: App/Info.plist
+      properties:
+        UILaunchScreen: {}
+        # Background audio session, per the confirmed mixing-engine design
+        # ("Background playback" in CLAUDE.md) — required from day one so
+        # later AVAudioEngine work doesn't need a separate Info.plist change.
+        UIBackgroundModes:
+          - audio
+        # MediaPlayer/MPMediaQuery access for source selection (ADR-7) —
+        # not used by this first screen yet, declared now so the prompt
+        # text is decided deliberately rather than bolted on later.
+        NSAppleMusicUsageDescription: "Seamless Mixer reads your music library so it can build seamless playlists from songs you already own."
