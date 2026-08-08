@@ -53,6 +53,59 @@ workflows:
             -scheme SeamlessMixer \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO
+      - name: Screenshot on Simulator
+        # Closes a gap flagged twice already (0.15.1, 0.15.2): every build so
+        # far only proves the app compiles and links -- nobody has actually
+        # seen it render. Boots a Simulator, installs the just-built .app,
+        # launches it, and captures one screenshot as a downloadable
+        # Codemagic artifact. Deliberately doesn't touch the build step
+        # above (already proven green twice) -- this just locates its
+        # output afterward via a DerivedData search, rather than changing
+        # how/where it builds.
+        #
+        # Not verified against a live Codemagic run -- this environment
+        # can't reach the service. Specific risk points if this step fails:
+        #   - `find ... -name "SeamlessMixer.app"` comes up empty: the build
+        #     step above may have used a non-default DerivedData path, or
+        #     the product name doesn't match the scheme name.
+        #   - `simctl boot` / `bootstatus` errors: the awk-parsed UDID from
+        #     `simctl list devices available` may not match the real output
+        #     format on Codemagic's current Xcode/simctl version -- if so,
+        #     print `xcrun simctl list devices available` raw and adjust the
+        #     parsing rather than the overall approach.
+        #   - `simctl install`/`launch` fails on a bundle ID mismatch: must
+        #     match `PRODUCT_BUNDLE_IDENTIFIER` in SeamlessMixer/project.yml
+        #     exactly (currently com.misterminq.SeamlessMixer).
+        script: |
+          set -e
+          APP_PATH=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name "SeamlessMixer.app" -path "*iphonesimulator*" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Could not find built SeamlessMixer.app under DerivedData"
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+
+          DEVICE_UDID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')
+          if [ -z "$DEVICE_UDID" ]; then
+            echo "No available iPhone simulator found"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator: $DEVICE_UDID"
+
+          xcrun simctl boot "$DEVICE_UDID" || true
+          xcrun simctl bootstatus "$DEVICE_UDID" -b
+          xcrun simctl install "$DEVICE_UDID" "$APP_PATH"
+          xcrun simctl launch "$DEVICE_UDID" com.misterminq.SeamlessMixer
+
+          # Give SwiftUI a moment to finish its first render (database open
+          # + playlist fetch in PlaylistStore.init) before capturing.
+          sleep 5
+
+          mkdir -p "$CM_BUILD_DIR/screenshots"
+          xcrun simctl io "$DEVICE_UDID" screenshot "$CM_BUILD_DIR/screenshots/my_mixes.png"
+    artifacts:
+      - screenshots/*.png
     # If `xcodegen generate` fails resolving the local PlaylistCore package,
     # double check SeamlessMixer/project.yml's `packages: PlaylistCore:
     # path: ../` still points at the repo root — that assumes Package.swift
