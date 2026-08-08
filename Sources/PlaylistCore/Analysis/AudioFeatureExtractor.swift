@@ -29,8 +29,28 @@ public enum AudioFeatureExtractor {
     /// reasonable low-frequency resolution for chroma/bass content, same
     /// spirit as librosa's default n_fft but not tuned/validated on-device yet.
     static let fftSize = 4096
-    /// 75% overlap between frames, standard for onset-detection use cases.
+    /// Hop for the chroma/brightness pass. 75% overlap, standard for this
+    /// kind of analysis. **Not used for tempo** — see `tempoHopSize`.
     static let hopSize = 1024
+    /// A separate, finer hop used only for the onset-envelope/tempo pass
+    /// (added 2026-08-08 — see CLAUDE.md Version History for the full
+    /// investigation). Real-audio validation against all 28 tracks in
+    /// `music_samplers/` found the shared `hopSize`=1024 onset envelope was
+    /// the actual bottleneck for tempo accuracy, not the lag-picking logic:
+    /// even feeding that envelope into `librosa`'s own proven
+    /// dynamic-programming beat tracker only got ~39% of tracks within 3%
+    /// of ground truth. Halving the hop to 512 (doubling onset-envelope
+    /// time resolution, matching librosa's own default) raised that to
+    /// ~61%, with no further gain at 256 — confirming hop resolution, not
+    /// algorithm sophistication, was the limiting factor. Kept as a
+    /// separate constant/pass rather than lowering `hopSize` itself so this
+    /// fix doesn't also perturb the already-validated brightness/key
+    /// numbers or double their compute cost for no benefit. Trade-off worth
+    /// knowing: this roughly triples per-track FFT work during analysis
+    /// (the existing chroma/brightness pass plus a ~2x-denser dedicated
+    /// tempo pass) — acceptable for a one-time/background per-track scan,
+    /// not a live-playback cost.
+    static let tempoHopSize = 512
 
     static let majorProfile: [Float] = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
     static let minorProfile: [Float] = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
@@ -58,8 +78,6 @@ public enum AudioFeatureExtractor {
 
         var centroids: [Float] = []
         var chroma = [Float](repeating: 0, count: 12)
-        var onsetEnvelope: [Float] = []
-        var previousMagnitudes: [Float]? = nil
 
         var offset = 0
         while offset + fftSize <= samples.count {
@@ -69,19 +87,44 @@ public enum AudioFeatureExtractor {
             centroids.append(spectralCentroid(magnitudes: magnitudes, sampleRate: sampleRate, fftSize: fftSize))
             accumulateChroma(magnitudes: magnitudes, sampleRate: sampleRate, fftSize: fftSize, into: &chroma)
 
-            if let previous = previousMagnitudes {
-                onsetEnvelope.append(spectralFlux(current: magnitudes, previous: previous))
-            }
-            previousMagnitudes = magnitudes
-
             offset += hopSize
         }
 
         let brightness = centroids.isEmpty ? 2000.0 : centroids.reduce(0, +) / Float(centroids.count)
         let camelotCode = detectKey(chroma: chroma)
-        let bpm = estimateTempo(onsetEnvelope: onsetEnvelope, sampleRate: sampleRate, hopSize: hopSize, debugLog: tempoDebugLog)
+
+        // Tempo runs its own, finer-hop pass (see `tempoHopSize`'s doc
+        // comment) rather than reusing the chroma/brightness loop above.
+        let tempoOnsetEnvelope = computeOnsetEnvelope(samples: samples, window: window, fft: fft)
+        let bpm = estimateTempo(onsetEnvelope: tempoOnsetEnvelope, sampleRate: sampleRate, hopSize: tempoHopSize, debugLog: tempoDebugLog)
 
         return AnalysisFeatures(bpm: bpm, camelotCode: camelotCode, energy: Double(energy), brightness: Double(brightness))
+    }
+
+    /// Runs an independent STFT pass at `tempoHopSize` (finer than the
+    /// `hopSize` used for chroma/brightness above) purely to build the
+    /// onset-strength envelope tempo estimation needs. Kept separate from
+    /// the main loop in `extract` rather than just lowering `hopSize`
+    /// itself, so the already-validated brightness/key numbers aren't
+    /// perturbed and don't pay the cost of the denser hop for no benefit.
+    /// See `tempoHopSize`'s doc comment for why this exists.
+    static func computeOnsetEnvelope(samples: [Float], window: [Float], fft: FFTProcessor) -> [Float] {
+        var onsetEnvelope: [Float] = []
+        var previousMagnitudes: [Float]? = nil
+
+        var offset = 0
+        while offset + fftSize <= samples.count {
+            let frame = (0..<fftSize).map { samples[offset + $0] * window[$0] }
+            let magnitudes = fft.magnitudeSpectrum(of: frame)
+
+            if let previous = previousMagnitudes {
+                onsetEnvelope.append(spectralFlux(current: magnitudes, previous: previous))
+            }
+            previousMagnitudes = magnitudes
+
+            offset += tempoHopSize
+        }
+        return onsetEnvelope
     }
 
     // MARK: - Energy (RMS)
