@@ -13,11 +13,16 @@ import PlaylistCore
 /// still route to `CategoryPickerPlaceholderView` — their pickers need an
 /// A-Z rail (Artists/Albums) or an artwork grid (Playlists/Albums), each a
 /// separate, larger piece of work, same phased approach as everything else
-/// in this app. "Build Mix" itself is still a no-op — real selection state
-/// now exists to build a pool from, but wiring the actual analyze-and-
-/// sequence action is deliberately the next slice, not this one.
+/// in this app. **"Build Mix" is now wired for real** (see `MixBuilder`) —
+/// scoped to genre selections only; "whole library" still shows an error
+/// explaining it isn't supported yet, per the reasoning in `MixBuilder`'s
+/// own doc comment.
 struct SourceSelectionHubView: View {
+    let store: PlaylistStore
+
     @StateObject private var viewModel = SourceSelectionViewModel()
+    @StateObject private var mixBuilder = MixBuilder()
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Group {
@@ -34,6 +39,36 @@ struct SourceSelectionHubView: View {
         .navigationTitle("New Seamless Mix")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewModel.requestAccessAndLoadCounts() }
+        .overlay {
+            if mixBuilder.isBuilding {
+                buildingOverlay
+            }
+        }
+        .alert("Couldn't build mix", isPresented: buildErrorBinding) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(mixBuilder.buildError ?? "")
+        }
+    }
+
+    private var buildErrorBinding: Binding<Bool> {
+        Binding(
+            get: { mixBuilder.buildError != nil },
+            set: { if !$0 { mixBuilder.buildError = nil } }
+        )
+    }
+
+    private var buildingOverlay: some View {
+        ZStack {
+            DesignTokens.Color.background.opacity(0.9).ignoresSafeArea()
+            VStack(spacing: DesignTokens.Spacing.sm) {
+                ProgressView()
+                    .tint(DesignTokens.Color.primary)
+                Text(mixBuilder.progressText)
+                    .font(.footnote)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+            }
+        }
     }
 
     private var content: some View {
@@ -196,7 +231,22 @@ struct SourceSelectionHubView: View {
                     .font(.footnote)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
                 Spacer()
-                Button(action: {}) {
+                Button {
+                    Task {
+                        // 30 min default target -- there's no duration
+                        // control on this screen yet (Playlist Detail /
+                        // duration setting isn't designed in that level of
+                        // detail yet), so this is a placeholder, not a
+                        // confirmed value.
+                        let succeeded = await mixBuilder.build(
+                            selectedSources: viewModel.selectedSources,
+                            mode: viewModel.mode,
+                            targetSeconds: 30 * 60,
+                            store: store
+                        )
+                        if succeeded { dismiss() }
+                    }
+                } label: {
                     Text("Build Mix")
                         .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                         .padding(.horizontal, DesignTokens.Spacing.lg)
@@ -260,6 +310,6 @@ struct CategoryPickerPlaceholderView: View {
 
 #Preview {
     NavigationStack {
-        SourceSelectionHubView()
+        SourceSelectionHubView(store: PlaylistStore())
     }
 }

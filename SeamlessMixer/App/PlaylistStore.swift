@@ -12,7 +12,12 @@ final class PlaylistStore: ObservableObject {
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var loadError: String?
 
-    private let db: DatabaseManager?
+    /// Internal (not private) so `MixBuilder` — the "Build Mix" pipeline —
+    /// can read/write tracks and playlists directly rather than every
+    /// operation needing its own method here. Still not exposed outside the
+    /// app target (this isn't `public`; `PlaylistStore` itself isn't part
+    /// of `PlaylistCore`).
+    let db: DatabaseManager?
 
     init() {
         do {
