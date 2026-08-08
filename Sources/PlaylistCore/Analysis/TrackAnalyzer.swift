@@ -7,10 +7,14 @@ import AVFoundation
 /// `BGProcessingTask`, per CLAUDE.md's "First-Run Library Analysis — UX")
 /// calls once per unanalyzed track.
 ///
-/// Not compiled or tested — this environment has no Xcode/Swift toolchain.
-/// The `AVAudioConverter` downmix/resample path below is standard but
-/// unverified; validate it decodes real library tracks correctly before
-/// trusting the features built on top of it.
+/// Compiles clean as of the 2026-08-07 Codemagic build (CLAUDE.md Version
+/// History 0.13.6). Still unverified against real audio, though: CI's
+/// `swift test` run has no real music files to decode, only the synthetic
+/// signals `AudioFeatureExtractorTests` generates in-memory. The
+/// `AVAudioConverter` downmix/resample path here is standard but real-world
+/// accuracy against actual library tracks — the Python-vs-Swift comparison
+/// described in "Audio Analysis Pipeline — iOS DSP Design" — is still
+/// outstanding and needs a path that isn't just `swift test` in CI.
 public enum TrackAnalyzer {
 
     /// Matches Phase 1's `analysis_sr` — fast analysis pass, distinct from
@@ -25,17 +29,21 @@ public enum TrackAnalyzer {
         case tooShort
     }
 
-    /// - Parameter url: a local file URL with a usable `assetURL` — the
-    ///   caller is responsible for having already excluded DRM-protected
-    ///   tracks (`has_raw_audio_access == false`) per the DRM-exclusion UX;
-    ///   this function assumes it was handed a real, decodable file.
-    public static func analyze(fileAt url: URL) throws -> AnalysisFeatures {
+    /// - Parameters:
+    ///   - url: a local file URL with a usable `assetURL` — the caller is
+    ///     responsible for having already excluded DRM-protected tracks
+    ///     (`has_raw_audio_access == false`) per the DRM-exclusion UX; this
+    ///     function assumes it was handed a real, decodable file.
+    ///   - tempoDebugLog: passthrough to `AudioFeatureExtractor.extract` —
+    ///     see its doc comment. Defaults to `nil`; no production caller
+    ///     should need this.
+    public static func analyze(fileAt url: URL, tempoDebugLog: ((String) -> Void)? = nil) throws -> AnalysisFeatures {
         let samples = try decodeMonoSamples(fileAt: url, targetSampleRate: analysisSampleRate)
         guard samples.count >= Int(analysisSampleRate) * 3 else {
             // Mirrors Python's "too short or empty" skip (< 3 seconds).
             throw AnalysisError.tooShort
         }
-        return AudioFeatureExtractor.extract(samples: samples, sampleRate: analysisSampleRate)
+        return AudioFeatureExtractor.extract(samples: samples, sampleRate: analysisSampleRate, tempoDebugLog: tempoDebugLog)
     }
 
     /// Also returns duration in seconds, matching the `duration_sec` column —

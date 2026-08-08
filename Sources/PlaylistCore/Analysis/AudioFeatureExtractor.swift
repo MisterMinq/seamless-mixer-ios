@@ -39,7 +39,12 @@ public enum AudioFeatureExtractor {
     ///   - samples: mono Float32 PCM, expected at `sampleRate` (22.05kHz for
     ///     analysis, matching Phase 1's `analysis_sr`, distinct from the
     ///     44.1kHz stereo decode used for the actual mix).
-    public static func extract(samples: [Float], sampleRate: Double) -> AnalysisFeatures {
+    ///   - tempoDebugLog: optional diagnostic sink for `estimateTempo`'s
+    ///     octave-error correction decision (candidate lags/scores) — not
+    ///     used by any production caller, only by
+    ///     `RealAudioValidationTests` while tuning that correction against
+    ///     real tracks. Defaults to `nil` (no-op, no behavior change).
+    public static func extract(samples: [Float], sampleRate: Double, tempoDebugLog: ((String) -> Void)? = nil) -> AnalysisFeatures {
         let energy = rms(samples)
 
         guard samples.count >= fftSize else {
@@ -74,7 +79,7 @@ public enum AudioFeatureExtractor {
 
         let brightness = centroids.isEmpty ? 2000.0 : centroids.reduce(0, +) / Float(centroids.count)
         let camelotCode = detectKey(chroma: chroma)
-        let bpm = estimateTempo(onsetEnvelope: onsetEnvelope, sampleRate: sampleRate, hopSize: hopSize)
+        let bpm = estimateTempo(onsetEnvelope: onsetEnvelope, sampleRate: sampleRate, hopSize: hopSize, debugLog: tempoDebugLog)
 
         return AnalysisFeatures(bpm: bpm, camelotCode: camelotCode, energy: Double(energy), brightness: Double(brightness))
     }
@@ -208,11 +213,29 @@ public enum AudioFeatureExtractor {
     /// what those 4 failing tracks were) to produce a *stronger*
     /// autocorrelation peak at twice the true beat period than at the true
     /// period, since a strong accent on every other beat looks like its own
-    /// periodicity. See CLAUDE.md Version History for the fixture tracks
-    /// and before/after numbers — this correction is evidence-based, not a
-    /// guess, but it's tuned against 8 tracks, not a large corpus; re-check
-    /// against the same fixtures after any further tuning.
-    static func estimateTempo(onsetEnvelope: [Float], sampleRate: Double, hopSize: Int) -> Double {
+    /// periodicity.
+    ///
+    /// **Revised same day** after the first version of this correction,
+    /// re-validated against the same 8 fixtures, fixed 3 tracks but
+    /// regressed a 4th (`Africa_Unite`, previously an exact match, became
+    /// wrong) and overcorrected a 5th. Both bad outcomes landed their
+    /// half-lag candidate right at or next to `minLag` (lag 5 and 7, vs.
+    /// `minLag`=5) — short lags very close to the search floor appear to
+    /// have inflated autocorrelation scores unrelated to real periodicity,
+    /// likely bleed from the STFT window's own ~4-hop (`fftSize`/`hopSize`)
+    /// smoothing footprint, not true short-period rhythm. The three tracks
+    /// that *did* correct cleanly all had half-lag candidates comfortably
+    /// clear of that zone (lag 11–13). Added a margin requiring the
+    /// half-lag candidate to clear `minLag` by more than that footprint
+    /// before it's eligible, which — checked against the same 8 tracks by
+    /// hand — excludes exactly the two bad cases while keeping the three
+    /// genuine fixes. See CLAUDE.md Version History for the exact
+    /// before/after numbers both times — this is now a twice-revised,
+    /// evidence-based correction, still tuned against only 8 tracks;
+    /// re-check against the same fixtures after any further tuning, and
+    /// don't assume it's fully correct without doing so (`All_Night_Long`
+    /// is still a known-unfixed case as of this revision).
+    static func estimateTempo(onsetEnvelope: [Float], sampleRate: Double, hopSize: Int, debugLog: ((String) -> Void)? = nil) -> Double {
         guard onsetEnvelope.count > 4 else { return 120.0 } // Python's except-fallback
 
         let framesPerSecond = sampleRate / Double(hopSize)
@@ -246,27 +269,55 @@ public enum AudioFeatureExtractor {
         // another in marginal cases). Bias toward the halved-lag (faster)
         // reading, since that was the dominant failure mode observed
         // (4 of 5 octave errors): switch there if its score clears a modest
-        // bar. Only consider the doubled-lag (slower) reading if we didn't
+        // bar AND the candidate lag is comfortably clear of the search
+        // floor (see doc comment above — near-floor lags are unreliable).
+        // Only consider the doubled-lag (slower) reading if we didn't
         // already switch to halved, and require a clearer margin — the
         // reverse failure was rarer in the evidence available.
         let originalLag = bestLag
         let originalScore = bestScore
         let halfLag = originalLag / 2
         let doubleLag = originalLag * 2
+        // Lags within roughly one STFT window's worth of hops from the
+        // floor are where the window's own overlap-smoothing can inflate
+        // autocorrelation independent of real periodicity — require
+        // clearing that zone before trusting a halved-lag candidate.
+        let minReliableLag = minLag + (fftSize / hopSize)
 
-        if halfLag >= minLag {
+        var decision = "kept original"
+        var halfScoreForLog: Float?
+        var doubleScoreForLog: Float?
+
+        if halfLag >= minReliableLag {
             let halfScore = autocorrelation(atLag: halfLag)
+            halfScoreForLog = halfScore
             if halfScore >= originalScore * 0.7 {
                 bestLag = halfLag
                 bestScore = halfScore
+                decision = "switched to half-lag"
             }
         }
         if bestLag == originalLag, doubleLag <= maxLag {
             let doubleScore = autocorrelation(atLag: doubleLag)
+            doubleScoreForLog = doubleScore
             if doubleScore > originalScore * 1.15 {
                 bestLag = doubleLag
                 bestScore = doubleScore
+                decision = "switched to double-lag"
             }
+        }
+
+        if let debugLog {
+            let origBpm = 60.0 * framesPerSecond / Double(originalLag)
+            let halfBpm = halfLag >= 1 ? 60.0 * framesPerSecond / Double(halfLag) : Double.nan
+            let doubleBpm = 60.0 * framesPerSecond / Double(doubleLag)
+            debugLog("""
+                minLag=\(minLag) minReliableLag=\(minReliableLag) maxLag=\(maxLag)
+                original: lag=\(originalLag) bpm=\(origBpm) score=\(originalScore)
+                half:     lag=\(halfLag) bpm=\(halfBpm) score=\(halfScoreForLog.map(String.init) ?? "not checked (below minReliableLag)")
+                double:   lag=\(doubleLag) bpm=\(doubleBpm) score=\(doubleScoreForLog.map(String.init) ?? "not checked")
+                decision: \(decision) -> chosen lag=\(bestLag)
+                """)
         }
 
         var bpm = 60.0 * framesPerSecond / Double(bestLag)

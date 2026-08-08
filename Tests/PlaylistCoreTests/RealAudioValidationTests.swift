@@ -150,10 +150,20 @@ final class RealAudioValidationTests: XCTestCase {
     /// Not a pass/fail gate — prints the Swift vs. Python numbers side by
     /// side so they can be reviewed by eye. Real accuracy comparison isn't
     /// a fixed threshold to assert against yet; see the class doc comment.
+    ///
+    /// Also passes `tempoDebugLog` so `estimateTempo`'s octave-error
+    /// correction prints its candidate lags/scores/decision for every
+    /// track — added 2026-08-08 after the first version of that
+    /// correction fixed 3 tracks but regressed a 4th, and hand-deriving
+    /// lags from printed bpm values (to diagnose why) turned out to be
+    /// possible but slow and error-prone. This gives that visibility
+    /// directly instead, for whenever the correction needs tuning again.
     func testPrintComparisonAgainstPythonReference() throws {
         for ref in references {
             let url = try fixtureURL(ref.resourceName)
-            let features = try TrackAnalyzer.analyze(fileAt: url)
+            let features = try TrackAnalyzer.analyze(fileAt: url) { logLine in
+                print("[\(ref.resourceName) tempo] \(logLine)")
+            }
             let duration = try TrackAnalyzer.duration(ofFileAt: url)
 
             print("""
