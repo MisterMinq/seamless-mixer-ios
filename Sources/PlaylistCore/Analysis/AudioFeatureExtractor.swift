@@ -308,16 +308,30 @@ public enum AudioFeatureExtractor {
         }
 
         if let debugLog {
-            let origBpm = 60.0 * framesPerSecond / Double(originalLag)
-            let halfBpm = halfLag >= 1 ? 60.0 * framesPerSecond / Double(halfLag) : Double.nan
-            let doubleBpm = 60.0 * framesPerSecond / Double(doubleLag)
-            debugLog("""
-                minLag=\(minLag) minReliableLag=\(minReliableLag) maxLag=\(maxLag)
-                original: lag=\(originalLag) bpm=\(origBpm) score=\(originalScore)
-                half:     lag=\(halfLag) bpm=\(halfBpm) score=\(halfScoreForLog.map(String.init) ?? "not checked (below minReliableLag)")
-                double:   lag=\(doubleLag) bpm=\(doubleBpm) score=\(doubleScoreForLog.map(String.init) ?? "not checked")
-                decision: \(decision) -> chosen lag=\(bestLag)
-                """)
+            // Built from plain pre-computed String locals, not one big
+            // multi-interpolation literal — a first version of this with
+            // several `\(...)` substitutions plus inline `.map()`/ternaries
+            // in a single string literal made the Swift 5.10 type checker
+            // crash outright ("failed to produce diagnostic for expression")
+            // on Codemagic. Mechanical fix, not a logic change.
+            let origBpmText = String(60.0 * framesPerSecond / Double(originalLag))
+            let halfBpmText: String
+            if halfLag >= 1 {
+                halfBpmText = String(60.0 * framesPerSecond / Double(halfLag))
+            } else {
+                halfBpmText = "n/a"
+            }
+            let doubleBpmText = String(60.0 * framesPerSecond / Double(doubleLag))
+            let halfScoreText = halfScoreForLog != nil ? String(halfScoreForLog!) : "not checked (below minReliableLag)"
+            let doubleScoreText = doubleScoreForLog != nil ? String(doubleScoreForLog!) : "not checked"
+
+            var lines: [String] = []
+            lines.append("minLag=\(minLag) minReliableLag=\(minReliableLag) maxLag=\(maxLag)")
+            lines.append("original: lag=\(originalLag) bpm=\(origBpmText) score=\(originalScore)")
+            lines.append("half:     lag=\(halfLag) bpm=\(halfBpmText) score=\(halfScoreText)")
+            lines.append("double:   lag=\(doubleLag) bpm=\(doubleBpmText) score=\(doubleScoreText)")
+            lines.append("decision: \(decision) -> chosen lag=\(bestLag)")
+            debugLog(lines.joined(separator: "\n"))
         }
 
         var bpm = 60.0 * framesPerSecond / Double(bestLag)
