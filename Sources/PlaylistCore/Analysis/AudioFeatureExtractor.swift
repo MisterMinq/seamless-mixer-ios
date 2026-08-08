@@ -107,6 +107,7 @@ public enum AudioFeatureExtractor {
 
         let window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: fftSize, isHalfWindow: false)
         let fft = FFTProcessor(fftSize: fftSize)
+        let chromaFB = chromaFilterbank(sampleRate: sampleRate, fftSize: fftSize)
 
         var centroids: [Float] = []
         var chroma = [Float](repeating: 0, count: 12)
@@ -117,7 +118,7 @@ public enum AudioFeatureExtractor {
             let magnitudes = fft.magnitudeSpectrum(of: frame)
 
             centroids.append(spectralCentroid(magnitudes: magnitudes, sampleRate: sampleRate, fftSize: fftSize))
-            accumulateChroma(magnitudes: magnitudes, sampleRate: sampleRate, fftSize: fftSize, into: &chroma)
+            accumulateChroma(magnitudes: magnitudes, filterbank: chromaFB, into: &chroma)
 
             offset += hopSize
         }
@@ -265,26 +266,134 @@ public enum AudioFeatureExtractor {
 
     // MARK: - Key (chroma + Krumhansl-Schmuckler)
 
-    /// Bins a frame's magnitude spectrum into a 12-element chroma vector,
-    /// accumulating into `chroma`. Simplified relative to Python's
-    /// `librosa.feature.chroma_cqt` — this uses plain STFT bins mapped to
-    /// their nearest pitch class rather than a full Constant-Q Transform, a
-    /// deliberate first-pass simplification (CQT is a substantially bigger
-    /// port). Expect this to be less accurate at low bass frequencies than
-    /// the Python version; revisit if real-track key detection proves poor.
-    static func accumulateChroma(magnitudes: [Float], sampleRate: Double, fftSize: Int, into chroma: inout [Float]) {
-        let binHz = Float(sampleRate) / Float(fftSize)
-        // Ignore content outside the musically-relevant range — very low bins
-        // are mostly DC/rumble, very high bins are harmonics that muddy key
-        // detection more than they help it.
-        let minFreq: Float = 40, maxFreq: Float = 5000
-        for (bin, mag) in magnitudes.enumerated() {
-            let freq = Float(bin) * binHz
-            guard freq >= minFreq, freq <= maxFreq, mag > 0 else { continue }
-            let midi = 69 + 12 * log2(freq / 440)
-            let pitchClass = ((Int(midi.rounded()) % 12) + 12) % 12
-            chroma[pitchClass] += mag
+    /// Gaussian-bump, log-frequency chroma filterbank — replaces an earlier
+    /// "round each FFT bin to its nearest semitone" approach (2026-08-08,
+    /// same investigation session as the tempo rework above). That earlier
+    /// approach was flagged as a deliberate STFT-vs-CQT simplification but
+    /// turned out to have more room in it than the CQT gap alone accounted
+    /// for: it scored 8/28 exact-key matches (mean Camelot distance 1.50)
+    /// against the real `music_samplers/` pool. Testing librosa's own
+    /// CQT-based `chroma_cqt` wasn't a valid comparison (Python's reference
+    /// values *are* `chroma_cqt` output, so it trivially matches 28/28) —
+    /// but librosa's own **STFT-based** `chroma_stft` (still no CQT) scored
+    /// 13/28, meaningfully better than the hand-rolled version despite using
+    /// the same underlying STFT. The difference: a smooth Gaussian weighting
+    /// of each FFT bin's log-frequency position toward each of the 12 pitch
+    /// classes (with the Gaussian's width adapting to local frequency
+    /// resolution, and a broad "octave dominance" window de-emphasizing very
+    /// low/high content), not a hard round-to-nearest-bin assignment. A
+    /// from-scratch Python port of that exact construction (`librosa.filters.chroma`'s
+    /// real formula, no librosa dependency, verified to match librosa's own
+    /// filterbank to floating-point precision) combined with per-frame
+    /// max-normalization before averaging scored 18/28 exact (mean distance
+    /// 0.71) — better than librosa's own default pipeline, likely because
+    /// this skips librosa's automatic per-track tuning estimation (a
+    /// deliberate simplification here, not yet isolated on its own — see
+    /// below). This function is a direct Swift port of that validated
+    /// Python replica.
+    ///
+    /// Deliberate simplification: assumes exact A440 tuning (`tuning=0`) —
+    /// librosa's default `chroma_stft` estimates a per-track tuning offset
+    /// and corrects for it; skipping that is the same category of caveat as
+    /// the mel filterbank's HTK-vs-Slaney gap. The Python validation above
+    /// used the same assumption and still beat librosa's own
+    /// tuning-corrected pipeline, so this isn't expected to be the dominant
+    /// remaining error source — but hasn't been isolated on its own, and
+    /// real-track key detection is still not "solved," just meaningfully
+    /// better. Needs the same real-audio cross-check via
+    /// `RealAudioValidationTests` before trusting the improvement holds.
+    ///
+    /// Returns a `(chromaBin, fftBin)`-shaped matrix — `12 × fftSize/2`,
+    /// matching `FFTProcessor.magnitudeSpectrum`'s bin count (bins
+    /// 0..<Nyquist; no separate Nyquist bin, a minor, deliberate difference
+    /// from librosa's `fftSize/2 + 1`).
+    static func chromaFilterbank(sampleRate: Double, fftSize: Int) -> [[Float]] {
+        let chromaBins = 12
+        let tuning = 0.0
+        let a440 = 440.0 * pow(2.0, tuning / Double(chromaBins))
+
+        var frqbins = [Double](repeating: 0, count: fftSize)
+        for j in 1..<fftSize {
+            let freq = Double(j) * sampleRate / Double(fftSize)
+            frqbins[j] = Double(chromaBins) * log2(freq / (a440 / 16.0))
         }
+        frqbins[0] = frqbins[1] - 1.5 * Double(chromaBins)
+
+        var binwidthbins = [Double](repeating: 1.0, count: fftSize)
+        for j in 0..<(fftSize - 1) {
+            binwidthbins[j] = max(frqbins[j + 1] - frqbins[j], 1.0)
+        }
+
+        let chromaBins2 = (Double(chromaBins) / 2).rounded()
+        var wts = [[Double]](repeating: [Double](repeating: 0, count: fftSize), count: chromaBins)
+        for c in 0..<chromaBins {
+            for j in 0..<fftSize {
+                var d = frqbins[j] - Double(c) + chromaBins2 + 10.0 * Double(chromaBins)
+                d = d.truncatingRemainder(dividingBy: Double(chromaBins)) - chromaBins2
+                let bw = binwidthbins[j]
+                wts[c][j] = exp(-0.5 * pow(2.0 * d / bw, 2))
+            }
+        }
+
+        // Per-FFT-bin (column) L2 normalization.
+        for j in 0..<fftSize {
+            var sumSq = 0.0
+            for c in 0..<chromaBins { sumSq += wts[c][j] * wts[c][j] }
+            let norm = sumSq > 0 ? sqrt(sumSq) : 1.0
+            for c in 0..<chromaBins { wts[c][j] /= norm }
+        }
+
+        // Octave-dominance window: a broad Gaussian centered ~5 octaves above
+        // A0 (27.5Hz), i.e. roughly the middle of a typical instrument's
+        // range, de-emphasizing very low (bass rumble) and very high
+        // (harmonic-heavy) content without a hard cutoff.
+        let octaveCenter = 5.0
+        let octaveWidth = 2.0
+        for j in 0..<fftSize {
+            let octPosition = frqbins[j] / Double(chromaBins)
+            let dominance = exp(-0.5 * pow((octPosition - octaveCenter) / octaveWidth, 2))
+            for c in 0..<chromaBins { wts[c][j] *= dominance }
+        }
+
+        // Roll rows so chroma bin 0 aligns with pitch class C (matches
+        // librosa's `base_c=True` default).
+        var rolled = [[Double]](repeating: [Double](repeating: 0, count: fftSize), count: chromaBins)
+        for c in 0..<chromaBins {
+            rolled[c] = wts[(c + 3) % chromaBins]
+        }
+
+        let binCount = fftSize / 2
+        return rolled.map { row in row[0..<binCount].map { Float($0) } }
+    }
+
+    /// Projects one frame's power spectrum through the chroma filterbank,
+    /// max-normalizes the resulting 12-element frame chroma vector, and
+    /// accumulates it into the running `chroma` total. Per-frame
+    /// normalization (rather than accumulating raw magnitude, as the
+    /// earlier version did) matches what librosa's own `chroma_stft` does
+    /// and was part of what the Python validation above confirmed mattered.
+    static func accumulateChroma(magnitudes: [Float], filterbank: [[Float]], into chroma: inout [Float]) {
+        var power = [Float](repeating: 0, count: magnitudes.count)
+        vDSP_vsq(magnitudes, 1, &power, 1, vDSP_Length(magnitudes.count))
+
+        var frameChroma = [Float](repeating: 0, count: chroma.count)
+        power.withUnsafeBufferPointer { powerPtr in
+            guard let base = powerPtr.baseAddress else { return }
+            for c in 0..<chroma.count {
+                let filterRow = filterbank[c]
+                let n = min(powerPtr.count, filterRow.count)
+                guard n > 0 else { continue }
+                var sum: Float = 0
+                vDSP_dotpr(base, 1, filterRow, 1, &sum, vDSP_Length(n))
+                frameChroma[c] = sum
+            }
+        }
+
+        let maxVal = frameChroma.max() ?? 0
+        if maxVal > 0 {
+            for c in 0..<frameChroma.count { frameChroma[c] /= maxVal }
+        }
+        for c in 0..<chroma.count { chroma[c] += frameChroma[c] }
     }
 
     /// Correlates the accumulated chroma vector against all 24 rolled
