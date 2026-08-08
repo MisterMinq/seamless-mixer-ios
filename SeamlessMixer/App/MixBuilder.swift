@@ -33,7 +33,7 @@ final class MixBuilder: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .noSupportedSources:
-                return "\"Use your whole library\" isn't wired up yet — pick one or more genres for now."
+                return "Only genres can be used to build a mix so far — playlists, artists, albums, and \"whole library\" aren't wired up yet."
             case .emptyPool:
                 return "None of the selected songs could be used for a seamless mix."
             case .databaseUnavailable:

@@ -7,18 +7,19 @@ import PlaylistCore
 /// Genres/Artists/Albums), the mode picker, and a sticky "Build Mix" bar.
 /// No search field, per the confirmed 2026-08-02 revision.
 ///
-/// **Scope of this slice (revised):** Genres is now a real picker
-/// (`GenrePickerView`) with real selection state flowing back into this
-/// Hub's chip row and live "N selected" counts. Playlists/Artists/Albums
-/// still route to `CategoryPickerPlaceholderView` — their pickers need an
-/// A-Z rail (Artists/Albums) or an artwork grid (Playlists/Albums), each a
+/// **Scope of this slice (revised):** Genres (`GenrePickerView`) and now
+/// Playlists (`PlaylistPickerView`, an artwork grid, no A-Z rail) are real
+/// pickers with selection state flowing back into this Hub's chip row and
+/// live "N selected" counts. Artists/Albums still route to
+/// `CategoryPickerPlaceholderView` — both need an A-Z index rail, a
 /// separate, larger piece of work, same phased approach as everything else
-/// in this app. **"Build Mix" is now wired for real** (see `MixBuilder`) —
-/// scoped to genre selections only; "whole library" still shows an error
-/// explaining it isn't supported yet, per the reasoning in `MixBuilder`'s
-/// own doc comment. On success this now pushes to `PlaylistDetailView` (the
-/// confirmed Navigation Flow's actual next step) rather than dismissing back
-/// to My Mixes, per CLAUDE.md's "tap Build Mix -> Playlist Detail".
+/// in this app. **"Build Mix" is wired for real** (see `MixBuilder`) —
+/// scoped to genre selections only; picking a playlist (or "whole library")
+/// still shows an error explaining it isn't supported yet, per the
+/// reasoning in `MixBuilder`'s own doc comment. On success this pushes to
+/// `PlaylistDetailView` (the confirmed Navigation Flow's actual next step)
+/// rather than dismissing back to My Mixes, per CLAUDE.md's "tap Build Mix
+/// -> Playlist Detail".
 struct SourceSelectionHubView: View {
     let store: PlaylistStore
 
@@ -125,7 +126,7 @@ struct SourceSelectionHubView: View {
     private var categoryRows: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
             categoryRow(title: "Playlists", icon: "music.note.list", count: viewModel.playlistCount, type: .playlist) {
-                CategoryPickerPlaceholderView(title: "Playlists")
+                PlaylistPickerView(viewModel: viewModel)
             }
             categoryRow(title: "Genres", icon: "guitars", count: viewModel.genreCount, type: .genre) {
                 GenrePickerView(viewModel: viewModel)
