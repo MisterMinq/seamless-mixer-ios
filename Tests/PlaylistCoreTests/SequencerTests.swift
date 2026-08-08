@@ -130,27 +130,27 @@ final class SequencerTests: XCTestCase {
 
     // MARK: - Normalization
 
-    func testNormalizeEnergyAndBrightnessRescalesToUnitRange() {
+    func testNormalizeEnergyAndBrightnessRescalesToUnitRange() throws {
         let tracks = [
             makeTrack("low", bpm: 120, key: "8A", energy: 10, brightness: 1000, duration: 180),
             makeTrack("mid", bpm: 120, key: "8A", energy: 20, brightness: 2000, duration: 180),
             makeTrack("high", bpm: 120, key: "8A", energy: 30, brightness: 3000, duration: 180),
         ]
         let normalized = Sequencer.normalizeEnergyAndBrightness(tracks)
-        XCTAssertEqual(normalized[0].energy, 0.0, accuracy: 0.0001)
-        XCTAssertEqual(normalized[1].energy, 0.5, accuracy: 0.0001)
-        XCTAssertEqual(normalized[2].energy, 1.0, accuracy: 0.0001)
-        XCTAssertEqual(normalized[0].brightness, 0.0, accuracy: 0.0001)
-        XCTAssertEqual(normalized[2].brightness, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(normalized[0].energy), 0.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(normalized[1].energy), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(normalized[2].energy), 1.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(normalized[0].brightness), 0.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(normalized[2].brightness), 1.0, accuracy: 0.0001)
     }
 
-    func testNormalizeEnergyAndBrightnessHandlesFlatPool() {
+    func testNormalizeEnergyAndBrightnessHandlesFlatPool() throws {
         // All identical -> Python's tie-break is 0.5 for every track (e_hi == e_lo).
         let tracks = (0..<4).map { i in makeTrack("T\(i)", bpm: 120, key: "8A", energy: 5, brightness: 500, duration: 180) }
         let normalized = Sequencer.normalizeEnergyAndBrightness(tracks)
         for t in normalized {
-            XCTAssertEqual(t.energy, 0.5, accuracy: 0.0001)
-            XCTAssertEqual(t.brightness, 0.5, accuracy: 0.0001)
+            XCTAssertEqual(try XCTUnwrap(t.energy), 0.5, accuracy: 0.0001)
+            XCTAssertEqual(try XCTUnwrap(t.brightness), 0.5, accuracy: 0.0001)
         }
     }
 
