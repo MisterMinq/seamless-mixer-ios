@@ -52,6 +52,38 @@ public enum AudioFeatureExtractor {
     /// not a live-playback cost.
     static let tempoHopSize = 512
 
+    /// Number of mel-scale triangular filters used for the tempo-only onset
+    /// envelope (added 2026-08-08, replacing the earlier linear-magnitude
+    /// flux — see the doc comment on `estimateTempo` below for the full
+    /// investigation and why this alone wasn't the fix). Chosen to match the
+    /// count used when this was Python-validated. The filter construction in
+    /// `melFilterbank` below is a simplified HTK-formula approximation, not
+    /// librosa's exact Slaney-normalized one — flagged the same way the
+    /// STFT-vs-CQT chroma simplification is, expect some numeric drift from
+    /// the Python figures until cross-checked against real tracks.
+    static let melFilterCount = 40
+    /// Tempogram local-autocorrelation window length, in seconds — matches
+    /// `librosa.feature.tempo`'s own default (`ac_size=8.0`).
+    static let tempoAutocorrelationWindowSeconds = 8.0
+    /// Spacing between successive tempogram windows, in seconds. librosa's
+    /// own tempogram evaluates a window at *every* onset-envelope frame
+    /// (hop=1); Python validation (see `estimateTempo`'s doc comment) found
+    /// striding once per second instead gives identical accuracy on the same
+    /// 28-track pool while cutting per-track compute by roughly two orders
+    /// of magnitude and avoiding a second FFT-based autocorrelation
+    /// primitive in this file.
+    static let tempoWindowStrideSeconds = 1.0
+    /// Log-normal tempo prior center (BPM) and width (octaves) — same
+    /// defaults `librosa.feature.tempo` uses. Biases candidate lags toward
+    /// plausible tempos *before* picking a winner, rather than picking the
+    /// single strongest autocorrelation peak and patching it after the fact
+    /// (what the earlier, superseded approach did).
+    static let tempoPriorStartBpm = 120.0
+    static let tempoPriorStdOctaves = 1.0
+    /// Upper tempo bound considered, matching librosa's own default — mostly
+    /// excludes near-zero-lag noise, not a realistic ceiling for this library.
+    static let tempoMaxBpm = 320.0
+
     static let majorProfile: [Float] = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
     static let minorProfile: [Float] = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 
@@ -60,10 +92,10 @@ public enum AudioFeatureExtractor {
     ///     analysis, matching Phase 1's `analysis_sr`, distinct from the
     ///     44.1kHz stereo decode used for the actual mix).
     ///   - tempoDebugLog: optional diagnostic sink for `estimateTempo`'s
-    ///     octave-error correction decision (candidate lags/scores) — not
-    ///     used by any production caller, only by
-    ///     `RealAudioValidationTests` while tuning that correction against
-    ///     real tracks. Defaults to `nil` (no-op, no behavior change).
+    ///     chosen tempogram window count/lag/score — not used by any
+    ///     production caller, only by `RealAudioValidationTests` while
+    ///     validating tempo accuracy against real tracks. Defaults to `nil`
+    ///     (no-op, no behavior change).
     public static func extract(samples: [Float], sampleRate: Double, tempoDebugLog: ((String) -> Void)? = nil) -> AnalysisFeatures {
         let energy = rms(samples)
 
@@ -93,9 +125,10 @@ public enum AudioFeatureExtractor {
         let brightness = centroids.isEmpty ? 2000.0 : centroids.reduce(0, +) / Float(centroids.count)
         let camelotCode = detectKey(chroma: chroma)
 
-        // Tempo runs its own, finer-hop pass (see `tempoHopSize`'s doc
-        // comment) rather than reusing the chroma/brightness loop above.
-        let tempoOnsetEnvelope = computeOnsetEnvelope(samples: samples, window: window, fft: fft)
+        // Tempo runs its own, finer-hop, mel-scaled pass (see `tempoHopSize`
+        // and `melFilterCount`'s doc comments) rather than reusing the
+        // chroma/brightness loop above.
+        let tempoOnsetEnvelope = computeMelOnsetEnvelope(samples: samples, window: window, fft: fft, sampleRate: sampleRate)
         let bpm = estimateTempo(onsetEnvelope: tempoOnsetEnvelope, sampleRate: sampleRate, hopSize: tempoHopSize, debugLog: tempoDebugLog)
 
         return AnalysisFeatures(bpm: bpm, camelotCode: camelotCode, energy: Double(energy), brightness: Double(brightness))
@@ -107,24 +140,102 @@ public enum AudioFeatureExtractor {
     /// the main loop in `extract` rather than just lowering `hopSize`
     /// itself, so the already-validated brightness/key numbers aren't
     /// perturbed and don't pay the cost of the denser hop for no benefit.
-    /// See `tempoHopSize`'s doc comment for why this exists.
-    static func computeOnsetEnvelope(samples: [Float], window: [Float], fft: FFTProcessor) -> [Float] {
+    ///
+    /// Converts each frame's power spectrum through the mel filterbank and
+    /// log-compresses it before taking frame-to-frame flux — replaces an
+    /// earlier plain linear-magnitude version (2026-08-08). Mel-scaling
+    /// alone wasn't the fix (tested in isolation against the old tempo
+    /// heuristic, no better than linear); it only pays off combined with
+    /// `estimateTempo`'s tempogram approach below — see that function's doc
+    /// comment for the full validation trail.
+    static func computeMelOnsetEnvelope(samples: [Float], window: [Float], fft: FFTProcessor, sampleRate: Double) -> [Float] {
+        let filterbank = melFilterbank(sampleRate: sampleRate, fftSize: fftSize, melBins: melFilterCount)
+
         var onsetEnvelope: [Float] = []
-        var previousMagnitudes: [Float]? = nil
+        var previousMelDb: [Float]? = nil
 
         var offset = 0
         while offset + fftSize <= samples.count {
             let frame = (0..<fftSize).map { samples[offset + $0] * window[$0] }
             let magnitudes = fft.magnitudeSpectrum(of: frame)
+            var power = [Float](repeating: 0, count: magnitudes.count)
+            vDSP_vsq(magnitudes, 1, &power, 1, vDSP_Length(magnitudes.count))
 
-            if let previous = previousMagnitudes {
-                onsetEnvelope.append(spectralFlux(current: magnitudes, previous: previous))
+            var melDb = [Float](repeating: 0, count: melFilterCount)
+            power.withUnsafeBufferPointer { powerPtr in
+                guard let base = powerPtr.baseAddress else { return }
+                for m in 0..<filterbank.count {
+                    let (start, weights) = filterbank[m]
+                    guard !weights.isEmpty, start >= 0, start + weights.count <= powerPtr.count else { continue }
+                    var sum: Float = 0
+                    vDSP_dotpr(base + start, 1, weights, 1, &sum, vDSP_Length(weights.count))
+                    melDb[m] = 10.0 * log10(sum + 1e-10)
+                }
             }
-            previousMagnitudes = magnitudes
+
+            if let previous = previousMelDb {
+                onsetEnvelope.append(spectralFlux(current: melDb, previous: previous))
+            }
+            previousMelDb = melDb
 
             offset += tempoHopSize
         }
         return onsetEnvelope
+    }
+
+    /// A simplified triangular mel filterbank: `melBins` overlapping
+    /// triangles spanning 0Hz to Nyquist, spaced evenly on the mel scale
+    /// (classic HTK formula: `mel = 2595·log10(1 + f/700)`). Returned as
+    /// `(startBin, weights)` pairs rather than full-width sparse arrays,
+    /// since a triangular filter's support is only a small fraction of the
+    /// full spectrum — `computeMelOnsetEnvelope` only needs to sum over that
+    /// narrow range per filter, not a full `melBins × fftSize/2` matrix
+    /// multiply per frame.
+    static func melFilterbank(sampleRate: Double, fftSize: Int, melBins: Int) -> [(startBin: Int, weights: [Float])] {
+        func hzToMel(_ hz: Double) -> Double { 2595.0 * log10(1.0 + hz / 700.0) }
+        func melToHz(_ mel: Double) -> Double { 700.0 * (pow(10.0, mel / 2595.0) - 1.0) }
+
+        let nyquist = sampleRate / 2.0
+        let melMin = hzToMel(0)
+        let melMax = hzToMel(nyquist)
+        let fftBinCount = fftSize / 2
+
+        let edgeMels = (0...(melBins + 1)).map { melMin + (melMax - melMin) * Double($0) / Double(melBins + 1) }
+        let edgeBins = edgeMels.map { melHz -> Int in
+            let hz = melToHz(melHz)
+            return Int((hz * Double(fftSize) / sampleRate).rounded())
+        }
+
+        var filters: [(startBin: Int, weights: [Float])] = []
+        filters.reserveCapacity(melBins)
+        for m in 0..<melBins {
+            let lower = edgeBins[m]
+            let center = edgeBins[m + 1]
+            let upper = edgeBins[m + 2]
+            guard upper > lower, center > lower, upper > center else {
+                filters.append((startBin: max(0, min(lower, fftBinCount - 1)), weights: []))
+                continue
+            }
+            let start = max(0, lower)
+            let end = min(fftBinCount - 1, upper)
+            guard end >= start else {
+                filters.append((startBin: start, weights: []))
+                continue
+            }
+            var weights: [Float] = []
+            weights.reserveCapacity(end - start + 1)
+            for bin in start...end {
+                let w: Float
+                if bin < center {
+                    w = center > lower ? Float(bin - lower) / Float(center - lower) : 0
+                } else {
+                    w = upper > center ? Float(upper - bin) / Float(upper - center) : 0
+                }
+                weights.append(max(0, w))
+            }
+            filters.append((startBin: start, weights: weights))
+        }
+        return filters
     }
 
     // MARK: - Energy (RMS)
@@ -240,144 +351,140 @@ public enum AudioFeatureExtractor {
         return flux
     }
 
-    /// Estimates tempo via autocorrelation of the onset-strength envelope —
-    /// find the lag (converted to BPM) with the strongest periodicity within
-    /// a plausible tempo range. This is a simplified stand-in for librosa's
-    /// dynamic-programming beat tracker: it estimates a tempo, not actual
-    /// beat positions, which is all the schema needs (`tracks.bpm`).
+    /// Estimates tempo using a windowed-autocorrelation "tempogram" (Grosche/
+    /// Müller/Kurth 2010 — the same technique `librosa.feature.tempo` uses
+    /// internally) weighted by a log-normal prior toward common tempos,
+    /// rather than picking a single global autocorrelation peak.
     ///
-    /// Includes an octave-error correction step (added 2026-08-08, after
-    /// `RealAudioValidationTests` found 5 of 8 real tracks had tempo off by
-    /// an exact factor of 2 from Python's reference — 4 detected at half
-    /// the true tempo, 1 at double). Plain autocorrelation is prone to
-    /// locking onto a harmonic of the true beat period rather than the
-    /// period itself, and the 4-vs-1 split observed matches the
-    /// well-documented tendency for backbeat-heavy music (funk/soul/pop —
-    /// what those 4 failing tracks were) to produce a *stronger*
-    /// autocorrelation peak at twice the true beat period than at the true
-    /// period, since a strong accent on every other beat looks like its own
-    /// periodicity.
+    /// **Replaces an earlier single-global-autocorrelation + half/double-lag
+    /// octave-error-correction approach**, superseded the same day it was
+    /// tuned (2026-08-08 — see CLAUDE.md Version History for the full trail;
+    /// this doc comment summarizes the reasoning, not the blow-by-blow).
+    /// That correction, after two rounds of threshold tuning against 8 real
+    /// fixtures, plateaued at 6/8 correct with two failures neither round
+    /// could resolve — a single-lag score-ratio guard structurally can't
+    /// tell a legitimate near-floor correction from a spurious one using
+    /// only the evidence available to it. Root-caused from there, per
+    /// Andy's explicit instruction to solve this properly rather than defer
+    /// it: feeding that same onset envelope into `librosa`'s own proven beat
+    /// tracker only got 39-61% of the full 28-track `music_samplers/` pool
+    /// right (depending on onset-envelope hop size) — meaning the ceiling
+    /// was never really in the octave-correction heuristic. It was in "pick
+    /// the single strongest peak, then patch it after the fact" as a
+    /// strategy. Testing librosa's actual tempo-estimation algorithm (a
+    /// dense tempogram + log-normal prior, weighting candidates *before*
+    /// picking a winner) got 24/28 (86%) on the same pool. A from-scratch
+    /// Python reimplementation of that algorithm, combined with
+    /// `computeMelOnsetEnvelope` above (no librosa dependency, fully
+    /// portable), matched it at 25-26/28 (89-93%) — that reimplementation is
+    /// what this function ports.
     ///
-    /// **Revised same day** after the first version of this correction,
-    /// re-validated against the same 8 fixtures, fixed 3 tracks but
-    /// regressed a 4th (`Africa_Unite`, previously an exact match, became
-    /// wrong) and overcorrected a 5th. Both bad outcomes landed their
-    /// half-lag candidate right at or next to `minLag` (lag 5 and 7, vs.
-    /// `minLag`=5) — short lags very close to the search floor appear to
-    /// have inflated autocorrelation scores unrelated to real periodicity,
-    /// likely bleed from the STFT window's own ~4-hop (`fftSize`/`hopSize`)
-    /// smoothing footprint, not true short-period rhythm. The three tracks
-    /// that *did* correct cleanly all had half-lag candidates comfortably
-    /// clear of that zone (lag 11–13). Added a margin requiring the
-    /// half-lag candidate to clear `minLag` by more than that footprint
-    /// before it's eligible, which — checked against the same 8 tracks by
-    /// hand — excludes exactly the two bad cases while keeping the three
-    /// genuine fixes. See CLAUDE.md Version History for the exact
-    /// before/after numbers both times — this is now a twice-revised,
-    /// evidence-based correction, still tuned against only 8 tracks;
-    /// re-check against the same fixtures after any further tuning, and
-    /// don't assume it's fully correct without doing so (`All_Night_Long`
-    /// is still a known-unfixed case as of this revision).
+    /// One deliberate deviation from librosa's own implementation: librosa
+    /// evaluates a local autocorrelation window at *every single* onset-
+    /// envelope frame (dense, hop=1) before averaging. Python validation
+    /// found striding those windows once per second instead
+    /// (`tempoWindowStrideSeconds`) gives identical accuracy on the same
+    /// 28-track pool while cutting per-track compute by roughly two orders
+    /// of magnitude — and, just as importantly, lets this reuse the same
+    /// plain per-lag dot-product autocorrelation already validated and
+    /// shipped (see `FFTProcessor`'s own doc comment on this being the
+    /// highest-risk file in the project), rather than needing a second,
+    /// FFT-based Wiener-Khinchin autocorrelation primitive that would have
+    /// been genuinely new, higher-risk, unvalidated code.
+    ///
+    /// As with the STFT-vs-CQT chroma simplification, this depends on
+    /// `melFilterbank`'s simplified (non-Slaney) filter construction — the
+    /// Python figures above are the ceiling this is aiming for, not a
+    /// guarantee. Needs the same real-audio cross-check via
+    /// `RealAudioValidationTests` before being trusted.
     static func estimateTempo(onsetEnvelope: [Float], sampleRate: Double, hopSize: Int, debugLog: ((String) -> Void)? = nil) -> Double {
-        guard onsetEnvelope.count > 4 else { return 120.0 } // Python's except-fallback
+        guard onsetEnvelope.count > 8 else { return 120.0 } // Python's except-fallback
 
-        let framesPerSecond = sampleRate / Double(hopSize)
-        // 40...220 BPM, matching the range Python's post-processing "if bpm < 40: bpm *= 2"
-        // implies as the plausible floor, with a generous ceiling for uptempo material.
-        let minLag = max(1, Int((60.0 / 220.0) * framesPerSecond))
-        let maxLag = min(onsetEnvelope.count - 1, Int((60.0 / 40.0) * framesPerSecond))
-        guard minLag < maxLag else { return 120.0 }
+        let fps = sampleRate / Double(hopSize)
+        let winLength = max(Int((tempoAutocorrelationWindowSeconds * fps).rounded()), 8)
+        let strideFrames = max(Int((tempoWindowStrideSeconds * fps).rounded()), 1)
 
-        func autocorrelation(atLag lag: Int) -> Float {
-            var score: Float = 0
-            for i in 0..<(onsetEnvelope.count - lag) {
-                score += onsetEnvelope[i] * onsetEnvelope[i + lag]
-            }
-            return score
+        // Center-pad with a linear ramp toward 0 at each end (matches the
+        // Python-validated reference algorithm) so the first/last windows
+        // aren't biased by an abrupt edge discontinuity.
+        let padCount = winLength / 2
+        var padded = [Float]()
+        padded.reserveCapacity(onsetEnvelope.count + 2 * padCount)
+        if padCount > 0, let first = onsetEnvelope.first {
+            for i in 0..<padCount { padded.append(first * Float(i) / Float(padCount)) }
         }
+        padded.append(contentsOf: onsetEnvelope)
+        if padCount > 0, let last = onsetEnvelope.last {
+            for i in 0..<padCount { padded.append(last * Float(padCount - i) / Float(padCount)) }
+        }
+        guard padded.count >= winLength else { return 120.0 }
 
-        var bestLag = minLag
+        let hannWindow = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: winLength, isHalfWindow: false)
+        var tgSum = [Float](repeating: 0, count: winLength - 1) // tgSum[i] corresponds to lag (i+1)
+        var windowCount = 0
+
+        var pos = 0
+        while pos + winLength <= padded.count {
+            var segment = [Float](repeating: 0, count: winLength)
+            for i in 0..<winLength { segment[i] = padded[pos + i] * hannWindow[i] }
+
+            // Direct per-lag dot-product autocorrelation — the same simple,
+            // already-shipped approach the earlier global-autocorrelation
+            // version used, just evaluated within one short local window
+            // instead of across the whole track.
+            var ac = [Float](repeating: 0, count: winLength - 1)
+            segment.withUnsafeBufferPointer { segPtr in
+                guard let base = segPtr.baseAddress else { return }
+                for lag in 1..<winLength {
+                    var score: Float = 0
+                    vDSP_dotpr(base, 1, base + lag, 1, &score, vDSP_Length(winLength - lag))
+                    ac[lag - 1] = score
+                }
+            }
+
+            // Per-window max-normalize (librosa's norm=inf) so louder
+            // windows don't dominate the cross-track average.
+            var maxAbs: Float = 0
+            for v in ac { maxAbs = max(maxAbs, abs(v)) }
+            if maxAbs > 0 {
+                for i in 0..<ac.count { ac[i] /= maxAbs }
+            }
+            for i in 0..<tgSum.count { tgSum[i] += ac[i] }
+
+            windowCount += 1
+            pos += strideFrames
+        }
+        guard windowCount > 0 else { return 120.0 }
+        let tgMean = tgSum.map { $0 / Float(windowCount) }
+
+        // Pick the lag maximizing log-compressed tempogram strength plus a
+        // log-normal prior centered on a common tempo — the actual fix for
+        // octave errors, replacing the old "pick strongest, then patch"
+        // heuristic entirely.
+        let logStartBpm = log2(Float(tempoPriorStartBpm))
+        var bestLag = 1
         var bestScore: Float = -.greatestFiniteMagnitude
-        for lag in minLag...maxLag {
-            let score = autocorrelation(atLag: lag)
+        for lag in 1..<winLength {
+            let bpm = 60.0 * fps / Double(lag)
+            guard bpm >= 20, bpm < tempoMaxBpm else { continue }
+            let logPrior = -0.5 * pow((log2(Float(bpm)) - logStartBpm) / Float(tempoPriorStdOctaves), 2)
+            let tgVal = max(0, tgMean[lag - 1])
+            let score = log1p(1_000_000 * tgVal) + logPrior
             if score > bestScore {
                 bestScore = score
                 bestLag = lag
             }
         }
 
-        // Octave-error correction. Check the half- and double-lag candidates
-        // against the *original* winning lag (not chained against each
-        // other, which would let the two checks fight and reverse one
-        // another in marginal cases). Bias toward the halved-lag (faster)
-        // reading, since that was the dominant failure mode observed
-        // (4 of 5 octave errors): switch there if its score clears a modest
-        // bar AND the candidate lag is comfortably clear of the search
-        // floor (see doc comment above — near-floor lags are unreliable).
-        // Only consider the doubled-lag (slower) reading if we didn't
-        // already switch to halved, and require a clearer margin — the
-        // reverse failure was rarer in the evidence available.
-        let originalLag = bestLag
-        let originalScore = bestScore
-        let halfLag = originalLag / 2
-        let doubleLag = originalLag * 2
-        // Lags within roughly one STFT window's worth of hops from the
-        // floor are where the window's own overlap-smoothing can inflate
-        // autocorrelation independent of real periodicity — require
-        // clearing that zone before trusting a halved-lag candidate.
-        let minReliableLag = minLag + (fftSize / hopSize)
-
-        var decision = "kept original"
-        var halfScoreForLog: Float?
-        var doubleScoreForLog: Float?
-
-        if halfLag >= minReliableLag {
-            let halfScore = autocorrelation(atLag: halfLag)
-            halfScoreForLog = halfScore
-            if halfScore >= originalScore * 0.7 {
-                bestLag = halfLag
-                bestScore = halfScore
-                decision = "switched to half-lag"
-            }
-        }
-        if bestLag == originalLag, doubleLag <= maxLag {
-            let doubleScore = autocorrelation(atLag: doubleLag)
-            doubleScoreForLog = doubleScore
-            if doubleScore > originalScore * 1.15 {
-                bestLag = doubleLag
-                bestScore = doubleScore
-                decision = "switched to double-lag"
-            }
-        }
-
         if let debugLog {
-            // Built from plain pre-computed String locals, not one big
-            // multi-interpolation literal — a first version of this with
-            // several `\(...)` substitutions plus inline `.map()`/ternaries
-            // in a single string literal made the Swift 5.10 type checker
-            // crash outright ("failed to produce diagnostic for expression")
-            // on Codemagic. Mechanical fix, not a logic change.
-            let origBpmText = String(60.0 * framesPerSecond / Double(originalLag))
-            let halfBpmText: String
-            if halfLag >= 1 {
-                halfBpmText = String(60.0 * framesPerSecond / Double(halfLag))
-            } else {
-                halfBpmText = "n/a"
-            }
-            let doubleBpmText = String(60.0 * framesPerSecond / Double(doubleLag))
-            let halfScoreText = halfScoreForLog != nil ? String(halfScoreForLog!) : "not checked (below minReliableLag)"
-            let doubleScoreText = doubleScoreForLog != nil ? String(doubleScoreForLog!) : "not checked"
-
+            let bpmText = String(60.0 * fps / Double(bestLag))
             var lines: [String] = []
-            lines.append("minLag=\(minLag) minReliableLag=\(minReliableLag) maxLag=\(maxLag)")
-            lines.append("original: lag=\(originalLag) bpm=\(origBpmText) score=\(originalScore)")
-            lines.append("half:     lag=\(halfLag) bpm=\(halfBpmText) score=\(halfScoreText)")
-            lines.append("double:   lag=\(doubleLag) bpm=\(doubleBpmText) score=\(doubleScoreText)")
-            lines.append("decision: \(decision) -> chosen lag=\(bestLag)")
+            lines.append("winLength=\(winLength) strideFrames=\(strideFrames) windowCount=\(windowCount)")
+            lines.append("chosen: lag=\(bestLag) bpm=\(bpmText) score=\(bestScore)")
             debugLog(lines.joined(separator: "\n"))
         }
 
-        var bpm = 60.0 * framesPerSecond / Double(bestLag)
+        var bpm = 60.0 * fps / Double(bestLag)
         if bpm < 40 { bpm *= 2 } // carried over directly from the Python post-processing step
         return (bpm * 10).rounded() / 10 // matches Python's round(bpm, 1)
     }
