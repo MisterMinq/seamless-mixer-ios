@@ -197,6 +197,21 @@ public enum AudioFeatureExtractor {
     /// a plausible tempo range. This is a simplified stand-in for librosa's
     /// dynamic-programming beat tracker: it estimates a tempo, not actual
     /// beat positions, which is all the schema needs (`tracks.bpm`).
+    ///
+    /// Includes an octave-error correction step (added 2026-08-08, after
+    /// `RealAudioValidationTests` found 5 of 8 real tracks had tempo off by
+    /// an exact factor of 2 from Python's reference — 4 detected at half
+    /// the true tempo, 1 at double). Plain autocorrelation is prone to
+    /// locking onto a harmonic of the true beat period rather than the
+    /// period itself, and the 4-vs-1 split observed matches the
+    /// well-documented tendency for backbeat-heavy music (funk/soul/pop —
+    /// what those 4 failing tracks were) to produce a *stronger*
+    /// autocorrelation peak at twice the true beat period than at the true
+    /// period, since a strong accent on every other beat looks like its own
+    /// periodicity. See CLAUDE.md Version History for the fixture tracks
+    /// and before/after numbers — this correction is evidence-based, not a
+    /// guess, but it's tuned against 8 tracks, not a large corpus; re-check
+    /// against the same fixtures after any further tuning.
     static func estimateTempo(onsetEnvelope: [Float], sampleRate: Double, hopSize: Int) -> Double {
         guard onsetEnvelope.count > 4 else { return 120.0 } // Python's except-fallback
 
@@ -207,16 +222,50 @@ public enum AudioFeatureExtractor {
         let maxLag = min(onsetEnvelope.count - 1, Int((60.0 / 40.0) * framesPerSecond))
         guard minLag < maxLag else { return 120.0 }
 
-        var bestLag = minLag
-        var bestScore: Float = -.greatestFiniteMagnitude
-        for lag in minLag...maxLag {
+        func autocorrelation(atLag lag: Int) -> Float {
             var score: Float = 0
             for i in 0..<(onsetEnvelope.count - lag) {
                 score += onsetEnvelope[i] * onsetEnvelope[i + lag]
             }
+            return score
+        }
+
+        var bestLag = minLag
+        var bestScore: Float = -.greatestFiniteMagnitude
+        for lag in minLag...maxLag {
+            let score = autocorrelation(atLag: lag)
             if score > bestScore {
                 bestScore = score
                 bestLag = lag
+            }
+        }
+
+        // Octave-error correction. Check the half- and double-lag candidates
+        // against the *original* winning lag (not chained against each
+        // other, which would let the two checks fight and reverse one
+        // another in marginal cases). Bias toward the halved-lag (faster)
+        // reading, since that was the dominant failure mode observed
+        // (4 of 5 octave errors): switch there if its score clears a modest
+        // bar. Only consider the doubled-lag (slower) reading if we didn't
+        // already switch to halved, and require a clearer margin — the
+        // reverse failure was rarer in the evidence available.
+        let originalLag = bestLag
+        let originalScore = bestScore
+        let halfLag = originalLag / 2
+        let doubleLag = originalLag * 2
+
+        if halfLag >= minLag {
+            let halfScore = autocorrelation(atLag: halfLag)
+            if halfScore >= originalScore * 0.7 {
+                bestLag = halfLag
+                bestScore = halfScore
+            }
+        }
+        if bestLag == originalLag, doubleLag <= maxLag {
+            let doubleScore = autocorrelation(atLag: doubleLag)
+            if doubleScore > originalScore * 1.15 {
+                bestLag = doubleLag
+                bestScore = doubleScore
             }
         }
 
