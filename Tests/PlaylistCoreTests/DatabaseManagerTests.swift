@@ -55,4 +55,43 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(sourceCount, 1)
         XCTAssertEqual(trackCount, 1)
     }
+
+    /// Covers `loadPlaylistDetail` (added for Playlist Detail, CLAUDE.md
+    /// Version History 0.16.0) — the first query in the codebase to
+    /// filter/order beyond a primary-key lookup, written as raw SQL rather
+    /// than GRDB's query-interface operators specifically because it was
+    /// new, untested territory (see that function's own doc comment).
+    /// Inserts tracks out of `position` order to confirm the query actually
+    /// sorts by `position`, not insertion order — the one thing a naive
+    /// "it returned some rows" check wouldn't catch.
+    func testLoadPlaylistDetailReturnsSourcesAndOrderedTracks() throws {
+        let db = try DatabaseManager(path: nil)
+
+        let playlistID: Int64 = try db.dbQueue.write { dbConn in
+            var trackA = Track(persistentID: 1, title: "A", artist: "X", album: "Y", genre: "Smooth jazz", durationSec: 200)
+            try trackA.insert(dbConn)
+            var trackB = Track(persistentID: 2, title: "B", artist: "Z", album: "W", genre: "Smooth jazz", durationSec: 180)
+            try trackB.insert(dbConn)
+
+            var playlist = Playlist(name: "Smooth jazz Seamless Mix", mode: .energyWave)
+            try playlist.insert(dbConn)
+
+            var source = PlaylistSource(playlistID: playlist.id!, sourceType: .genre, sourceValue: "smooth-jazz", sourceLabel: "Smooth jazz")
+            try source.insert(dbConn)
+
+            // Deliberately inserted out of position order.
+            var second = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 2, position: 1, crossfadeStartOffsetSec: 175, tempoNudgePct: 0)
+            try second.insert(dbConn)
+            var first = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 1, position: 0, crossfadeStartOffsetSec: 195, tempoNudgePct: 0.02)
+            try first.insert(dbConn)
+
+            return playlist.id!
+        }
+
+        let detail = try db.loadPlaylistDetail(playlistID: playlistID)
+        XCTAssertEqual(detail.sources.count, 1)
+        XCTAssertEqual(detail.sources.first?.sourceLabel, "Smooth jazz")
+        XCTAssertEqual(detail.tracks.map(\.track.title), ["A", "B"])
+        XCTAssertEqual(detail.tracks.map(\.position), [0, 1])
+    }
 }

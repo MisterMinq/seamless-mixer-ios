@@ -46,25 +46,28 @@ final class MixBuilder: ObservableObject {
     @Published private(set) var progressText = ""
     @Published var buildError: String?
 
-    /// - Returns: true on success (caller should navigate away/dismiss).
+    /// - Returns: the newly-created `Playlist` on success (caller navigates
+    ///   to Playlist Detail with it, per the confirmed Navigation Flow —
+    ///   Build Mix lands on Playlist Detail, not back on My Mixes), or `nil`
+    ///   on failure (`buildError` is set for the caller's alert).
     @discardableResult
-    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, store: PlaylistStore) async -> Bool {
-        guard !isBuilding else { return false }
+    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, store: PlaylistStore) async -> Playlist? {
+        guard !isBuilding else { return nil }
         isBuilding = true
         buildError = nil
         defer { isBuilding = false; progressText = "" }
 
         do {
-            try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, store: store)
+            let playlist = try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, store: store)
             store.refresh()
-            return true
+            return playlist
         } catch {
             buildError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            return false
+            return nil
         }
     }
 
-    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, store: PlaylistStore) async throws {
+    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, store: PlaylistStore) async throws -> Playlist {
         // Only genre sources are resolvable right now -- Artists/Albums/
         // Playlists don't have real pickers yet (see SourceSelectionHubView),
         // so `selectedSources` should never actually contain those types in
@@ -90,7 +93,7 @@ final class MixBuilder: ObservableObject {
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
         progressText = "Saving…"
-        try persist(sequenced: sequenced, sources: genreSources, mode: mode, db: db)
+        return try persist(sequenced: sequenced, sources: genreSources, mode: mode, db: db)
     }
 
     /// `PlaylistMode` (used by `Playlist`/the mode picker) and `SequencingMode`
@@ -196,7 +199,10 @@ final class MixBuilder: ObservableObject {
     ///   Revisit once that's built; a saved playlist is still a legitimate,
     ///   correctly-sequenced recipe without it, it just can't be *played*
     ///   with real crossfades yet.
-    private func persist(sequenced: [Track], sources: [SelectedSource], mode: PlaylistMode, db: DatabaseManager) throws {
+    /// - Returns: the persisted `Playlist`, with a real `id` set from the
+    ///   insert — Playlist Detail loads its sources/tracks by that id, so
+    ///   the caller needs the row back, not just a success flag.
+    private func persist(sequenced: [Track], sources: [SelectedSource], mode: PlaylistMode, db: DatabaseManager) throws -> Playlist {
         // PlaylistNaming only reads `.sourceLabel` off each element, so a
         // playlistID of 0 here is fine -- these never get persisted, just
         // used to compute the auto-generated name before the real
@@ -206,10 +212,10 @@ final class MixBuilder: ObservableObject {
         }
         let name = PlaylistNaming.title(for: namingSources)
 
-        try db.dbQueue.write { conn in
+        return try db.dbQueue.write { conn in
             var playlist = Playlist(name: name, mode: mode)
             try playlist.insert(conn)
-            guard let playlistID = playlist.id else { return }
+            guard let playlistID = playlist.id else { return playlist }
 
             for source in sources {
                 var playlistSource = PlaylistSource(
@@ -229,6 +235,8 @@ final class MixBuilder: ObservableObject {
                 )
                 try playlistTrack.insert(conn)
             }
+
+            return playlist
         }
     }
 }

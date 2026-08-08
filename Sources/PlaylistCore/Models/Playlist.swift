@@ -24,7 +24,7 @@ public enum PlaylistMode: String, Codable, CaseIterable, Hashable, DatabaseValue
 /// The "recipe" from ADR-4 — a saved seamless playlist. Track order and
 /// transition points live in `PlaylistTrack`, not here; this row is just
 /// identity, name, and mode.
-public struct Playlist: Codable, Equatable, Identifiable {
+public struct Playlist: Codable, Equatable, Hashable, Identifiable {
     public var id: Int64?
     /// Auto-generated at creation per the naming logic in CLAUDE.md
     /// ("Auto-naming logic" under the SQLite schema section) — always

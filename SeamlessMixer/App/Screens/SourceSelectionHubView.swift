@@ -16,13 +16,15 @@ import PlaylistCore
 /// in this app. **"Build Mix" is now wired for real** (see `MixBuilder`) —
 /// scoped to genre selections only; "whole library" still shows an error
 /// explaining it isn't supported yet, per the reasoning in `MixBuilder`'s
-/// own doc comment.
+/// own doc comment. On success this now pushes to `PlaylistDetailView` (the
+/// confirmed Navigation Flow's actual next step) rather than dismissing back
+/// to My Mixes, per CLAUDE.md's "tap Build Mix -> Playlist Detail".
 struct SourceSelectionHubView: View {
     let store: PlaylistStore
 
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
-    @Environment(\.dismiss) private var dismiss
+    @State private var builtPlaylist: Playlist?
 
     var body: some View {
         Group {
@@ -48,6 +50,9 @@ struct SourceSelectionHubView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(mixBuilder.buildError ?? "")
+        }
+        .navigationDestination(item: $builtPlaylist) { playlist in
+            PlaylistDetailView(playlist: playlist, store: store)
         }
     }
 
@@ -238,13 +243,13 @@ struct SourceSelectionHubView: View {
                         // duration setting isn't designed in that level of
                         // detail yet), so this is a placeholder, not a
                         // confirmed value.
-                        let succeeded = await mixBuilder.build(
+                        let playlist = await mixBuilder.build(
                             selectedSources: viewModel.selectedSources,
                             mode: viewModel.mode,
                             targetSeconds: 30 * 60,
                             store: store
                         )
-                        if succeeded { dismiss() }
+                        if let playlist { builtPlaylist = playlist }
                     }
                 } label: {
                     Text("Build Mix")
