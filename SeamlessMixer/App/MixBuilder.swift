@@ -86,11 +86,28 @@ final class MixBuilder: ObservableObject {
         }
 
         progressText = "Sequencing…"
-        let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: mode)
+        let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: sequencingMode(for: mode))
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
         progressText = "Saving…"
         try persist(sequenced: sequenced, sources: genreSources, mode: mode, db: db)
+    }
+
+    /// `PlaylistMode` (used by `Playlist`/the mode picker) and `SequencingMode`
+    /// (used by `Sequencer.sequence`) are two separate Swift enums with
+    /// identical cases/raw-values — a real, pre-existing duplication in the
+    /// codebase, not something introduced here. Worth unifying into one
+    /// type in a future pass; for now this is an explicit, exhaustive
+    /// mapping rather than a raw-value round-trip, so a future case added
+    /// to one enum but not the other fails to compile here instead of
+    /// silently mismatching.
+    private func sequencingMode(for mode: PlaylistMode) -> SequencingMode {
+        switch mode {
+        case .energyUp: return .energyUp
+        case .energyWave: return .energyWave
+        case .acousticToFusion: return .acousticToFusion
+        case .stay: return .stay
+        }
     }
 
     /// Genre-only filtered `MPMediaQuery`, de-duplicated across sources (a
@@ -118,7 +135,11 @@ final class MixBuilder: ObservableObject {
     private func upsertAndAnalyzeIfNeeded(item: MPMediaItem, db: DatabaseManager) async throws -> Track {
         let persistentID = Int64(bitPattern: item.persistentID)
 
-        let existing: Track? = try db.dbQueue.read { conn in
+        // GRDB resolves `dbQueue.read`/`.write` to their async overloads
+        // inside this `async` function (vs. the sync overloads `persist`
+        // uses below, since that function isn't `async`) -- both need an
+        // explicit `await`, not just `try`.
+        let existing: Track? = try await db.dbQueue.read { conn in
             try Track.fetchOne(conn, key: persistentID)
         }
         if let existing, existing.isAnalyzed {
@@ -155,10 +176,17 @@ final class MixBuilder: ObservableObject {
             }
         }
 
-        try db.dbQueue.write { conn in
-            try track.save(conn)
+        // `track` is captured as an immutable `let` copy here rather than
+        // the closure capturing the outer `var` directly -- GRDB's async
+        // `write` runs its closure in a concurrent context, and capturing a
+        // mutable var across that boundary is a Swift 6 language-mode
+        // error (already flagged as a warning under Swift 5), not just a
+        // style preference.
+        let finalTrack = track
+        try await db.dbQueue.write { conn in
+            try finalTrack.save(conn)
         }
-        return track
+        return finalTrack
     }
 
     /// - Note: crossfade/tempo-nudge values below are schema-valid
