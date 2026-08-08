@@ -7,16 +7,15 @@ import PlaylistCore
 /// Genres/Artists/Albums), the mode picker, and a sticky "Build Mix" bar.
 /// No search field, per the confirmed 2026-08-02 revision.
 ///
-/// **Scope of this slice:** the Hub only. Screen 2 (the per-category
-/// picker — A-Z rail for Artists/Albums, artwork grid for Playlists, plain
-/// list for Genres) is real, designed, but a separate, larger piece of
-/// work — tapping a category row here pushes to `CategoryPickerPlaceholderView`
-/// for now rather than the real picker, so the navigation shape exists and
-/// is testable without committing to the full picker in the same pass.
-/// Likewise, the chip row showing accumulated cross-category picks is only
-/// meaningful once Screen 2 exists to populate it — this pass only tracks
-/// the binary "whole library selected or not" needed to drive the Build
-/// Mix bar correctly.
+/// **Scope of this slice (revised):** Genres is now a real picker
+/// (`GenrePickerView`) with real selection state flowing back into this
+/// Hub's chip row and live "N selected" counts. Playlists/Artists/Albums
+/// still route to `CategoryPickerPlaceholderView` — their pickers need an
+/// A-Z rail (Artists/Albums) or an artwork grid (Playlists/Albums), each a
+/// separate, larger piece of work, same phased approach as everything else
+/// in this app. "Build Mix" itself is still a no-op — real selection state
+/// now exists to build a pool from, but wiring the actual analyze-and-
+/// sequence action is deliberately the next slice, not this one.
 struct SourceSelectionHubView: View {
     @StateObject private var viewModel = SourceSelectionViewModel()
 
@@ -42,6 +41,7 @@ struct SourceSelectionHubView: View {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.lg) {
                 allSongsRow
                 categoryRows
+                chipRow
                 modePicker
                 // Bottom padding so the sticky Build Mix bar doesn't cover
                 // the last row.
@@ -84,10 +84,18 @@ struct SourceSelectionHubView: View {
 
     private var categoryRows: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
-            categoryRow(title: "Playlists", icon: "music.note.list", count: viewModel.playlistCount)
-            categoryRow(title: "Genres", icon: "guitars", count: viewModel.genreCount)
-            categoryRow(title: "Artists", icon: "person.wave.2", count: viewModel.artistCount)
-            categoryRow(title: "Albums", icon: "square.stack", count: viewModel.albumCount)
+            categoryRow(title: "Playlists", icon: "music.note.list", count: viewModel.playlistCount, type: .playlist) {
+                CategoryPickerPlaceholderView(title: "Playlists")
+            }
+            categoryRow(title: "Genres", icon: "guitars", count: viewModel.genreCount, type: .genre) {
+                GenrePickerView(viewModel: viewModel)
+            }
+            categoryRow(title: "Artists", icon: "person.wave.2", count: viewModel.artistCount, type: .artist) {
+                CategoryPickerPlaceholderView(title: "Artists")
+            }
+            categoryRow(title: "Albums", icon: "square.stack", count: viewModel.albumCount, type: .album) {
+                CategoryPickerPlaceholderView(title: "Albums")
+            }
         }
         // "All Songs" combining with anything else is redundant, per the
         // confirmed design -- gray these out rather than letting both be
@@ -96,9 +104,16 @@ struct SourceSelectionHubView: View {
         .disabled(viewModel.useWholeLibrary)
     }
 
-    private func categoryRow(title: String, icon: String, count: Int) -> some View {
-        NavigationLink {
-            CategoryPickerPlaceholderView(title: title)
+    /// - Parameter type: which `SourceType` this row represents, used only
+    ///   to compute the live "N selected" badge from `viewModel.selectedSources`
+    ///   — the row's own picked-ness has no other bearing on navigation.
+    private func categoryRow<Destination: View>(
+        title: String, icon: String, count: Int, type: SourceType,
+        @ViewBuilder destination: () -> Destination
+    ) -> some View {
+        let selectedCount = viewModel.selectedCount(for: type)
+        return NavigationLink {
+            destination()
         } label: {
             HStack {
                 Image(systemName: icon)
@@ -108,9 +123,9 @@ struct SourceSelectionHubView: View {
                     .font(.body)
                     .foregroundStyle(DesignTokens.Color.textPrimary)
                 Spacer()
-                Text("\(count)")
+                Text(selectedCount > 0 ? "\(selectedCount) selected" : "\(count)")
                     .font(.footnote)
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                    .foregroundStyle(selectedCount > 0 ? DesignTokens.Color.primaryText : DesignTokens.Color.textSecondary)
                 Image(systemName: "chevron.right")
                     .font(.caption)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -120,6 +135,39 @@ struct SourceSelectionHubView: View {
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusMedium))
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - Chip row
+
+    /// "How do I see what I'm combining" across categories, per the
+    /// confirmed design — a horizontally-scrollable row of removable chips,
+    /// populated live as checkboxes are ticked on a category picker. Only
+    /// Genres can populate this so far (see scope note above).
+    @ViewBuilder
+    private var chipRow: some View {
+        if !viewModel.selectedSources.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: DesignTokens.Spacing.xs) {
+                    ForEach(viewModel.selectedSources) { source in
+                        HStack(spacing: DesignTokens.Spacing.xxs) {
+                            Text(source.label)
+                                .font(.footnote)
+                            Button {
+                                viewModel.toggle(source)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.footnote)
+                            }
+                        }
+                        .padding(.horizontal, DesignTokens.Spacing.sm)
+                        .padding(.vertical, DesignTokens.Spacing.xxs)
+                        .background(DesignTokens.Color.surfaceTint)
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                        .clipShape(Capsule())
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Mode picker
@@ -144,7 +192,7 @@ struct SourceSelectionHubView: View {
         VStack(spacing: DesignTokens.Spacing.xxs) {
             Divider()
             HStack {
-                Text(viewModel.hasSelection ? "1 source selected" : "No sources selected")
+                Text(selectionSummary)
                     .font(.footnote)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
                 Spacer()
@@ -162,6 +210,13 @@ struct SourceSelectionHubView: View {
             .padding(.bottom, DesignTokens.Spacing.xs)
         }
         .background(DesignTokens.Color.surface)
+    }
+
+    private var selectionSummary: String {
+        if viewModel.useWholeLibrary { return "Whole library selected" }
+        let count = viewModel.selectedSources.count
+        if count == 0 { return "No sources selected" }
+        return "\(count) source\(count == 1 ? "" : "s") selected"
     }
 
     // MARK: - Permission denied

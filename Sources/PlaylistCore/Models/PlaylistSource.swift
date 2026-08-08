@@ -6,7 +6,7 @@ import GRDB
 /// 2026-08-02 revision: a playlist can combine multiple sources (e.g. two
 /// genres, or a genre + an artist), not just one. Row count is what
 /// distinguishes a "continuous" (1 source) mix from a "combination" mix.
-public enum SourceType: String, Codable, CaseIterable, DatabaseValueConvertible {
+public enum SourceType: String, Codable, CaseIterable, Hashable, DatabaseValueConvertible {
     case playlist
     case songs
     case genre
