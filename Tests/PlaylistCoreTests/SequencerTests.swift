@@ -116,9 +116,24 @@ final class SequencerTests: XCTestCase {
         // Even with keepAll, ordering should still prefer harmonic/tempo
         // continuity over an arbitrary order -- sanity check it's not just
         // returning tracks in shuffle order untouched.
-        let start = makeTrack("start", bpm: 120, key: "8A", energy: 0.5, brightness: 0.5, duration: 180)
-        let close = makeTrack("close", bpm: 121, key: "8A", energy: 0.5, brightness: 0.5, duration: 180)
-        let far = makeTrack("far", bpm: 200, key: "3B", energy: 0.5, brightness: 0.5, duration: 180)
+        //
+        // Energies are deliberately NOT all equal: `sequence(...)` picks its
+        // starting track as whichever is closest to a normalized energy of
+        // 0.3, and ties there fall back to shuffle order. With all three
+        // tracks sharing one energy value, that pick was a coin flip on
+        // `seed` -- and if the algorithm happened to start on `far`, "close
+        // before far" could never hold (far already came first), which is
+        // exactly what a real Codemagic run caught (seed: 0 started on
+        // `far`, and the algorithm correctly chose `close` as the *next*
+        // best track after it -- the ordering logic was right, this test's
+        // fixture wasn't). Giving `start` a raw energy of 0.3 against
+        // `close`=0.0/`far`=1.0 means the pool's min-max normalization maps
+        // `start` to exactly 0.3 -- distance 0, an unambiguous minimum no
+        // other track can tie -- so `start` is guaranteed to lead regardless
+        // of shuffle order.
+        let start = makeTrack("start", bpm: 120, key: "8A", energy: 0.3, brightness: 0.5, duration: 180)
+        let close = makeTrack("close", bpm: 121, key: "8A", energy: 0.0, brightness: 0.5, duration: 180)
+        let far = makeTrack("far", bpm: 200, key: "3B", energy: 1.0, brightness: 0.5, duration: 180)
         let tracks = [start, far, close]
         let result = Sequencer.sequence(tracks: tracks, targetSeconds: 1, mode: .stay, seed: 0, keepAll: true)
         XCTAssertEqual(result.count, 3)
