@@ -37,7 +37,9 @@ struct MyMixesView: View {
                         Image(systemName: "gearshape")
                     }
                     .tint(DesignTokens.Color.primaryText)
-                    Button(action: {}) {
+                    NavigationLink {
+                        SourceSelectionHubView()
+                    } label: {
                         Image(systemName: "plus")
                     }
                     .tint(DesignTokens.Color.primaryText)
@@ -59,7 +61,9 @@ struct MyMixesView: View {
                 .foregroundStyle(DesignTokens.Color.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, DesignTokens.Spacing.xl)
-            Button(action: {}) {
+            NavigationLink {
+                SourceSelectionHubView()
+            } label: {
                 Label("New mix", systemImage: "plus")
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                     .padding(.horizontal, DesignTokens.Spacing.lg)

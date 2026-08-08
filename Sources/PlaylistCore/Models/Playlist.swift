@@ -4,7 +4,7 @@ import GRDB
 /// One of the four sequencing modes from Phase 1, carried through unchanged
 /// per Rule 4 ("don't relitigate"). Raw values match the exact strings already
 /// used in CLAUDE.md's schema and `--mode` flag in `playlist_mixer.py`.
-public enum PlaylistMode: String, Codable, CaseIterable, DatabaseValueConvertible {
+public enum PlaylistMode: String, Codable, CaseIterable, Hashable, DatabaseValueConvertible {
     case energyUp = "energy_up"
     case energyWave = "energy_wave"
     case acousticToFusion = "acoustic_to_fusion"
