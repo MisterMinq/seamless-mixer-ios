@@ -21,9 +21,17 @@ public struct Track: Codable, Equatable, Identifiable {
     public var bpm: Double?
     /// Camelot wheel code (e.g. "8A"), same convention as Phase 1's `camelot_code`.
     public var musicalKey: String?
-    /// 0...1
+    /// Raw RMS energy, unbounded — matches `TrackAnalyzer`'s raw output
+    /// directly, **not** rescaled to 0...1 (an earlier version of this
+    /// comment assumed otherwise, before `Sequencer` was written and this
+    /// got resolved — see `Sequencer.swift`'s "Normalization design note").
+    /// Normalization to 0...1 happens ephemerally, per candidate pool, at
+    /// sequencing time (`Sequencer.normalizeEnergyAndBrightness`) — not
+    /// here, since the "right" normalized value for a track depends on
+    /// which other tracks it's being sequenced alongside.
     public var energy: Double?
-    /// 0...1 — acoustic/electric proxy (spectral centroid), same role as Phase 1.
+    /// Raw mean spectral centroid in Hz (acoustic/electric proxy), unbounded
+    /// — same "raw, not pre-normalized" caveat as `energy` above.
     public var brightness: Double?
     public var durationSec: Double
 
