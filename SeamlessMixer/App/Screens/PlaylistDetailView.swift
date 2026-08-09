@@ -11,9 +11,11 @@ import PlaylistCore
 /// teal/gray connector-line treatment, and a footer line.
 ///
 /// **Deliberate, flagged simplifications for this slice:**
-/// - Favorite (star) and the "..." overflow sheet (Favourite/Share/Play
-///   Next/Rename/Refresh/Delete) are still no-ops, same pattern as
-///   `MyMixesView`'s row ellipsis — real wiring is its own later slice.
+/// - Favorite (star) is now wired for real (Tier 1 quick win, per
+///   `documentation/Editability_UX_Gap_Analysis.docx`) — see `isFavorite`
+///   below. The "..." overflow sheet (Favourite/Share/Play Next/Rename/
+///   Refresh/Delete) is still a no-op, same pattern as `MyMixesView`'s row
+///   ellipsis — that's Tier 2 in the same analysis, its own later slice.
 /// - The Play button is present but disabled, with a caption explaining
 ///   why: the AVAudioEngine mixing engine that would actually play a
 ///   blended set doesn't exist yet (still a first-pass design, per
@@ -27,6 +29,19 @@ struct PlaylistDetailView: View {
     let store: PlaylistStore
 
     @StateObject private var viewModel = PlaylistDetailViewModel()
+    // Seeded from `playlist.isFavorite` at init so the star renders correctly
+    // immediately, then updated optimistically on tap — `playlist` itself is
+    // a `let` snapshot from navigation, not observed, so it wouldn't reflect
+    // a toggle on its own even though `PlaylistStore.setFavorite` persists
+    // and refreshes the underlying data (My Mixes picks that up via
+    // `@ObservedObject`; this screen needs its own local copy).
+    @State private var isFavorite: Bool
+
+    init(playlist: Playlist, store: PlaylistStore) {
+        self.playlist = playlist
+        self.store = store
+        _isFavorite = State(initialValue: playlist.isFavorite)
+    }
 
     var body: some View {
         ScrollView {
@@ -52,8 +67,13 @@ struct PlaylistDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button(action: {}) {
-                    Image(systemName: playlist.isFavorite ? "star.fill" : "star")
+                Button {
+                    isFavorite.toggle()
+                    if let id = playlist.id {
+                        store.setFavorite(playlistID: id, isFavorite: isFavorite)
+                    }
+                } label: {
+                    Image(systemName: isFavorite ? "star.fill" : "star")
                 }
                 .tint(DesignTokens.Color.primaryText)
                 Button(action: {}) {

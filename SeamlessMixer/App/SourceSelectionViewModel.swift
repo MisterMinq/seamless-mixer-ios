@@ -51,6 +51,15 @@ final class SourceSelectionViewModel: ObservableObject {
     /// design ("Mode picker") — defaults to Energy Wave.
     @Published var mode: PlaylistMode = .energyWave
 
+    /// Target playlist length, in minutes. Previously hardcoded to 30 in
+    /// `MixBuilder`'s only caller with no real control anywhere (flagged as
+    /// a Tier 1 gap in `documentation/Editability_UX_Gap_Analysis.docx`) —
+    /// now a real Hub control; 30 stays the default so behavior is
+    /// unchanged unless the user actually adjusts it. Range/step (10...120,
+    /// by 5) mirrors `playlist_mixer.py`'s `--max-minutes` default cap of
+    /// 120 at the top end.
+    @Published var targetMinutes: Int = 30
+
     /// True once "Use your whole library" is picked — per the confirmed
     /// design, this clears/disables the four category rows since combining
     /// it with anything else is redundant.

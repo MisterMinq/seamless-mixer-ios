@@ -83,6 +83,7 @@ struct SourceSelectionHubView: View {
                 categoryRows
                 chipRow
                 modePicker
+                durationControl
                 // Bottom padding so the sticky Build Mix bar doesn't cover
                 // the last row.
                 Color.clear.frame(height: DesignTokens.Size.buttonHeightStandard + DesignTokens.Spacing.lg)
@@ -226,6 +227,24 @@ struct SourceSelectionHubView: View {
         }
     }
 
+    // MARK: - Duration control
+
+    /// Tier 1 quick win per `documentation/Editability_UX_Gap_Analysis.docx`
+    /// — `MixBuilder` already accepted `targetSeconds` as a parameter, this
+    /// screen just never gave the user a way to set it. 10...120 min, by 5,
+    /// matches `playlist_mixer.py`'s `--max-minutes` default cap at the top.
+    private var durationControl: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+            Text("Target length")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(DesignTokens.Color.textSecondary)
+            Stepper(value: $viewModel.targetMinutes, in: 10...120, step: 5) {
+                Text("\(viewModel.targetMinutes) min")
+                    .foregroundStyle(DesignTokens.Color.textPrimary)
+            }
+        }
+    }
+
     // MARK: - Build Mix bar
 
     private var buildMixBar: some View {
@@ -238,15 +257,10 @@ struct SourceSelectionHubView: View {
                 Spacer()
                 Button {
                     Task {
-                        // 30 min default target -- there's no duration
-                        // control on this screen yet (Playlist Detail /
-                        // duration setting isn't designed in that level of
-                        // detail yet), so this is a placeholder, not a
-                        // confirmed value.
                         let playlist = await mixBuilder.build(
                             selectedSources: viewModel.selectedSources,
                             mode: viewModel.mode,
-                            targetSeconds: 30 * 60,
+                            targetSeconds: Double(viewModel.targetMinutes * 60),
                             store: store
                         )
                         if let playlist { builtPlaylist = playlist }

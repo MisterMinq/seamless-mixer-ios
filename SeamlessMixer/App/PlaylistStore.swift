@@ -46,6 +46,26 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    /// Wires up the Favorite star (previously a no-op button in both
+    /// `PlaylistDetailView` and `MyMixesView`'s design, per the Tier 1 quick
+    /// win in `documentation/Editability_UX_Gap_Analysis.docx`). Re-fetches
+    /// the row fresh inside the write rather than trusting a possibly-stale
+    /// `Playlist` value passed in from a view.
+    func setFavorite(playlistID: Int64, isFavorite: Bool) {
+        guard let db else { return }
+        do {
+            try db.dbQueue.write { conn in
+                guard var playlist = try Playlist.fetchOne(conn, key: playlistID) else { return }
+                playlist.isFavorite = isFavorite
+                playlist.updatedAt = Date()
+                try playlist.update(conn)
+            }
+            refresh()
+        } catch {
+            loadError = "Couldn't update favorite: \(error.localizedDescription)"
+        }
+    }
+
     private static func databaseURL() throws -> URL {
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
