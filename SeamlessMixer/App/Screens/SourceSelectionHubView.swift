@@ -7,13 +7,13 @@ import PlaylistCore
 /// Genres/Artists/Albums), the mode picker, and a sticky "Build Mix" bar.
 /// No search field, per the confirmed 2026-08-02 revision.
 ///
-/// **Scope of this slice (revised):** Genres (`GenrePickerView`) and now
-/// Playlists (`PlaylistPickerView`, an artwork grid, no A-Z rail) are real
-/// pickers with selection state flowing back into this Hub's chip row and
-/// live "N selected" counts. Artists/Albums still route to
-/// `CategoryPickerPlaceholderView` — both need an A-Z index rail, a
-/// separate, larger piece of work, same phased approach as everything else
-/// in this app. **"Build Mix" is wired for real** (see `MixBuilder`) —
+/// **Scope of this slice (revised):** Genres (`GenrePickerView`), Playlists
+/// (`PlaylistPickerView`), and now Artists (`ArtistPickerView`, the first
+/// A-Z index rail in this codebase) are real pickers with selection state
+/// flowing back into this Hub's chip row and live "N selected" counts.
+/// Only Albums still routes to `CategoryPickerPlaceholderView` — it needs
+/// the same A-Z rail `ArtistPickerView` just established, plus an artwork
+/// grid on top of it. **"Build Mix" is wired for real** (see `MixBuilder`) —
 /// scoped to genre selections only; picking a playlist (or "whole library")
 /// still shows an error explaining it isn't supported yet, per the
 /// reasoning in `MixBuilder`'s own doc comment. On success this pushes to
@@ -132,7 +132,7 @@ struct SourceSelectionHubView: View {
                 GenrePickerView(viewModel: viewModel)
             }
             categoryRow(title: "Artists", icon: "person.wave.2", count: viewModel.artistCount, type: .artist) {
-                CategoryPickerPlaceholderView(title: "Artists")
+                ArtistPickerView(viewModel: viewModel)
             }
             categoryRow(title: "Albums", icon: "square.stack", count: viewModel.albumCount, type: .album) {
                 CategoryPickerPlaceholderView(title: "Albums")
