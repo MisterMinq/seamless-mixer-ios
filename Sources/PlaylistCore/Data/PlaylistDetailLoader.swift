@@ -89,4 +89,34 @@ extension DatabaseManager {
             }
         }
     }
+
+    /// Persists a manual drag-to-reorder on Playlist Detail — the other half
+    /// of the Tier 3 editability gap `removeTrack` above started closing
+    /// ("no manual reorder... affordance", CLAUDE.md's Rule 8). The caller
+    /// (`PlaylistDetailViewModel.moveTracks`) already reordered its own
+    /// local row array for an instant, optimistic UI update; this just
+    /// writes that same order's `position` values back to disk.
+    ///
+    /// `orderedPlaylistTrackIDs` is the full set of `playlist_tracks.id`
+    /// values for this playlist, in the caller's desired final order —
+    /// each row's `position` is set to its index in that array. Rows whose
+    /// `id` doesn't match anything in the playlist (shouldn't happen; the
+    /// caller always derives this list from what it just loaded) are
+    /// silently skipped rather than throwing, matching `removeTrack`'s
+    /// "defensive, not fatal" posture for a mismatch that should be
+    /// structurally impossible in practice.
+    public func reorderTracks(playlistID: Int64, orderedPlaylistTrackIDs: [Int64]) throws {
+        try dbQueue.write { conn in
+            for (index, playlistTrackID) in orderedPlaylistTrackIDs.enumerated() {
+                guard var track = try PlaylistTrack.fetchOne(
+                    conn, sql: "SELECT * FROM playlist_tracks WHERE id = ? AND playlist_id = ?",
+                    arguments: [playlistTrackID, playlistID]
+                ) else { continue }
+                if track.position != index {
+                    track.position = index
+                    try track.update(conn)
+                }
+            }
+        }
+    }
 }

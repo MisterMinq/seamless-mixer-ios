@@ -76,6 +76,29 @@ final class PlaylistDetailViewModel: ObservableObject {
         load(playlist: playlist, store: store)
     }
 
+    /// Manual drag-to-reorder, the other half of Tier 3's editability fix
+    /// (`removeTrack` above did the first half). Reorders `rows` locally
+    /// first — an instant, optimistic UI update the same instant `List`'s
+    /// own `.onMove` animation completes, matching the `isFavorite`/
+    /// `displayName` local-state pattern `PlaylistDetailView` already uses
+    /// elsewhere — then persists the same order via `PlaylistStore` without
+    /// waiting for or reloading from that write, since `rows` already
+    /// reflects the intended end state.
+    ///
+    /// Rebuilds each row with a recomputed `position` (0...n-1 in the new
+    /// order) so the displayed "1, 2, 3..." index column stays correct —
+    /// `PlaylistDetailRow.position` is a `let`, so this can't just mutate
+    /// the moved elements in place.
+    func moveTracks(from source: IndexSet, to destination: Int, playlist: Playlist, store: PlaylistStore) {
+        rows.move(fromOffsets: source, toOffset: destination)
+        rows = rows.enumerated().map { index, row in
+            PlaylistDetailRow(id: row.id, position: index, title: row.title, artist: row.artist, durationText: row.durationText)
+        }
+
+        guard let playlistID = playlist.id else { return }
+        store.reorderTracks(playlistID: playlistID, orderedPlaylistTrackIDs: rows.map(\.id))
+    }
+
     private static func formatDuration(_ seconds: Double) -> String {
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)

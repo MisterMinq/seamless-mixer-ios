@@ -133,4 +133,42 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(remaining.map(\.track.title), ["Track 1", "Track 3"])
         XCTAssertEqual(remaining.map(\.position), [0, 1])
     }
+
+    /// Covers `reorderTracks` (added for Playlist Detail's drag-to-reorder,
+    /// CLAUDE.md Version History 0.16.9) — inserts 3 tracks in their
+    /// original order, reorders them (moves the last track to the front,
+    /// mirroring what `PlaylistDetailViewModel.moveTracks`'s
+    /// `Array.move(fromOffsets:toOffset:)` would produce), and confirms the
+    /// persisted `position` values match the new order, not the original
+    /// insertion order.
+    func testReorderTracksUpdatesPositions() throws {
+        let db = try DatabaseManager(path: nil)
+
+        let (playlistID, originalIDs): (Int64, [Int64]) = try db.dbQueue.write { dbConn in
+            for id: Int64 in [1, 2, 3] {
+                var track = Track(persistentID: id, title: "Track \(id)", artist: "X", album: "Y", genre: "Smooth jazz", durationSec: 200)
+                try track.insert(dbConn)
+            }
+
+            var playlist = Playlist(name: "Smooth jazz Seamless Mix", mode: .energyWave)
+            try playlist.insert(dbConn)
+
+            var ids: [Int64] = []
+            for (trackID, position) in [(1, 0), (2, 1), (3, 2)] {
+                var playlistTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: Int64(trackID), position: position, crossfadeStartOffsetSec: 180, tempoNudgePct: 0)
+                try playlistTrack.insert(dbConn)
+                ids.append(playlistTrack.id!)
+            }
+
+            return (playlist.id!, ids)
+        }
+
+        // Move the last track (originally position 2) to the front.
+        let newOrder = [originalIDs[2], originalIDs[0], originalIDs[1]]
+        try db.reorderTracks(playlistID: playlistID, orderedPlaylistTrackIDs: newOrder)
+
+        let reordered = try db.loadPlaylistDetail(playlistID: playlistID).tracks
+        XCTAssertEqual(reordered.map(\.track.title), ["Track 3", "Track 1", "Track 2"])
+        XCTAssertEqual(reordered.map(\.position), [0, 1, 2])
+    }
 }

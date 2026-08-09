@@ -125,6 +125,22 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    /// The other half of the Tier 3 editability fix — persists a manual
+    /// drag-to-reorder. Same "no `refresh()`" reasoning as `removeTrack`:
+    /// reordering doesn't change anything `MyMixesView`'s rows display,
+    /// only `PlaylistDetailViewModel`'s own (already locally-updated) row
+    /// order matters here, and this call is fire-and-forget from its
+    /// perspective — the UI already reflects the new order optimistically
+    /// before this even runs.
+    func reorderTracks(playlistID: Int64, orderedPlaylistTrackIDs: [Int64]) {
+        guard let db else { return }
+        do {
+            try db.reorderTracks(playlistID: playlistID, orderedPlaylistTrackIDs: orderedPlaylistTrackIDs)
+        } catch {
+            loadError = "Couldn't save the new track order: \(error.localizedDescription)"
+        }
+    }
+
     private static func databaseURL() throws -> URL {
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,

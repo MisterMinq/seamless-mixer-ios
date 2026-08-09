@@ -27,11 +27,27 @@ import PlaylistCore
 ///   Rule 3's spirit, this screen doesn't pretend otherwise.
 /// - Collage artwork is the same flat placeholder tile `MyMixesView` uses,
 ///   not real per-track artwork compositing.
-/// - Each track row's "..." is a real `Menu` now too (Tier 3): "Remove from
-///   this mix" actually deletes the row and renumbers the rest, via
+/// - Each track row's "..." is a real `Menu` (Tier 3): "Remove from this
+///   mix" actually deletes the row and renumbers the rest, via
 ///   `PlaylistDetailViewModel.removeTrack`. "Play Next" stays visible but
-///   disabled, blocked on the not-yet-built playback queue. Manual reorder
-///   and adding a track to an already-built playlist are still not
+///   disabled, blocked on the not-yet-built playback queue.
+/// - **Manual drag-to-reorder is real now too** (Tier 3, the other half):
+///   the screen is a `List` (not a plain `VStack`) specifically so `.onMove`
+///   works, with an `EditButton` in the toolbar to enter/exit reorder mode
+///   — SwiftUI's standard pattern for this. **First use of `.onMove`/
+///   `EditButton` in this codebase, flagged as this slice's highest-risk
+///   part** (same "new territory, check here first" flagging
+///   `ArtistPickerView`'s A-Z rail got): untested outside Codemagic's
+///   compile/screenshot step, since neither proves drag actually reorders
+///   correctly or that the per-row `Menu` stays tappable while `EditMode`
+///   is active — that needs Andy's real-device check. Header/footer live in
+///   their own non-reorderable `Section`s with hidden separators/
+///   transparent backgrounds so they blend into the `List` the same way
+///   they looked in the old `ScrollView`+`VStack` layout; the teal/gray
+///   connector line moved from a separate view *between* rows into the
+///   bottom of each row itself, since `List` rows don't have a clean way to
+///   render a shared element spanning two adjacent rows. Adding a track to
+///   an already-built playlist (short of a full Refresh) is still not
 ///   implemented — see CLAUDE.md's Rule 8 gap list.
 struct PlaylistDetailView: View {
     let playlist: Playlist
@@ -61,29 +77,74 @@ struct PlaylistDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.lg) {
+        List {
+            // Header/loading/empty states each get their own `Section` with
+            // hidden separators and a clear row background so they blend
+            // into the `List` the same way they read in the old
+            // `ScrollView`+`VStack` layout, rather than looking like list
+            // rows themselves.
+            Section {
                 header
-                if viewModel.isLoading {
+            }
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+
+            if viewModel.isLoading {
+                Section {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .padding(.top, DesignTokens.Spacing.xl)
-                } else if viewModel.rows.isEmpty {
+                }
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            } else if viewModel.rows.isEmpty {
+                Section {
                     Text("This playlist has no tracks yet.")
                         .font(.body)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
-                } else {
-                    trackList
+                        .padding(.horizontal, DesignTokens.Spacing.md)
+                }
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            } else {
+                Section {
+                    ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
+                        trackRow(row, isLast: index == viewModel.rows.count - 1, isImminent: index == 0)
+                    }
+                    .onMove { source, destination in
+                        viewModel.moveTracks(from: source, to: destination, playlist: playlist, store: store)
+                    }
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+
+                Section {
                     footer
                 }
+                .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
-            .padding(DesignTokens.Spacing.md)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .background(DesignTokens.Color.background)
         .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
+                // Drag-to-reorder's entry point -- SwiftUI's standard
+                // pattern for a `List` with `.onMove`: toggles the
+                // environment's `editMode`, which `List` reads to show
+                // drag handles on rows with an `.onMove` modifier.
+                if !viewModel.rows.isEmpty {
+                    EditButton()
+                        .tint(DesignTokens.Color.primaryText)
+                }
                 Button {
                     isFavorite.toggle()
                     if let id = playlist.id {
@@ -123,6 +184,11 @@ struct PlaylistDetailView: View {
 
     // MARK: - Header
 
+    /// `.padding(...)` moved here from the old screen-level `ScrollView`
+    /// padding — the `List`'s header `Section` now uses zero `listRowInsets`
+    /// (so the artwork tile can stretch edge-to-edge like it always could),
+    /// which means header content that *should* stay inset needs its own
+    /// padding instead of inheriting it from a shared container.
     private var header: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
             RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
@@ -165,68 +231,68 @@ struct PlaylistDetailView: View {
             }
             .padding(.top, DesignTokens.Spacing.xs)
         }
+        .padding(DesignTokens.Spacing.md)
     }
 
     // MARK: - Track list
 
-    private var trackList: some View {
+    /// One track row plus (except for the last row) the teal/gray connector
+    /// beneath it — folded into a single row now that this screen is a
+    /// `List` rather than a `VStack` the connector could be threaded
+    /// between as its own sibling view. `isLast` skips the connector for
+    /// the final row (nothing to blend into); `isImminent` is true only for
+    /// the very first transition, same rule as the previous layout.
+    private func trackRow(_ row: PlaylistDetailRow, isLast: Bool, isImminent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
-                VStack(alignment: .leading, spacing: 0) {
-                    trackRow(row)
-                    if index < viewModel.rows.count - 1 {
-                        connector(isImminent: index == 0)
-                    }
-                }
-            }
-        }
-    }
-
-    private func trackRow(_ row: PlaylistDetailRow) -> some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            Text("\(row.position + 1)")
-                .font(.footnote)
-                .foregroundStyle(DesignTokens.Color.textSecondary)
-                .frame(width: 20, alignment: .trailing)
-
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
-                Text(row.title)
-                    .font(.body)
-                    .foregroundStyle(DesignTokens.Color.textPrimary)
-                    .lineLimit(1)
-                Text(row.artist)
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                Text("\(row.position + 1)")
                     .font(.footnote)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
-                    .lineLimit(1)
-            }
+                    .frame(width: 20, alignment: .trailing)
 
-            Spacer()
-
-            Text(row.durationText)
-                .font(.footnote)
-                .foregroundStyle(DesignTokens.Color.textSecondary)
-
-            Menu {
-                Button(role: .destructive) {
-                    viewModel.removeTrack(row: row, playlist: playlist, store: store)
-                } label: {
-                    Label("Remove from this mix", systemImage: "minus.circle")
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+                    Text(row.title)
+                        .font(.body)
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                        .lineLimit(1)
+                    Text(row.artist)
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .lineLimit(1)
                 }
-                // Blocked on the not-yet-built playback queue (per CLAUDE.md's
-                // Mixing Engine section) -- same "visible but disabled, not
-                // hidden" treatment `PlaylistOverflowSheet` already uses for
-                // Share/Play Next at the playlist level.
-                Button {} label: {
-                    Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                }
-                .disabled(true)
-            } label: {
-                Image(systemName: "ellipsis")
+
+                Spacer()
+
+                Text(row.durationText)
+                    .font(.footnote)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
-                    .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
+
+                Menu {
+                    Button(role: .destructive) {
+                        viewModel.removeTrack(row: row, playlist: playlist, store: store)
+                    } label: {
+                        Label("Remove from this mix", systemImage: "minus.circle")
+                    }
+                    // Blocked on the not-yet-built playback queue (per CLAUDE.md's
+                    // Mixing Engine section) -- same "visible but disabled, not
+                    // hidden" treatment `PlaylistOverflowSheet` already uses for
+                    // Share/Play Next at the playlist level.
+                    Button {} label: {
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                    .disabled(true)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
+                }
+            }
+            .padding(.vertical, DesignTokens.Spacing.xxs)
+
+            if !isLast {
+                connector(isImminent: isImminent)
             }
         }
-        .padding(.vertical, DesignTokens.Spacing.xxs)
     }
 
     /// Solid teal for the first transition (the one that would be imminent
