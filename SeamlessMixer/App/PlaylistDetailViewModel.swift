@@ -90,13 +90,20 @@ final class PlaylistDetailViewModel: ObservableObject {
     /// `PlaylistDetailRow.position` is a `let`, so this can't just mutate
     /// the moved elements in place.
     func moveTracks(from source: IndexSet, to destination: Int, playlist: Playlist, store: PlaylistStore) {
+        let previousOrder = rows.map(\.id)
+
         rows.move(fromOffsets: source, toOffset: destination)
         rows = rows.enumerated().map { index, row in
             PlaylistDetailRow(id: row.id, position: index, title: row.title, artist: row.artist, durationText: row.durationText)
         }
 
-        guard let playlistID = playlist.id else { return }
-        store.reorderTracks(playlistID: playlistID, orderedPlaylistTrackIDs: rows.map(\.id))
+        // `.onMove` can fire for a drag that ends up back at the same final
+        // order (e.g. a source row dropped immediately before/after its own
+        // original position resolves to an identical sequence) -- skip the
+        // write in that case rather than persisting a no-op.
+        let newOrder = rows.map(\.id)
+        guard newOrder != previousOrder, let playlistID = playlist.id else { return }
+        store.reorderTracks(playlistID: playlistID, orderedPlaylistTrackIDs: newOrder)
     }
 
     private static func formatDuration(_ seconds: Double) -> String {
