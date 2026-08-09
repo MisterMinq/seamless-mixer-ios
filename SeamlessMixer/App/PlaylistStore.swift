@@ -108,6 +108,23 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    /// Tier 3 editability fix, per `documentation/Editability_UX_Gap_Analysis.docx`
+    /// — removes a single track from a saved playlist's `playlist_tracks`
+    /// (`DatabaseManager.removeTrack` also renumbers the remaining
+    /// positions so there's no gap). Deliberately doesn't call `refresh()`:
+    /// unlike Favorite/Rename/Delete, removing a track doesn't change
+    /// anything `store.playlists`/`MyMixesView`'s rows display (no song
+    /// count shown there yet) — only `PlaylistDetailViewModel`'s own track
+    /// list needs to know, and it reloads itself right after calling this.
+    func removeTrack(playlistTrackID: Int64, fromPlaylistID playlistID: Int64) {
+        guard let db else { return }
+        do {
+            try db.removeTrack(playlistTrackID: playlistTrackID, fromPlaylistID: playlistID)
+        } catch {
+            loadError = "Couldn't remove track: \(error.localizedDescription)"
+        }
+    }
+
     private static func databaseURL() throws -> URL {
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,

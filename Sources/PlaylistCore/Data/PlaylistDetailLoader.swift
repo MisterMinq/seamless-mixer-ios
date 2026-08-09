@@ -53,4 +53,40 @@ extension DatabaseManager {
             return (sources, details)
         }
     }
+
+    /// Removes one track from an existing playlist and renumbers the
+    /// remaining tracks' `position` values to stay contiguous (0...n-1) —
+    /// the Tier 3 editability fix for the gap flagged in CLAUDE.md's Rule 8
+    /// ("no manual add/remove-track affordance"). Unlike `refresh` (which
+    /// rebuilds the whole track list from the playlist's stored sources),
+    /// this only touches the one row the user picked, leaving the rest of
+    /// the sequence untouched.
+    ///
+    /// Keyed off `playlist_tracks.id` (the row's own primary key) rather
+    /// than `track_persistent_id` — more precise, and avoids ambiguity if a
+    /// future change ever allowed a track to appear more than once.
+    /// `playlistID` is included in the `DELETE` as a defense-in-depth check,
+    /// not because it's strictly needed to disambiguate `id`.
+    ///
+    /// Same raw-SQL rationale as `loadPlaylistDetail` above: this deletes
+    /// and re-orders by something other than a plain primary-key lookup, so
+    /// it stays consistent with the project's established "raw SQL for
+    /// anything beyond `fetchOne(key:)`" precedent rather than reaching for
+    /// GRDB's query-interface operators for the first time here too.
+    public func removeTrack(playlistTrackID: Int64, fromPlaylistID playlistID: Int64) throws {
+        try dbQueue.write { conn in
+            try conn.execute(
+                sql: "DELETE FROM playlist_tracks WHERE id = ? AND playlist_id = ?",
+                arguments: [playlistTrackID, playlistID]
+            )
+
+            let remaining = try PlaylistTrack.fetchAll(
+                conn, sql: "SELECT * FROM playlist_tracks WHERE playlist_id = ? ORDER BY position", arguments: [playlistID]
+            )
+            for (index, var track) in remaining.enumerated() where track.position != index {
+                track.position = index
+                try track.update(conn)
+            }
+        }
+    }
 }

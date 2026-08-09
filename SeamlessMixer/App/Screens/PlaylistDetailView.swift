@@ -27,6 +27,12 @@ import PlaylistCore
 ///   Rule 3's spirit, this screen doesn't pretend otherwise.
 /// - Collage artwork is the same flat placeholder tile `MyMixesView` uses,
 ///   not real per-track artwork compositing.
+/// - Each track row's "..." is a real `Menu` now too (Tier 3): "Remove from
+///   this mix" actually deletes the row and renumbers the rest, via
+///   `PlaylistDetailViewModel.removeTrack`. "Play Next" stays visible but
+///   disabled, blocked on the not-yet-built playback queue. Manual reorder
+///   and adding a track to an already-built playlist are still not
+///   implemented — see CLAUDE.md's Rule 8 gap list.
 struct PlaylistDetailView: View {
     let playlist: Playlist
     let store: PlaylistStore
@@ -200,7 +206,21 @@ struct PlaylistDetailView: View {
                 .font(.footnote)
                 .foregroundStyle(DesignTokens.Color.textSecondary)
 
-            Button(action: {}) {
+            Menu {
+                Button(role: .destructive) {
+                    viewModel.removeTrack(row: row, playlist: playlist, store: store)
+                } label: {
+                    Label("Remove from this mix", systemImage: "minus.circle")
+                }
+                // Blocked on the not-yet-built playback queue (per CLAUDE.md's
+                // Mixing Engine section) -- same "visible but disabled, not
+                // hidden" treatment `PlaylistOverflowSheet` already uses for
+                // Share/Play Next at the playlist level.
+                Button {} label: {
+                    Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }
+                .disabled(true)
+            } label: {
                 Image(systemName: "ellipsis")
                     .foregroundStyle(DesignTokens.Color.textSecondary)
                     .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)

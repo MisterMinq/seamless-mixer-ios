@@ -94,4 +94,43 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(detail.tracks.map(\.track.title), ["A", "B"])
         XCTAssertEqual(detail.tracks.map(\.position), [0, 1])
     }
+
+    /// Covers `removeTrack` (added for Playlist Detail's per-track "..."
+    /// menu, CLAUDE.md Version History 0.16.7) — inserts 3 tracks at
+    /// positions 0/1/2, removes the middle one, and confirms both halves of
+    /// the contract: the row is actually gone, and the remaining two are
+    /// renumbered to stay contiguous (0/1, not 0/2) rather than leaving a
+    /// gap — the renumbering is the part a naive "row count decreased by
+    /// one" check wouldn't catch.
+    func testRemoveTrackDeletesAndRenumbersPositions() throws {
+        let db = try DatabaseManager(path: nil)
+
+        let playlistID: Int64 = try db.dbQueue.write { dbConn in
+            for id: Int64 in [1, 2, 3] {
+                var track = Track(persistentID: id, title: "Track \(id)", artist: "X", album: "Y", genre: "Smooth jazz", durationSec: 200)
+                try track.insert(dbConn)
+            }
+
+            var playlist = Playlist(name: "Smooth jazz Seamless Mix", mode: .energyWave)
+            try playlist.insert(dbConn)
+
+            for (trackID, position) in [(1, 0), (2, 1), (3, 2)] {
+                var playlistTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: Int64(trackID), position: position, crossfadeStartOffsetSec: 180, tempoNudgePct: 0)
+                try playlistTrack.insert(dbConn)
+            }
+
+            return playlist.id!
+        }
+
+        let middleTrackID = try db.dbQueue.read { dbConn -> Int64 in
+            let row = try PlaylistTrack.fetchOne(dbConn, sql: "SELECT * FROM playlist_tracks WHERE playlist_id = ? AND track_persistent_id = 2", arguments: [playlistID])
+            return row!.id!
+        }
+
+        try db.removeTrack(playlistTrackID: middleTrackID, fromPlaylistID: playlistID)
+
+        let remaining = try db.loadPlaylistDetail(playlistID: playlistID).tracks
+        XCTAssertEqual(remaining.map(\.track.title), ["Track 1", "Track 3"])
+        XCTAssertEqual(remaining.map(\.position), [0, 1])
+    }
 }
