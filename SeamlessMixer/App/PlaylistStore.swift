@@ -66,6 +66,48 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    /// Tier 2 quick win, per `documentation/Editability_UX_Gap_Analysis.docx`
+    /// — the confirmed overflow-sheet "Rename" action. Empty/whitespace-only
+    /// names are ignored rather than silently saved, since the auto-name is
+    /// always a reasonable fallback and an accidental blank save would be
+    /// hard to recover from without this same sheet.
+    func rename(playlistID: Int64, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let db, !trimmed.isEmpty else { return }
+        do {
+            try db.dbQueue.write { conn in
+                guard var playlist = try Playlist.fetchOne(conn, key: playlistID) else { return }
+                playlist.name = trimmed
+                playlist.updatedAt = Date()
+                try playlist.update(conn)
+            }
+            refresh()
+        } catch {
+            loadError = "Couldn't rename mix: \(error.localizedDescription)"
+        }
+    }
+
+    /// Tier 2 quick win — the confirmed overflow-sheet "Delete" action.
+    /// `playlist_sources`/`playlist_tracks` rows are declared with
+    /// `ON DELETE CASCADE` against `playlists.id` in the migration, so
+    /// deleting the playlist row here is expected to clean those up too
+    /// without a separate delete per table -- not independently re-verified
+    /// against a real device yet, same category of gap as everything else
+    /// MediaPlayer/database-touching in this app so far.
+    func delete(playlistID: Int64) {
+        guard let db else { return }
+        do {
+            try db.dbQueue.write { conn in
+                if let playlist = try Playlist.fetchOne(conn, key: playlistID) {
+                    try playlist.delete(conn)
+                }
+            }
+            refresh()
+        } catch {
+            loadError = "Couldn't delete mix: \(error.localizedDescription)"
+        }
+    }
+
     private static func databaseURL() throws -> URL {
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,

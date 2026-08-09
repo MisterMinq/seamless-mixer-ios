@@ -11,11 +11,14 @@ import PlaylistCore
 /// teal/gray connector-line treatment, and a footer line.
 ///
 /// **Deliberate, flagged simplifications for this slice:**
-/// - Favorite (star) is now wired for real (Tier 1 quick win, per
-///   `documentation/Editability_UX_Gap_Analysis.docx`) — see `isFavorite`
-///   below. The "..." overflow sheet (Favourite/Share/Play Next/Rename/
-///   Refresh/Delete) is still a no-op, same pattern as `MyMixesView`'s row
-///   ellipsis — that's Tier 2 in the same analysis, its own later slice.
+/// - Favorite (star) and the "..." overflow sheet (`PlaylistOverflowSheet`
+///   — Favourite/Rename/Refresh/Delete real, Share/Play Next still disabled
+///   placeholders) are both wired for real now, per Tiers 1 and 2 of
+///   `documentation/Editability_UX_Gap_Analysis.docx`. Rename and Refresh
+///   both change something this screen displays (`displayName`, the track
+///   list) without this screen being told directly — see `displayName`'s
+///   and the sheet's `onDismiss` doc comments below for how that's kept in
+///   sync without this view observing `store.playlists` itself.
 /// - The Play button is present but disabled, with a caption explaining
 ///   why: the AVAudioEngine mixing engine that would actually play a
 ///   blended set doesn't exist yet (still a first-pass design, per
@@ -36,11 +39,19 @@ struct PlaylistDetailView: View {
     // and refreshes the underlying data (My Mixes picks that up via
     // `@ObservedObject`; this screen needs its own local copy).
     @State private var isFavorite: Bool
+    /// Same reasoning as `isFavorite` above — `playlist.name` is a stale
+    /// snapshot, so Rename (via `PlaylistOverflowSheet`) updates this local
+    /// copy through its `onRenamed` callback rather than this view somehow
+    /// re-reading `playlist` after the fact.
+    @State private var displayName: String
+    @State private var showOverflow = false
+    @Environment(\.dismiss) private var dismiss
 
     init(playlist: Playlist, store: PlaylistStore) {
         self.playlist = playlist
         self.store = store
         _isFavorite = State(initialValue: playlist.isFavorite)
+        _displayName = State(initialValue: playlist.name)
     }
 
     var body: some View {
@@ -63,7 +74,7 @@ struct PlaylistDetailView: View {
             .padding(DesignTokens.Spacing.md)
         }
         .background(DesignTokens.Color.background)
-        .navigationTitle(playlist.name)
+        .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -76,7 +87,9 @@ struct PlaylistDetailView: View {
                     Image(systemName: isFavorite ? "star.fill" : "star")
                 }
                 .tint(DesignTokens.Color.primaryText)
-                Button(action: {}) {
+                Button {
+                    showOverflow = true
+                } label: {
                     Image(systemName: "ellipsis.circle")
                 }
                 .tint(DesignTokens.Color.primaryText)
@@ -84,6 +97,21 @@ struct PlaylistDetailView: View {
         }
         .task {
             viewModel.load(playlist: playlist, store: store)
+        }
+        // `onDismiss` re-loads regardless of which action was taken (Rename/
+        // Refresh/neither) -- Refresh replaces this playlist's tracks, so
+        // the track list/subtitle need a fresh read; re-running the same
+        // load for a plain Rename or a dismiss-without-action is a cheap,
+        // harmless no-op by comparison, and simpler than threading a
+        // "did anything actually change" flag back out of the sheet.
+        .sheet(isPresented: $showOverflow, onDismiss: {
+            viewModel.load(playlist: playlist, store: store)
+        }) {
+            PlaylistOverflowSheet(
+                playlist: playlist, store: store,
+                onRenamed: { displayName = $0 },
+                onDeleted: { dismiss() }
+            )
         }
     }
 
@@ -102,7 +130,7 @@ struct PlaylistDetailView: View {
                 )
 
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
-                Text(playlist.name)
+                Text(displayName)
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(DesignTokens.Color.textPrimary)
                 if !viewModel.subtitle.isEmpty {

@@ -96,6 +96,108 @@ final class MixBuilder: ObservableObject {
         return try persist(sequenced: sequenced, sources: genreSources, mode: mode, db: db)
     }
 
+    /// Re-runs sequencing for an already-saved playlist against its own
+    /// stored `playlist_sources` and replaces its `playlist_tracks` —
+    /// the confirmed "Refresh" overflow-sheet action, and the one Tier 2
+    /// item `documentation/Editability_UX_Gap_Analysis.docx` calls out as
+    /// most directly delivering on the editability principle ("this is
+    /// exactly why the playlist_sources table exists"). Deliberately
+    /// reuses `resolveMediaItems`/`upsertAndAnalyzeIfNeeded`/
+    /// `sequencingMode` rather than duplicating them — the only genuinely
+    /// new piece here is replacing the track rows instead of inserting a
+    /// new playlist.
+    ///
+    /// - Note: target duration was never persisted per-playlist (`Playlist`
+    ///   has no such column — see CLAUDE.md's schema section), so this
+    ///   approximates it from the *current* track list's total duration
+    ///   rather than the value used when the playlist was first built,
+    ///   which keeps a refresh roughly the same length as before without
+    ///   a schema change. Flagged as a deliberate simplification, not an
+    ///   oversight — worth a real `target_seconds` column if this proves
+    ///   to matter in practice.
+    @discardableResult
+    func refresh(playlist: Playlist, store: PlaylistStore) async -> Bool {
+        guard !isBuilding else { return false }
+        isBuilding = true
+        buildError = nil
+        defer { isBuilding = false; progressText = "" }
+
+        do {
+            try await performRefresh(playlist: playlist, store: store)
+            store.refresh()
+            return true
+        } catch {
+            buildError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return false
+        }
+    }
+
+    private func performRefresh(playlist: Playlist, store: PlaylistStore) async throws {
+        guard let db = store.db, let playlistID = playlist.id else { throw BuildError.databaseUnavailable }
+
+        let detail = try db.loadPlaylistDetail(playlistID: playlistID)
+
+        // Same restriction as a fresh Build Mix -- only genre sources are
+        // resolvable right now. A playlist built entirely from a
+        // playlist/artist/album source (not possible yet, since those
+        // pickers don't feed MixBuilder either) would fail here with the
+        // same error Build Mix already shows for that case.
+        let genreSources = detail.sources.filter { $0.sourceType == .genre }
+        guard !genreSources.isEmpty else { throw BuildError.noSupportedSources }
+
+        let selectedSources = genreSources.map {
+            SelectedSource(id: "genre:\($0.sourceValue)", type: .genre, label: $0.sourceLabel)
+        }
+
+        progressText = "Finding songs…"
+        let items = resolveMediaItems(for: selectedSources)
+        guard !items.isEmpty else { throw BuildError.emptyPool }
+
+        var pool: [Track] = []
+        for (index, item) in items.enumerated() {
+            progressText = "Analyzing \(index + 1) of \(items.count)…"
+            let track = try await upsertAndAnalyzeIfNeeded(item: item, db: db)
+            pool.append(track)
+        }
+
+        let currentDuration = detail.tracks.reduce(0) { $0 + $1.track.durationSec }
+        let targetSeconds = currentDuration > 0 ? currentDuration : 30 * 60
+
+        progressText = "Sequencing…"
+        let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: sequencingMode(for: playlist.mode))
+        guard !sequenced.isEmpty else { throw BuildError.emptyPool }
+
+        progressText = "Saving…"
+        try replaceTracks(playlistID: playlistID, sequenced: sequenced, db: db)
+    }
+
+    /// Deletes the playlist's existing `playlist_tracks` rows (raw SQL,
+    /// same "first non-primary-key query, lower risk as plain SQL" reasoning
+    /// `PlaylistDetailLoader` already used) and inserts the newly sequenced
+    /// ones — the playlist's own row (name/mode/sources/id) is untouched,
+    /// only `updated_at` bumps.
+    private func replaceTracks(playlistID: Int64, sequenced: [Track], db: DatabaseManager) throws {
+        try db.dbQueue.write { conn in
+            try conn.execute(sql: "DELETE FROM playlist_tracks WHERE playlist_id = ?", arguments: [playlistID])
+
+            for (index, track) in sequenced.enumerated() {
+                var playlistTrack = PlaylistTrack(
+                    playlistID: playlistID,
+                    trackPersistentID: track.persistentID,
+                    position: index,
+                    crossfadeStartOffsetSec: max(0, track.durationSec - 5),
+                    tempoNudgePct: 0
+                )
+                try playlistTrack.insert(conn)
+            }
+
+            if var updatedPlaylist = try Playlist.fetchOne(conn, key: playlistID) {
+                updatedPlaylist.updatedAt = Date()
+                try updatedPlaylist.update(conn)
+            }
+        }
+    }
+
     /// `PlaylistMode` (used by `Playlist`/the mode picker) and `SequencingMode`
     /// (used by `Sequencer.sequence`) are two separate Swift enums with
     /// identical cases/raw-values — a real, pre-existing duplication in the

@@ -15,6 +15,10 @@ import PlaylistCore
 /// caller to shape its API around yet (same reasoning `Sequencer.sequence`'s
 /// doc comment gives for not returning an exclusion count). Revisit once
 /// Source Selection exists and playlists have real sources to describe.
+///
+/// Rows are now tappable through to `PlaylistDetailView`, and the "..."
+/// button opens the real `PlaylistOverflowSheet` (Favourite/Rename/Refresh/
+/// Delete) — both previously missing, see `MixRow`'s own doc comment.
 struct MyMixesView: View {
     @ObservedObject var store: PlaylistStore
 
@@ -117,7 +121,7 @@ struct MyMixesView: View {
 
             Section {
                 ForEach(store.playlists) { playlist in
-                    MixRow(playlist: playlist)
+                    MixRow(playlist: playlist, store: store)
                 }
             }
         }
@@ -139,44 +143,67 @@ struct MyMixesView: View {
 /// mode + trailing overflow. Real per-track artwork compositing is future
 /// work; this is a flat placeholder tile using the same corner radius token
 /// real artwork will use later, so the layout doesn't shift once it lands.
+///
+/// **Two things wired this slice, both previously missing:** the row is
+/// now a real `NavigationLink` to `PlaylistDetailView` — existing playlists
+/// were unreachable from this screen before (only a freshly-built one,
+/// landed on straight from Source Selection, had a path to Playlist
+/// Detail). And the "..." button now presents the shared
+/// `PlaylistOverflowSheet` instead of doing nothing. `.buttonStyle(.borderless)`
+/// on the ellipsis is what keeps its tap from also triggering the row's
+/// own navigation — the standard SwiftUI pattern for a secondary button
+/// inside a `List` row that's also a `NavigationLink`.
 private struct MixRow: View {
     let playlist: Playlist
+    let store: PlaylistStore
+
+    @State private var showOverflow = false
 
     var body: some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
-                .fill(DesignTokens.Color.surfaceTint)
-                .frame(width: 56, height: 56)
-                .overlay(
-                    Image(systemName: "music.note.list")
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                )
+        NavigationLink {
+            PlaylistDetailView(playlist: playlist, store: store)
+        } label: {
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
+                    .fill(DesignTokens.Color.surfaceTint)
+                    .frame(width: 56, height: 56)
+                    .overlay(
+                        Image(systemName: "music.note.list")
+                            .foregroundStyle(DesignTokens.Color.primaryText)
+                    )
 
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
-                Text(playlist.name)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(DesignTokens.Color.textPrimary)
-                Text(playlist.mode.displayName)
-                    .font(.footnote)
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
-            }
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+                    Text(playlist.name)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                    Text(playlist.mode.displayName)
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                }
 
-            Spacer()
+                Spacer()
 
-            if playlist.isFavorite {
-                Image(systemName: "star.fill")
-                    .foregroundStyle(DesignTokens.Color.primary)
-                    .font(.caption)
-            }
+                if playlist.isFavorite {
+                    Image(systemName: "star.fill")
+                        .foregroundStyle(DesignTokens.Color.primary)
+                        .font(.caption)
+                }
 
-            Button(action: {}) {
-                Image(systemName: "ellipsis")
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
-                    .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
+                Button {
+                    showOverflow = true
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
+                }
+                .buttonStyle(.borderless)
             }
         }
         .padding(.vertical, DesignTokens.Spacing.xxs)
         .listRowBackground(DesignTokens.Color.surface)
+        .sheet(isPresented: $showOverflow) {
+            PlaylistOverflowSheet(playlist: playlist, store: store)
+        }
     }
 }
 
