@@ -8,16 +8,18 @@ import PlaylistCore
 /// (for anything not already analyzed) -> `Sequencer` -> persistence via
 /// `DatabaseManager`.
 ///
-/// **Deliberately scoped to per-source (genre) selections only, not "whole
-/// library."** Andy's real library likely runs to hundreds/thousands of
-/// tracks (the Source Selection design notes reference "hundreds of
-/// artists" alone). Inline-analyzing that much real audio synchronously the
-/// first time this code path ever runs would repeat the exact mistake this
-/// project already learned to avoid — Rule 6's sandbox RAM ceiling, and the
-/// deliberately-8-track-not-whole-library real-audio validation set. "Whole
-/// library" needs the proper background-scan UX (First-Run Library
-/// Analysis) first; this is a smaller, safer first cut that proves the
-/// pipeline works before that bigger piece gets built.
+/// **Resolves all four per-source selection types now (genre, playlist,
+/// artist, album) — still deliberately excludes "whole library."** Andy's
+/// real library likely runs to hundreds/thousands of tracks (the Source
+/// Selection design notes reference "hundreds of artists" alone).
+/// Inline-analyzing that much real audio synchronously the first time this
+/// code path ever runs would repeat the exact mistake this project already
+/// learned to avoid — Rule 6's sandbox RAM ceiling, and the
+/// deliberately-8-track-not-whole-library real-audio validation set. A
+/// single genre/artist/album/playlist is a naturally bounded pool the same
+/// way genre-only was, so extending resolution to all four carries the same
+/// risk profile that already shipped; "whole library" specifically still
+/// needs the proper background-scan UX (First-Run Library Analysis) first.
 ///
 /// Entirely unverified against real data — this environment has no media
 /// library and Codemagic's Simulator build has none either, same category
@@ -33,7 +35,7 @@ final class MixBuilder: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .noSupportedSources:
-                return "Only genres can be used to build a mix so far — playlists, artists, albums, and \"whole library\" aren't wired up yet."
+                return "\"Use your whole library\" isn't wired up yet — pick one or more playlists, genres, artists, or albums instead."
             case .emptyPool:
                 return "None of the selected songs could be used for a seamless mix."
             case .databaseUnavailable:
@@ -68,17 +70,17 @@ final class MixBuilder: ObservableObject {
     }
 
     private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, store: PlaylistStore) async throws -> Playlist {
-        // Only genre sources are resolvable right now -- Artists/Albums/
-        // Playlists don't have real pickers yet (see SourceSelectionHubView),
-        // so `selectedSources` should never actually contain those types in
-        // practice, but filtering defensively here rather than assuming.
-        let genreSources = selectedSources.filter { $0.type == .genre }
-        guard !genreSources.isEmpty else { throw BuildError.noSupportedSources }
+        // `.songs` ("whole library") is the one remaining unsupported type —
+        // it's never actually produced by `SelectedSource` today (whole
+        // library is its own `useWholeLibrary` toggle, not a picked source),
+        // but filtering defensively here rather than assuming that stays true.
+        let resolvableSources = selectedSources.filter { $0.type != .songs }
+        guard !resolvableSources.isEmpty else { throw BuildError.noSupportedSources }
 
         guard let db = store.db else { throw BuildError.databaseUnavailable }
 
         progressText = "Finding songs…"
-        let items = resolveMediaItems(for: genreSources)
+        let items = resolveMediaItems(for: resolvableSources)
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
         var pool: [Track] = []
@@ -93,7 +95,7 @@ final class MixBuilder: ObservableObject {
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
         progressText = "Saving…"
-        return try persist(sequenced: sequenced, sources: genreSources, mode: mode, db: db)
+        return try persist(sequenced: sequenced, sources: resolvableSources, mode: mode, db: db)
     }
 
     /// Re-runs sequencing for an already-saved playlist against its own
@@ -137,17 +139,11 @@ final class MixBuilder: ObservableObject {
 
         let detail = try db.loadPlaylistDetail(playlistID: playlistID)
 
-        // Same restriction as a fresh Build Mix -- only genre sources are
-        // resolvable right now. A playlist built entirely from a
-        // playlist/artist/album source (not possible yet, since those
-        // pickers don't feed MixBuilder either) would fail here with the
-        // same error Build Mix already shows for that case.
-        let genreSources = detail.sources.filter { $0.sourceType == .genre }
-        guard !genreSources.isEmpty else { throw BuildError.noSupportedSources }
-
-        let selectedSources = genreSources.map {
-            SelectedSource(id: "genre:\($0.sourceValue)", type: .genre, label: $0.sourceLabel)
-        }
+        // Same `.songs` ("whole library") exclusion as a fresh Build Mix --
+        // see `selectedSource(from:)` for how each stored `PlaylistSource`
+        // row gets turned back into a resolvable `SelectedSource`.
+        let selectedSources = detail.sources.compactMap(selectedSource(from:))
+        guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
 
         progressText = "Finding songs…"
         let items = resolveMediaItems(for: selectedSources)
@@ -215,17 +211,81 @@ final class MixBuilder: ObservableObject {
         }
     }
 
-    /// Genre-only filtered `MPMediaQuery`, de-duplicated across sources (a
-    /// song could in principle match more than one selected genre-ish
-    /// grouping, though unlikely for genres specifically).
+    /// Reconstructs a resolvable `SelectedSource` from a saved
+    /// `PlaylistSource` row, the inverse of `persist`'s `sourceValue`
+    /// encoding below — genres store their name directly (the natural,
+    /// stable lookup key), everything else stores its `persistentID` as a
+    /// string (per `PlaylistSource.sourceValue`'s own doc comment: "a genre
+    /// name, or an artist's/playlist's/album's persistent ID as a string").
+    /// Returns `nil` for `.songs` rows (shouldn't exist, since "whole
+    /// library" was never persisted as a `PlaylistSource`) or a
+    /// non-genre row whose `sourceValue` doesn't parse as a persistent ID
+    /// (defensive against a malformed/pre-this-change row) rather than
+    /// crashing — `Refresh` simply won't be able to re-resolve that one
+    /// source, same "set aside, don't block" spirit as everywhere else in
+    /// this app that deals with a partially-unusable pool.
+    private func selectedSource(from playlistSource: PlaylistSource) -> SelectedSource? {
+        switch playlistSource.sourceType {
+        case .genre:
+            return SelectedSource(id: "genre:\(playlistSource.sourceValue)", type: .genre, label: playlistSource.sourceLabel)
+        case .artist, .album, .playlist:
+            guard let persistentID = MPMediaEntityPersistentID(playlistSource.sourceValue) else { return nil }
+            return SelectedSource(
+                id: "\(playlistSource.sourceType.rawValue):\(persistentID)", type: playlistSource.sourceType,
+                label: playlistSource.sourceLabel, persistentID: persistentID
+            )
+        case .songs:
+            return nil
+        }
+    }
+
+    /// Resolves each selected source to its real `MPMediaItem`s, switching
+    /// on `SourceType` since each needs a different `MPMediaQuery` shape —
+    /// de-duplicated across sources (a song could belong to more than one
+    /// selected grouping at once, e.g. an artist *and* one of their albums
+    /// both picked together).
     private func resolveMediaItems(for sources: [SelectedSource]) -> [MPMediaItem] {
         var items: [MPMediaItem] = []
         var seenIDs = Set<MPMediaEntityPersistentID>()
-        for source in sources {
-            let query = MPMediaQuery.songs()
-            query.addFilterPredicate(MPMediaPropertyPredicate(value: source.label, forProperty: MPMediaItemPropertyGenre))
-            for item in query.items ?? [] where seenIDs.insert(item.persistentID).inserted {
+
+        func add(_ newItems: [MPMediaItem]?) {
+            for item in newItems ?? [] where seenIDs.insert(item.persistentID).inserted {
                 items.append(item)
+            }
+        }
+
+        for source in sources {
+            switch source.type {
+            case .genre:
+                let query = MPMediaQuery.songs()
+                query.addFilterPredicate(MPMediaPropertyPredicate(value: source.label, forProperty: MPMediaItemPropertyGenre))
+                add(query.items)
+
+            case .artist:
+                guard let persistentID = source.persistentID else { continue }
+                let query = MPMediaQuery.songs()
+                query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyArtistPersistentID))
+                add(query.items)
+
+            case .album:
+                guard let persistentID = source.persistentID else { continue }
+                let query = MPMediaQuery.songs()
+                query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyAlbumPersistentID))
+                add(query.items)
+
+            case .playlist:
+                // No `MPMediaItemPropertyPlaylistPersistentID` predicate
+                // exists on `MPMediaQuery.songs()` -- a playlist's tracks
+                // are read off the `MPMediaPlaylist` collection itself,
+                // found by matching its own `persistentID` among
+                // `MPMediaQuery.playlists()`'s collections.
+                guard let persistentID = source.persistentID else { continue }
+                let matchingPlaylist = MPMediaQuery.playlists().collections?
+                    .first { $0.persistentID == persistentID } as? MPMediaPlaylist
+                add(matchingPlaylist?.items)
+
+            case .songs:
+                continue
             }
         }
         return items
@@ -320,9 +380,18 @@ final class MixBuilder: ObservableObject {
             guard let playlistID = playlist.id else { return playlist }
 
             for source in sources {
+                // Per `PlaylistSource.sourceValue`'s own doc comment: a
+                // genre stores its name directly (the stable, re-queryable
+                // key `resolveMediaItems` already uses); everything else
+                // stores its `persistentID` so `selectedSource(from:)` can
+                // reconstruct an exact, re-resolvable source later (Refresh)
+                // rather than matching by display name, which isn't unique.
+                let sourceValue = source.type == .genre
+                    ? source.label
+                    : source.persistentID.map(String.init) ?? source.label
                 var playlistSource = PlaylistSource(
                     playlistID: playlistID, sourceType: source.type,
-                    sourceValue: source.label, sourceLabel: source.label
+                    sourceValue: sourceValue, sourceLabel: source.label
                 )
                 try playlistSource.insert(conn)
             }

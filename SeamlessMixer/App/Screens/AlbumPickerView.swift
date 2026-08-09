@@ -18,9 +18,9 @@ import PlaylistCore
 /// `List`/`Section`, since a `List` doesn't nest a grid per section
 /// cleanly — a `ScrollView`-based layout was the more direct fit here.
 ///
-/// Selection-only this slice, same phasing every other picker used —
-/// `MixBuilder` still only resolves genre sources; its error copy already
-/// covers albums generically.
+/// `MixBuilder` now resolves `.album` selections for real (via
+/// `MPMediaItemPropertyAlbumPersistentID`), added the same slice as the
+/// Playlists/Artists non-genre resolution.
 struct AlbumPickerView: View {
     @ObservedObject var viewModel: SourceSelectionViewModel
     @State private var sections: [AlbumSection] = []
@@ -91,7 +91,7 @@ struct AlbumPickerView: View {
     }
 
     private func cell(for album: AlbumRow) -> some View {
-        let source = SelectedSource(id: "album:\(album.persistentID)", type: .album, label: album.title)
+        let source = SelectedSource(id: "album:\(album.persistentID)", type: .album, label: album.title, persistentID: album.persistentID)
         let selected = viewModel.isSelected(source)
 
         return Button {

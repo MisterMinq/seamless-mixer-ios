@@ -14,13 +14,12 @@ import PlaylistCore
 /// (which both need an A-Z index rail, a larger separate piece of work) —
 /// same phased approach as everything else in this app.
 ///
-/// **Deliberately selection-only this slice** — same phasing Genres used
-/// (0.15.4 shipped the picker + selection state; Build Mix wiring for
-/// genres followed as its own slice, 0.15.5). Picking a playlist here
-/// updates the Hub's chip row/counts, but `MixBuilder` doesn't resolve
-/// `.playlist` sources yet — tapping Build Mix with only a playlist
-/// selected surfaces `MixBuilder.BuildError.noSupportedSources`, same as
-/// "whole library" today.
+/// `MixBuilder` now resolves `.playlist` selections for real — it re-finds
+/// the exact `MPMediaPlaylist` by `persistentID` (a playlist's own name
+/// isn't a reliable re-lookup key the way a genre's is) and pulls its
+/// `.items` directly, added the same slice as the Artists/Albums non-genre
+/// resolution. "Whole library" is still the one remaining unsupported
+/// selection.
 struct PlaylistPickerView: View {
     @ObservedObject var viewModel: SourceSelectionViewModel
     @State private var playlists: [PlaylistRow] = []
@@ -51,7 +50,7 @@ struct PlaylistPickerView: View {
     }
 
     private func cell(for playlist: PlaylistRow) -> some View {
-        let source = SelectedSource(id: "playlist:\(playlist.persistentID)", type: .playlist, label: playlist.name)
+        let source = SelectedSource(id: "playlist:\(playlist.persistentID)", type: .playlist, label: playlist.name, persistentID: playlist.persistentID)
         let selected = viewModel.isSelected(source)
 
         return Button {

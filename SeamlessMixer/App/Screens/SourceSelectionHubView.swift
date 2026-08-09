@@ -12,10 +12,10 @@ import PlaylistCore
 /// cell `PlaylistPickerView` established with the A-Z rail
 /// `ArtistPickerView` established), each with selection state flowing back
 /// into this Hub's chip row and live "N selected" counts. **"Build Mix" is
-/// wired for real** (see `MixBuilder`) — still scoped to genre selections
-/// only; picking a playlist/artist/album (or "whole library") shows an
-/// error explaining it isn't supported yet, per the reasoning in
-/// `MixBuilder`'s own doc comment. On success this pushes to
+/// wired for real** (see `MixBuilder`) and now resolves any combination of
+/// genre/playlist/artist/album selections, not just genres — only "whole
+/// library" still shows an error explaining it isn't supported yet, per the
+/// reasoning in `MixBuilder`'s own doc comment. On success this pushes to
 /// `PlaylistDetailView` (the confirmed Navigation Flow's actual next step)
 /// rather than dismissing back to My Mixes, per CLAUDE.md's "tap Build Mix
 /// -> Playlist Detail".
@@ -182,8 +182,8 @@ struct SourceSelectionHubView: View {
 
     /// "How do I see what I'm combining" across categories, per the
     /// confirmed design — a horizontally-scrollable row of removable chips,
-    /// populated live as checkboxes are ticked on a category picker. Only
-    /// Genres can populate this so far (see scope note above).
+    /// populated live as checkboxes are ticked on any of the four category
+    /// pickers.
     @ViewBuilder
     private var chipRow: some View {
         if !viewModel.selectedSources.isEmpty {

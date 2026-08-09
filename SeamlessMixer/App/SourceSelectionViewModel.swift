@@ -11,10 +11,26 @@ import PlaylistCore
 /// `label` for identity/equality, since two different sources could share a
 /// display label in principle (unlikely for genres, more plausible for
 /// artist names) but never share the same underlying value.
+///
+/// `persistentID` (added for `MixBuilder`'s non-genre source resolution) is
+/// nil for genres — a genre has no `MPMediaEntityPersistentID` of its own in
+/// `MediaPlayer`, it's just resolved by name — and set by
+/// `ArtistPickerView`/`AlbumPickerView`/`PlaylistPickerView` to the real
+/// underlying collection's persistent ID, since matching by display name
+/// alone would be both imprecise (two artists could share a name) and,
+/// for playlists, is the only way to re-find that exact playlist at all.
 struct SelectedSource: Identifiable {
     let id: String
     let type: SourceType
     let label: String
+    var persistentID: MPMediaEntityPersistentID?
+
+    init(id: String, type: SourceType, label: String, persistentID: MPMediaEntityPersistentID? = nil) {
+        self.id = id
+        self.type = type
+        self.label = label
+        self.persistentID = persistentID
+    }
 }
 
 extension SelectedSource: Equatable, Hashable {

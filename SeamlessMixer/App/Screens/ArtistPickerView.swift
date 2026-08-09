@@ -19,8 +19,11 @@ import PlaylistCore
 /// correctly, check here first. Albums (still pending) needs the same rail
 /// and should reuse this pattern rather than re-deriving it.
 ///
-/// Selection-only this slice, same phasing Genres/Playlists used —
-/// `MixBuilder` doesn't resolve `.artist` sources yet.
+/// `MixBuilder` now resolves `.artist` selections for real (via
+/// `MPMediaItemPropertyArtistPersistentID`, using each row's real
+/// `persistentID` — see `SelectedSource`'s own doc comment for why display
+/// names alone aren't used), added the same slice as the Playlists/Albums
+/// non-genre resolution.
 struct ArtistPickerView: View {
     @ObservedObject var viewModel: SourceSelectionViewModel
     @State private var sections: [ArtistSection] = []
@@ -84,7 +87,7 @@ struct ArtistPickerView: View {
     }
 
     private func row(for artist: ArtistRow) -> some View {
-        let source = SelectedSource(id: "artist:\(artist.persistentID)", type: .artist, label: artist.name)
+        let source = SelectedSource(id: "artist:\(artist.persistentID)", type: .artist, label: artist.name, persistentID: artist.persistentID)
         let selected = viewModel.isSelected(source)
 
         return Button {
