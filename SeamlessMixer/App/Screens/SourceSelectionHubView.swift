@@ -7,16 +7,15 @@ import PlaylistCore
 /// Genres/Artists/Albums), the mode picker, and a sticky "Build Mix" bar.
 /// No search field, per the confirmed 2026-08-02 revision.
 ///
-/// **Scope of this slice (revised):** Genres (`GenrePickerView`), Playlists
-/// (`PlaylistPickerView`), and now Artists (`ArtistPickerView`, the first
-/// A-Z index rail in this codebase) are real pickers with selection state
-/// flowing back into this Hub's chip row and live "N selected" counts.
-/// Only Albums still routes to `CategoryPickerPlaceholderView` — it needs
-/// the same A-Z rail `ArtistPickerView` just established, plus an artwork
-/// grid on top of it. **"Build Mix" is wired for real** (see `MixBuilder`) —
-/// scoped to genre selections only; picking a playlist (or "whole library")
-/// still shows an error explaining it isn't supported yet, per the
-/// reasoning in `MixBuilder`'s own doc comment. On success this pushes to
+/// **All four category pickers are now real** (Genres, Playlists, Artists,
+/// Albums — `AlbumPickerView` was the last, combining the artwork-grid
+/// cell `PlaylistPickerView` established with the A-Z rail
+/// `ArtistPickerView` established), each with selection state flowing back
+/// into this Hub's chip row and live "N selected" counts. **"Build Mix" is
+/// wired for real** (see `MixBuilder`) — still scoped to genre selections
+/// only; picking a playlist/artist/album (or "whole library") shows an
+/// error explaining it isn't supported yet, per the reasoning in
+/// `MixBuilder`'s own doc comment. On success this pushes to
 /// `PlaylistDetailView` (the confirmed Navigation Flow's actual next step)
 /// rather than dismissing back to My Mixes, per CLAUDE.md's "tap Build Mix
 /// -> Playlist Detail".
@@ -135,7 +134,7 @@ struct SourceSelectionHubView: View {
                 ArtistPickerView(viewModel: viewModel)
             }
             categoryRow(title: "Albums", icon: "square.stack", count: viewModel.albumCount, type: .album) {
-                CategoryPickerPlaceholderView(title: "Albums")
+                AlbumPickerView(viewModel: viewModel)
             }
         }
         // "All Songs" combining with anything else is redundant, per the
@@ -289,28 +288,6 @@ struct SourceSelectionHubView: View {
                 .padding(.horizontal, DesignTokens.Spacing.xl)
         }
         .padding(DesignTokens.Spacing.lg)
-    }
-}
-
-/// Stand-in for Screen 2 (the real per-category picker: A-Z rail for
-/// Artists/Albums, artwork grid for Playlists, plain list for Genres) —
-/// deliberately not built this slice, per the phased approach already used
-/// for every other piece of this app. Exists so the Hub's navigation is
-/// real and testable now, not so this placeholder itself is a finished UI.
-struct CategoryPickerPlaceholderView: View {
-    let title: String
-
-    var body: some View {
-        VStack(spacing: DesignTokens.Spacing.sm) {
-            Text("\(title) picker")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(DesignTokens.Color.textPrimary)
-            Text("Not built yet — coming in a later slice.")
-                .font(.body)
-                .foregroundStyle(DesignTokens.Color.textSecondary)
-        }
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

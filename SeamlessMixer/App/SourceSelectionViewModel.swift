@@ -61,10 +61,9 @@ final class SourceSelectionViewModel: ObservableObject {
     }
 
     /// Real per-category picks, populated live as checkboxes are ticked on
-    /// a category picker screen (Genres is the first one built — see
-    /// `GenrePickerView`; Artists/Albums/Playlists still route to
-    /// `CategoryPickerPlaceholderView` and can't contribute here yet). This
-    /// is what the confirmed design's chip row reads from.
+    /// a category picker screen — all four (Genres, Playlists, Artists,
+    /// Albums) are real pickers as of `AlbumPickerView`. This is what the
+    /// confirmed design's chip row reads from.
     @Published private(set) var selectedSources: [SelectedSource] = []
 
     var hasSelection: Bool { useWholeLibrary || !selectedSources.isEmpty }
