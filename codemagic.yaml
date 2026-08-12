@@ -172,12 +172,37 @@ workflows:
         script: |
           cd SeamlessMixer
           xcodegen generate
-      # Fetches/applies the right provisioning profile automatically, via
-      # the App Store Connect API integration configured above.
+      # First real Codemagic run (build 1, commit ace6f9d) failed here with
+      # "No matching profiles found for bundle identifier
+      # com.misterminq.SeamlessMixer and distribution type app_store" --
+      # `xcode-project use-profiles` (the old single step below) only
+      # *fetches existing* certificates/profiles, it doesn't create them.
+      # Since this app record is brand new, Apple has no App Store
+      # distribution certificate or provisioning profile for this bundle ID
+      # yet -- nothing for it to find. Fixed by generating them first:
+      #   - `keychain initialize` sets up a temporary keychain on this
+      #     build machine for the signing certificate to live in.
+      #   - `app-store-connect fetch-signing-files ... --create` is the
+      #     actual fix -- `--create` tells it to generate a new App Store
+      #     distribution certificate + provisioning profile for this bundle
+      #     ID via the App Store Connect API integration if none exist yet,
+      #     rather than only looking for ones that already do.
+      #   - `keychain add-certificates` loads the fetched certificate into
+      #     the keychain `xcode-project use-profiles` (still needed after
+      #     this, to apply the now-existing profile to the Xcode project's
+      #     signing settings) reads from.
       - name: Set up code signing
         script: |
           cd SeamlessMixer
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE \
+            --create
+          keychain add-certificates
           xcode-project use-profiles
+        environment:
+          vars:
+            BUNDLE_ID: com.misterminq.SeamlessMixer
       - name: Build and archive
         script: |
           cd SeamlessMixer
