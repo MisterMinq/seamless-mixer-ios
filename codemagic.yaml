@@ -111,3 +111,87 @@ workflows:
     # path: ../` still points at the repo root — that assumes Package.swift
     # stays at the repo root (confirmed 2026-08-07), not nested under a
     # PlaylistCore/ subfolder.
+
+  seamless-mixer-testflight:
+    name: SeamlessMixer TestFlight
+    # Third workflow, added 2026-08-12 once the mixing engine (0.17.0-
+    # 0.17.2) and Now Playing (0.18.0) made real-device verification the
+    # single most valuable remaining gap — a Simulator can't play real
+    # media library content, so nothing in `PlaybackEngine` has ever
+    # actually been *heard*. This is what finally gets a real, signed build
+    # onto Andy's iPhone via TestFlight instead of Codemagic's Simulator
+    # artifact, per Rule 3's "verify with real audio" discipline extended
+    # to the iOS codebase.
+    #
+    # PREREQUISITES — none of this works until these are done in the Apple/
+    # Codemagic dashboards (not something I can do from here):
+    #   1. Enroll in the Apple Developer Program (developer.apple.com,
+    #      $99/year) with Andy's own Apple ID.
+    #   2. In App Store Connect (appstoreconnect.apple.com) -> Users and
+    #      Access -> Integrations -> App Store Connect API, generate a new
+    #      API key with "App Manager" access. Download the .p8 key file —
+    #      it can only be downloaded once.
+    #   3. In Codemagic -> Team settings -> Integrations -> App Store
+    #      Connect, add that API key (Issuer ID, Key ID, the .p8 file
+    #      content). Give the integration a name — whatever name is chosen
+    #      there must exactly match `integrations.app_store_connect` below.
+    #   4. In App Store Connect, create a new app record: bundle ID
+    #      `com.misterminq.SeamlessMixer` (must match
+    #      `SeamlessMixer/project.yml`'s `PRODUCT_BUNDLE_IDENTIFIER`
+    #      exactly), platform iOS. This registers the app so TestFlight has
+    #      somewhere to publish a build to.
+    #   5. Update the two placeholder values below
+    #      (`<CODEMAGIC_INTEGRATION_NAME>`, `<APP_STORE_CONNECT_APP_APPLE_ID>`)
+    #      once steps 1-4 are done — the second one is the numeric Apple ID
+    #      App Store Connect assigns the app record in step 4 (found on the
+    #      app's App Information page), not the bundle identifier.
+    #
+    # Uses Codemagic's own `xcode-project use-profiles`/`build-ipa` CLI
+    # tools (pre-installed on their Mac images) rather than hand-rolling
+    # `xcodebuild archive` + a manual exportOptions.plist — these tools
+    # fetch/apply the right provisioning profile automatically from the
+    # App Store Connect API integration, which is both less code and less
+    # likely to drift from Codemagic's actual current signing workflow.
+    # Entirely unverified against a live Codemagic run, same caveat as
+    # every other workflow in this file — if a step name/argument below has
+    # drifted from Codemagic's current CLI, the intent (generate ->
+    # provision -> archive -> publish to TestFlight) should still be right
+    # even if a flag needs updating; check Codemagic's own "iOS code
+    # signing" docs first.
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: <CODEMAGIC_INTEGRATION_NAME>
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.misterminq.SeamlessMixer
+      vars:
+        APP_STORE_CONNECT_APP_APPLE_ID: <APP_STORE_CONNECT_APP_APPLE_ID>
+      xcode: latest
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          which xcodegen || brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd SeamlessMixer
+          xcodegen generate
+      # Fetches/applies the right provisioning profile automatically, via
+      # the App Store Connect API integration configured above.
+      - name: Set up code signing
+        script: |
+          cd SeamlessMixer
+          xcode-project use-profiles
+      - name: Build and archive
+        script: |
+          cd SeamlessMixer
+          xcode-project build-ipa \
+            --project SeamlessMixer.xcodeproj \
+            --scheme SeamlessMixer
+    artifacts:
+      - SeamlessMixer/build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
