@@ -153,14 +153,38 @@ workflows:
     # provision -> archive -> publish to TestFlight) should still be right
     # even if a flag needs updating; check Codemagic's own "iOS code
     # signing" docs first.
+    #
+    # BUILD 2 (commit 9de0399) FAILURE, DIAGNOSED 2026-08-12: same
+    # "No matching profiles found" error as build 1 -- but this time Andy's
+    # screenshot showed no expandable step list at all, just this one error
+    # on a blank log panel. That's the signature of a failure in Codemagic's
+    # own AUTOMATIC pre-build signing phase, which runs before any script
+    # step gets a chance to execute, triggered purely by the presence of
+    # `environment.ios_signing` below (confirmed against Codemagic's own
+    # docs: docs.codemagic.io/yaml-code-signing/signing-ios). That automatic
+    # phase fetches certificates/profiles that would have to be separately
+    # uploaded or generated via Codemagic's own Team Settings -> Code
+    # signing identities UI -- a completely different mechanism from the
+    # App-Store-Connect-API-key-driven `app-store-connect
+    # fetch-signing-files ... --create` CLI call already written into the
+    # "Set up code signing" script step below. Andy never used that UI (the
+    # plan all along was the CLI-driven --create approach), so the automatic
+    # phase had nothing to fetch and failed immediately, before "Install
+    # XcodeGen" or any other named script step ever ran -- explaining the
+    # blank log. Per Codemagic's own docs: mixing manual/CLI-driven signing
+    # with the declarative `ios_signing` block causes exactly this. Fix:
+    # removed the `ios_signing` sub-block entirely -- `xcode-project
+    # use-profiles` in the script step below doesn't need it; it reads
+    # whatever `fetch-signing-files` already wrote to
+    # ~/Library/MobileDevice/Provisioning Profiles on the build machine.
+    # `integrations.app_store_connect` and `vars.BUNDLE_ID` are untouched,
+    # both still required by the CLI-driven flow. Not yet re-verified on a
+    # real build -- that's the next one to watch for.
     max_build_duration: 30
     instance_type: mac_mini_m2
     integrations:
       app_store_connect: MinQs_SeamlessMixer
     environment:
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.misterminq.SeamlessMixer
       vars:
         APP_STORE_CONNECT_APP_APPLE_ID: 6800611456
         BUNDLE_ID: com.misterminq.SeamlessMixer
