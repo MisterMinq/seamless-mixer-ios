@@ -123,28 +123,23 @@ workflows:
     # artifact, per Rule 3's "verify with real audio" discipline extended
     # to the iOS codebase.
     #
-    # PREREQUISITES — none of this works until these are done in the Apple/
-    # Codemagic dashboards (not something I can do from here):
-    #   1. Enroll in the Apple Developer Program (developer.apple.com,
-    #      $99/year) with Andy's own Apple ID.
-    #   2. In App Store Connect (appstoreconnect.apple.com) -> Users and
-    #      Access -> Integrations -> App Store Connect API, generate a new
-    #      API key with "App Manager" access. Download the .p8 key file —
-    #      it can only be downloaded once.
-    #   3. In Codemagic -> Team settings -> Integrations -> App Store
-    #      Connect, add that API key (Issuer ID, Key ID, the .p8 file
-    #      content). Give the integration a name — whatever name is chosen
-    #      there must exactly match `integrations.app_store_connect` below.
-    #   4. In App Store Connect, create a new app record: bundle ID
-    #      `com.misterminq.SeamlessMixer` (must match
-    #      `SeamlessMixer/project.yml`'s `PRODUCT_BUNDLE_IDENTIFIER`
-    #      exactly), platform iOS. This registers the app so TestFlight has
-    #      somewhere to publish a build to.
-    #   5. Update the two placeholder values below
-    #      (`<CODEMAGIC_INTEGRATION_NAME>`, `<APP_STORE_CONNECT_APP_APPLE_ID>`)
-    #      once steps 1-4 are done — the second one is the numeric Apple ID
-    #      App Store Connect assigns the app record in step 4 (found on the
-    #      app's App Information page), not the bundle identifier.
+    # PREREQUISITES — all completed 2026-08-12 (recorded here for the
+    # record, same as every other confirmed decision in this project):
+    #   1. Enrolled in the Apple Developer Program with Andy's own Apple ID.
+    #   2. Generated an App Store Connect API key ("MinQs_SeamlessMixer" in
+    #      App Store Connect's own UI) with App Manager access.
+    #   3. Added that key as a Codemagic integration named
+    #      "MinQs_SeamlessMixer" (Team settings -> Integrations -> App
+    #      Store Connect) — this is the name referenced by
+    #      `integrations.app_store_connect` below; it does NOT need to
+    #      match the key's own name in App Store Connect (a real point of
+    #      confusion during setup — they're two separate names in two
+    #      separate systems).
+    #   4. Registered the App ID/Bundle ID `com.misterminq.SeamlessMixer` at
+    #      developer.apple.com (Certificates, IDs & Profiles -> Identifiers)
+    #      and created the app record in App Store Connect (Full Access,
+    #      since Andy is the sole team member) — Apple ID `6800611456`,
+    #      referenced by `APP_STORE_CONNECT_APP_APPLE_ID` below.
     #
     # Uses Codemagic's own `xcode-project use-profiles`/`build-ipa` CLI
     # tools (pre-installed on their Mac images) rather than hand-rolling
@@ -161,13 +156,13 @@ workflows:
     max_build_duration: 30
     instance_type: mac_mini_m2
     integrations:
-      app_store_connect: <CODEMAGIC_INTEGRATION_NAME>
+      app_store_connect: MinQs_SeamlessMixer
     environment:
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.misterminq.SeamlessMixer
       vars:
-        APP_STORE_CONNECT_APP_APPLE_ID: <APP_STORE_CONNECT_APP_APPLE_ID>
+        APP_STORE_CONNECT_APP_APPLE_ID: 6800611456
       xcode: latest
     scripts:
       - name: Install XcodeGen
