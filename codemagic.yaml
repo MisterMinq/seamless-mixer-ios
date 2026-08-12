@@ -222,15 +222,33 @@ workflows:
       # allow on an individual script step — caught before any build even
       # started, by Codemagic's own YAML validation in the "Start new
       # build" dialog, not by a running build).
+      # Build 5 (commit f8f2525): with CODE_SIGNING_ALLOWED fixed (0.18.6),
+      # the archive now fails fast (1s) with "SeamlessMixer requires a
+      # provisioning profile" -- meaning no profile actually got applied to
+      # the Xcode project, even though this step reported success. This
+      # whole step completing in ~1s total (4 commands, including what
+      # should be a real network round-trip to Apple's API to create a cert
+      # + profile) is itself suspicious -- that's too fast for a genuine
+      # create call. `fetch-signing-files`'s default save directory
+      # ($HOME/Library/Developer/Xcode/UserData/Provisioning Profiles) IS
+      # one of `use-profiles`'s default search paths (confirmed against
+      # both tools' own docs), so this isn't a path mismatch. Most likely
+      # `fetch-signing-files --create` isn't doing real work (or is
+      # silently failing without `set -e` to catch it), leaving
+      # `use-profiles` with nothing to apply -- which isn't itself a
+      # failure case for that tool if zero profile files are found at all.
+      # Added --verbose / --code-signing-setup-verbose-logging to surface
+      # what's actually happening instead of continuing to guess.
       - name: Set up code signing
         script: |
           cd SeamlessMixer
           keychain initialize
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --type IOS_APP_STORE \
-            --create
+            --create \
+            --verbose
           keychain add-certificates
-          xcode-project use-profiles
+          xcode-project use-profiles --code-signing-setup-verbose-logging
       # Build 3 (commit 6a30e2b): the archive itself succeeded (all 3
       # warnings in the log are benign -- a deprecated API notice, an
       # unrelated Xcode 26.4 SDK header cycle warning, an async-usage note --
