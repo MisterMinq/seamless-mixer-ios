@@ -102,6 +102,24 @@ targets:
         # rename across all of these is real, separate work — flagged here,
         # not done piecemeal.
         CFBundleDisplayName: SeamlessDJ
+        # Builds 8-11 all uploaded with "Version code: 1" no matter what —
+        # neither project.yml's CURRENT_PROJECT_VERSION: $(BUILD_NUMBER)
+        # (0.18.11) nor codemagic.yaml's --archive-xcargs override (0.18.12)
+        # had any effect, despite being two structurally different
+        # mechanisms. Root cause: XcodeGen's `info:` block writes a real,
+        # literal Info.plist FILE at generate time. Since CFBundleVersion/
+        # CFBundleShortVersionString were never listed here explicitly,
+        # XcodeGen filled in its own hardcoded default ("1"/"1.0") as
+        # static text, not as a $(VAR)-style placeholder -- so there was
+        # never anything for either build-setting override to substitute
+        # into, regardless of which one "won." Fix: explicitly write the
+        # placeholder strings ourselves so Xcode's own Info.plist build-
+        # setting expansion (INFOPLIST_EXPAND_BUILD_SETTINGS = YES,
+        # confirmed on in a real build's -showBuildSettings dump) has an
+        # actual $(CURRENT_PROJECT_VERSION)/$(MARKETING_VERSION) token to
+        # find and replace at build time.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         UILaunchScreen: {}
         # Background audio session, per the confirmed mixing-engine design
         # ("Background playback" in CLAUDE.md) — required from day one so
