@@ -8,11 +8,20 @@ public struct PlaylistTrackDetail: Identifiable, Equatable {
     public let id: Int64
     public let position: Int
     public let track: Track
+    /// Where in this track (in seconds from the start) the crossfade into
+    /// the *next* track should begin — meaningless for the last track in a
+    /// playlist, since there's nothing after it to blend into. Carried
+    /// through here so `PlaybackEngine` can actually time the crossfade
+    /// against the confirmed "Mixing Engine — AVAudioEngine Design" instead
+    /// of only knowing which tracks to play, not when to start blending
+    /// them.
+    public let crossfadeStartOffsetSec: Double
 
-    public init(id: Int64, position: Int, track: Track) {
+    public init(id: Int64, position: Int, track: Track, crossfadeStartOffsetSec: Double) {
         self.id = id
         self.position = position
         self.track = track
+        self.crossfadeStartOffsetSec = crossfadeStartOffsetSec
     }
 }
 
@@ -47,7 +56,10 @@ extension DatabaseManager {
                     // place to be defensive than to force-unwrap).
                     return nil
                 }
-                return PlaylistTrackDetail(id: playlistTrack.id ?? playlistTrack.trackPersistentID, position: playlistTrack.position, track: track)
+                return PlaylistTrackDetail(
+                    id: playlistTrack.id ?? playlistTrack.trackPersistentID, position: playlistTrack.position,
+                    track: track, crossfadeStartOffsetSec: playlistTrack.crossfadeStartOffsetSec
+                )
             }
 
             return (sources, details)

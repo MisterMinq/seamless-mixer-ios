@@ -4,9 +4,11 @@ import PlaylistCore
 /// One track row as displayed on Playlist Detail — position, title, artist,
 /// formatted duration. Flattened from `PlaylistCore`'s `PlaylistTrackDetail`
 /// (which carries the full `Track`) since the view only needs display
-/// fields, not the whole record. `trackPersistentID` is the one exception —
-/// not displayed, but needed by `PlaybackEngine.play(trackPersistentID:)`
-/// to re-resolve this track's real playable file via `MPMediaQuery`.
+/// fields, not the whole record. `trackPersistentID` and
+/// `crossfadeStartOffsetSec` are the two exceptions — not displayed, but
+/// needed by `PlaybackEngine` to re-resolve this track's real playable file
+/// via `MPMediaQuery` and to know when this track's blend into the next one
+/// should begin.
 struct PlaylistDetailRow: Identifiable {
     let id: Int64
     let position: Int
@@ -14,6 +16,7 @@ struct PlaylistDetailRow: Identifiable {
     let artist: String
     let durationText: String
     let trackPersistentID: Int64
+    let crossfadeStartOffsetSec: Double
 }
 
 @MainActor
@@ -43,7 +46,8 @@ final class PlaylistDetailViewModel: ObservableObject {
                     title: entry.track.title,
                     artist: entry.track.artist,
                     durationText: Self.formatDuration(entry.track.durationSec),
-                    trackPersistentID: entry.track.persistentID
+                    trackPersistentID: entry.track.persistentID,
+                    crossfadeStartOffsetSec: entry.crossfadeStartOffsetSec
                 )
             }
 
@@ -100,7 +104,8 @@ final class PlaylistDetailViewModel: ObservableObject {
         rows = rows.enumerated().map { index, row in
             PlaylistDetailRow(
                 id: row.id, position: index, title: row.title, artist: row.artist,
-                durationText: row.durationText, trackPersistentID: row.trackPersistentID
+                durationText: row.durationText, trackPersistentID: row.trackPersistentID,
+                crossfadeStartOffsetSec: row.crossfadeStartOffsetSec
             )
         }
 

@@ -93,6 +93,10 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(detail.sources.first?.sourceLabel, "Smooth jazz")
         XCTAssertEqual(detail.tracks.map(\.track.title), ["A", "B"])
         XCTAssertEqual(detail.tracks.map(\.position), [0, 1])
+        // Confirms `crossfadeStartOffsetSec` actually rides along on the
+        // join, not just `position`/`track` — added alongside PlaybackEngine's
+        // crossfade slice, which is the first real consumer of this field.
+        XCTAssertEqual(detail.tracks.map(\.crossfadeStartOffsetSec), [195, 175])
     }
 
     /// Covers `removeTrack` (added for Playlist Detail's per-track "..."

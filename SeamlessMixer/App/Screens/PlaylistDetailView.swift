@@ -19,18 +19,19 @@ import PlaylistCore
 ///   list) without this screen being told directly — see `displayName`'s
 ///   and the sheet's `onDismiss` doc comments below for how that's kept in
 ///   sync without this view observing `store.playlists` itself.
-/// - **Play is real now, and plays the whole set, back-to-back.**
-///   `PlaybackEngine` (introduced the previous slice, extended to
-///   sequential auto-advance this slice) is the first real implementation
-///   of CLAUDE.md's "Mixing Engine — AVAudioEngine Design" — tapping Play
-///   starts the first track, and each track automatically advances to the
-///   next as it finishes, all the way through the playlist. What's still
-///   missing is the actual point of the app: there's no crossfade, no
-///   overlap, no blending — one track plays, stops dead, the next starts.
-///   The caption underneath says so plainly, per Rule 3's "don't pretend
-///   it works" spirit. The now-playing row is highlighted in the track
-///   list so it's clear where playback actually is. Equal-power crossfade
-///   blending is the next slice.
+/// - **Play is real now, and actually blends transitions.** `PlaybackEngine`
+///   (built up over three slices: single-track playback, sequential
+///   auto-advance, and now equal-power crossfade blending) is the first
+///   real implementation of CLAUDE.md's "Mixing Engine — AVAudioEngine
+///   Design" — tapping Play starts the first track, and each track blends
+///   into the next at its stored `crossfadeStartOffsetSec` using the same
+///   sqrt equal-power curve `playlist_mixer.py` already validated, all the
+///   way through the playlist. Not yet done: tempo nudging during the
+///   blend (the design's "≤6% tempo nudge," not yet driven), and the
+///   crossfade window length is still a fixed constant rather than derived
+///   per-transition. The now-playing row is highlighted in the track list
+///   so it's clear where playback actually is, even mid-blend (it still
+///   shows the outgoing track until the blend completes).
 /// - Collage artwork is the same flat placeholder tile `MyMixesView` uses,
 ///   not real per-track artwork compositing.
 /// - Each track row's "..." is a real `Menu` (Tier 3): "Remove from this
@@ -227,7 +228,12 @@ struct PlaylistDetailView: View {
                     if playbackEngine.isPlaying {
                         playbackEngine.stop()
                     } else if !viewModel.rows.isEmpty {
-                        playbackEngine.play(queue: viewModel.rows.map(\.trackPersistentID))
+                        playbackEngine.play(queue: viewModel.rows.map {
+                            PlaybackEngine.QueuedTrack(
+                                trackPersistentID: $0.trackPersistentID,
+                                crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec
+                            )
+                        })
                     }
                 } label: {
                     Label(playbackEngine.isPlaying ? "Stop" : "Play", systemImage: playbackEngine.isPlaying ? "stop.fill" : "play.fill")
@@ -246,7 +252,7 @@ struct PlaylistDetailView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 } else {
-                    Text("Plays the whole set back-to-back — no crossfade blending between tracks yet.")
+                    Text("Plays the whole set with real crossfade blending between tracks.")
                         .font(.caption)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .multilineTextAlignment(.center)
