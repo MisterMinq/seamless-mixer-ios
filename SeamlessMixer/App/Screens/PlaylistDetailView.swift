@@ -19,15 +19,18 @@ import PlaylistCore
 ///   list) without this screen being told directly — see `displayName`'s
 ///   and the sheet's `onDismiss` doc comments below for how that's kept in
 ///   sync without this view observing `store.playlists` itself.
-/// - **Play is real now, for the first track only.** `PlaybackEngine` (new
-///   this slice) is the first real implementation of CLAUDE.md's "Mixing
-///   Engine — AVAudioEngine Design" — but only its single-track-playback
-///   slice: tapping Play plays the playlist's first track start to finish,
-///   with no crossfade and no automatic advance to track 2. The caption
-///   underneath says so plainly, per Rule 3's "don't pretend it works"
-///   spirit — a saved playlist is a correctly-sequenced recipe that can now
-///   partially, not fully, be heard. Full sequential/crossfaded playback is
-///   the next slice.
+/// - **Play is real now, and plays the whole set, back-to-back.**
+///   `PlaybackEngine` (introduced the previous slice, extended to
+///   sequential auto-advance this slice) is the first real implementation
+///   of CLAUDE.md's "Mixing Engine — AVAudioEngine Design" — tapping Play
+///   starts the first track, and each track automatically advances to the
+///   next as it finishes, all the way through the playlist. What's still
+///   missing is the actual point of the app: there's no crossfade, no
+///   overlap, no blending — one track plays, stops dead, the next starts.
+///   The caption underneath says so plainly, per Rule 3's "don't pretend
+///   it works" spirit. The now-playing row is highlighted in the track
+///   list so it's clear where playback actually is. Equal-power crossfade
+///   blending is the next slice.
 /// - Collage artwork is the same flat placeholder tile `MyMixesView` uses,
 ///   not real per-track artwork compositing.
 /// - Each track row's "..." is a real `Menu` (Tier 3): "Remove from this
@@ -116,7 +119,10 @@ struct PlaylistDetailView: View {
             } else {
                 Section {
                     ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
-                        trackRow(row, isLast: index == viewModel.rows.count - 1, isImminent: index == 0)
+                        trackRow(
+                            row, isLast: index == viewModel.rows.count - 1, isImminent: index == 0,
+                            isNowPlaying: playbackEngine.isPlaying && playbackEngine.nowPlayingTrackID == row.trackPersistentID
+                        )
                     }
                     .onMove { source, destination in
                         viewModel.moveTracks(from: source, to: destination, playlist: playlist, store: store)
@@ -220,8 +226,8 @@ struct PlaylistDetailView: View {
                 Button {
                     if playbackEngine.isPlaying {
                         playbackEngine.stop()
-                    } else if let first = viewModel.rows.first {
-                        playbackEngine.play(trackPersistentID: first.trackPersistentID)
+                    } else if !viewModel.rows.isEmpty {
+                        playbackEngine.play(queue: viewModel.rows.map(\.trackPersistentID))
                     }
                 } label: {
                     Label(playbackEngine.isPlaying ? "Stop" : "Play", systemImage: playbackEngine.isPlaying ? "stop.fill" : "play.fill")
@@ -240,7 +246,7 @@ struct PlaylistDetailView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 } else {
-                    Text("Plays the first track only for now — full sequential, crossfaded playback through the whole mix is next.")
+                    Text("Plays the whole set back-to-back — no crossfade blending between tracks yet.")
                         .font(.caption)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .multilineTextAlignment(.center)
@@ -260,13 +266,24 @@ struct PlaylistDetailView: View {
     /// between as its own sibling view. `isLast` skips the connector for
     /// the final row (nothing to blend into); `isImminent` is true only for
     /// the very first transition, same rule as the previous layout.
-    private func trackRow(_ row: PlaylistDetailRow, isLast: Bool, isImminent: Bool) -> some View {
+    /// `isNowPlaying` mirrors the Queue screen's confirmed "now playing"
+    /// treatment (tinted background, small play icon in place of the
+    /// position number) now that `PlaybackEngine` can actually report which
+    /// track is currently sounding.
+    private func trackRow(_ row: PlaylistDetailRow, isLast: Bool, isImminent: Bool, isNowPlaying: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: DesignTokens.Spacing.sm) {
-                Text("\(row.position + 1)")
-                    .font(.footnote)
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
-                    .frame(width: 20, alignment: .trailing)
+                if isNowPlaying {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                        .frame(width: 20, alignment: .trailing)
+                } else {
+                    Text("\(row.position + 1)")
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .frame(width: 20, alignment: .trailing)
+                }
 
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                     Text(row.title)
@@ -306,6 +323,11 @@ struct PlaylistDetailView: View {
                 }
             }
             .padding(.vertical, DesignTokens.Spacing.xxs)
+            .padding(.horizontal, isNowPlaying ? DesignTokens.Spacing.xs : 0)
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
+                    .fill(isNowPlaying ? DesignTokens.Color.surfaceTint : Color.clear)
+            )
 
             if !isLast {
                 connector(isImminent: isImminent)
@@ -313,12 +335,15 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// Solid teal for the first transition (the one that would be imminent
-    /// the moment Play is tapped), lighter gray further out — same
-    /// visual-blending signal as the confirmed Queue screen design, adapted
-    /// here since Playlist Detail has no "now playing" row of its own yet
-    /// (playback hasn't started). Flagged as a judgment call, not an
-    /// explicit CLAUDE.md spec for this screen's pre-playback state.
+    /// Solid teal for the first transition (the one that's imminent when
+    /// playback is at or before the first track), lighter gray further out
+    /// — same visual-blending signal as the confirmed Queue screen design.
+    /// Still keyed to list position (`index == 0`) rather than tracking
+    /// actual playback position once a mix is partway through — the
+    /// now-playing highlight (`isNowPlaying`) shows *where* playback is,
+    /// this connector doesn't yet shift to show which transition is
+    /// imminent *from* there. Flagged as a judgment call, not an explicit
+    /// CLAUDE.md spec for this screen.
     private func connector(isImminent: Bool) -> some View {
         Rectangle()
             .fill(isImminent ? DesignTokens.Color.primary : DesignTokens.Color.border)
