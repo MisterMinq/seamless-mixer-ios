@@ -290,12 +290,31 @@ workflows:
       # machine we have no way to read. Added --verbose so the real error
       # prints directly into the build log we CAN see, instead of guessing
       # at an export-options/signing mismatch blind.
+      # Build 10 (commit 89091c3): CURRENT_PROJECT_VERSION: $(BUILD_NUMBER)
+      # in project.yml (0.18.11's first attempt) did NOT take effect --
+      # "Version code: 1" in the publish log, unchanged from builds 8/9,
+      # and the same "bundle version must be higher" error repeated. Rather
+      # than keep guessing at *why* (XcodeGen generation-time vs.
+      # Xcode-build-time $(VAR) precedence, a possible per-config override
+      # shadowing the base setting -- unconfirmed either way), switched to
+      # a more direct, guaranteed mechanism: `--archive-xcargs` passes
+      # build settings straight to the underlying `xcodebuild archive`
+      # command this tool runs internally, as the last override applied,
+      # bypassing whatever's baked into the generated .xcodeproj entirely.
+      # $BUILD_NUMBER here is expanded by THIS shell script before the
+      # tool ever runs, not deferred to Xcode's own $(VAR) resolution, so
+      # it's echoed first to confirm in the log exactly what value is being
+      # passed. Note --archive-xcargs REPLACES the tool's own default
+      # (COMPILER_INDEX_STORE_ENABLE=NO) rather than adding to it, per its
+      # own docs -- included explicitly below so that default isn't lost.
       - name: Build and archive
         script: |
           cd SeamlessMixer
+          echo "Using BUILD_NUMBER=$BUILD_NUMBER as CURRENT_PROJECT_VERSION"
           xcode-project build-ipa \
             --project SeamlessMixer.xcodeproj \
             --scheme SeamlessMixer \
+            --archive-xcargs="COMPILER_INDEX_STORE_ENABLE=NO CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
             --verbose
     artifacts:
       - SeamlessMixer/build/ios/ipa/*.ipa
