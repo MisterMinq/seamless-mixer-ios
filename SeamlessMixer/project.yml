@@ -64,6 +64,25 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.10"
         ENABLE_PREVIEWS: YES
+        # Build 8 (commit 3e03d3b) was the first fully successful TestFlight
+        # upload -- build 9 (commit 7d01044) then failed with a completely
+        # different, expected error: "The bundle version must be higher than
+        # the previously uploaded version: '1'" -- CURRENT_PROJECT_VERSION
+        # (-> CFBundleVersion) had no explicit setting anywhere, so every
+        # archive defaulted to the same static "1", and Apple requires each
+        # TestFlight upload to have a strictly higher build number than the
+        # last, even for the same marketing version. Fixed per Codemagic's
+        # own documented approach (docs.codemagic.io/knowledge-codemagic/
+        # build-versioning): reference their auto-exported $(BUILD_NUMBER)
+        # env var directly as a build setting, so Xcode resolves the actual
+        # value at build time -- no extra script step or App Store Connect
+        # API call needed. Deliberately BUILD_NUMBER (count of runs of THIS
+        # workflow, seamless-mixer-testflight, specifically) over the
+        # alternative PROJECT_BUILD_NUMBER (count across every workflow in
+        # the app, including the unrelated seamless-mixer-app Simulator
+        # workflow) -- ties the version number to actual TestFlight
+        # submission attempts, not incidental Simulator pushes.
+        CURRENT_PROJECT_VERSION: $(BUILD_NUMBER)
     info:
       path: App/Info.plist
       properties:
