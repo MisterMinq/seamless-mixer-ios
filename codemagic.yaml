@@ -231,12 +231,23 @@ workflows:
             --create
           keychain add-certificates
           xcode-project use-profiles
+      # Build 3 (commit 6a30e2b): the archive itself succeeded (all 3
+      # warnings in the log are benign -- a deprecated API notice, an
+      # unrelated Xcode 26.4 SDK header cycle warning, an async-usage note --
+      # "Archive Succeeded" is explicit in the log). The failure is one step
+      # later, in `xcode-project build-ipa`'s own IPA-export/packaging phase
+      # after the archive: "Executing "xcode-project build-ipa" failed
+      # unexpectedly," pointing only at a log file on Codemagic's own build
+      # machine we have no way to read. Added --verbose so the real error
+      # prints directly into the build log we CAN see, instead of guessing
+      # at an export-options/signing mismatch blind.
       - name: Build and archive
         script: |
           cd SeamlessMixer
           xcode-project build-ipa \
             --project SeamlessMixer.xcodeproj \
-            --scheme SeamlessMixer
+            --scheme SeamlessMixer \
+            --verbose
     artifacts:
       - SeamlessMixer/build/ios/ipa/*.ipa
     publishing:
