@@ -19,12 +19,15 @@ import PlaylistCore
 ///   list) without this screen being told directly — see `displayName`'s
 ///   and the sheet's `onDismiss` doc comments below for how that's kept in
 ///   sync without this view observing `store.playlists` itself.
-/// - The Play button is present but disabled, with a caption explaining
-///   why: the AVAudioEngine mixing engine that would actually play a
-///   blended set doesn't exist yet (still a first-pass design, per
-///   CLAUDE.md's "Mixing Engine" section) — a saved playlist here is a
-///   real, correctly-sequenced recipe, it just can't be *played* yet. Per
-///   Rule 3's spirit, this screen doesn't pretend otherwise.
+/// - **Play is real now, for the first track only.** `PlaybackEngine` (new
+///   this slice) is the first real implementation of CLAUDE.md's "Mixing
+///   Engine — AVAudioEngine Design" — but only its single-track-playback
+///   slice: tapping Play plays the playlist's first track start to finish,
+///   with no crossfade and no automatic advance to track 2. The caption
+///   underneath says so plainly, per Rule 3's "don't pretend it works"
+///   spirit — a saved playlist is a correctly-sequenced recipe that can now
+///   partially, not fully, be heard. Full sequential/crossfaded playback is
+///   the next slice.
 /// - Collage artwork is the same flat placeholder tile `MyMixesView` uses,
 ///   not real per-track artwork compositing.
 /// - Each track row's "..." is a real `Menu` (Tier 3): "Remove from this
@@ -54,6 +57,7 @@ struct PlaylistDetailView: View {
     let store: PlaylistStore
 
     @StateObject private var viewModel = PlaylistDetailViewModel()
+    @StateObject private var playbackEngine = PlaybackEngine()
     // Seeded from `playlist.isFavorite` at init so the star renders correctly
     // immediately, then updated optimistically on tap — `playlist` itself is
     // a `let` snapshot from navigation, not observed, so it wouldn't reflect
@@ -213,21 +217,35 @@ struct PlaylistDetailView: View {
             }
 
             VStack(spacing: DesignTokens.Spacing.xxs) {
-                Button(action: {}) {
-                    Label("Play", systemImage: "play.fill")
+                Button {
+                    if playbackEngine.isPlaying {
+                        playbackEngine.stop()
+                    } else if let first = viewModel.rows.first {
+                        playbackEngine.play(trackPersistentID: first.trackPersistentID)
+                    }
+                } label: {
+                    Label(playbackEngine.isPlaying ? "Stop" : "Play", systemImage: playbackEngine.isPlaying ? "stop.fill" : "play.fill")
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(DesignTokens.Color.primary)
                 .foregroundStyle(DesignTokens.Color.onPrimary)
-                .disabled(true)
+                .disabled(viewModel.rows.isEmpty)
 
-                Text("Playback isn't built yet — this recipe is saved and sequenced, just not playable yet.")
-                    .font(.caption)
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
+                if let error = playbackEngine.playbackError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(DesignTokens.Color.error)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Text("Plays the first track only for now — full sequential, crossfaded playback through the whole mix is next.")
+                        .font(.caption)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
             }
             .padding(.top, DesignTokens.Spacing.xs)
         }
