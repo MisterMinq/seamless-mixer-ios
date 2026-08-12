@@ -140,6 +140,28 @@ workflows:
     #      and created the app record in App Store Connect (Full Access,
     #      since Andy is the sole team member) — Apple ID `6800611456`,
     #      referenced by `APP_STORE_CONNECT_APP_APPLE_ID` below.
+    #   5. Added a secure Codemagic environment variable named
+    #      CERTIFICATE_PRIVATE_KEY (Team settings -> Environment variables,
+    #      scoped to this app/workflow, "Secure" checked), holding a
+    #      generated 2048-bit RSA private key. Discovered 2026-08-12, build
+    #      5: `app-store-connect fetch-signing-files ... --create` cannot
+    #      generate a brand-new Apple Distribution certificate without a
+    #      private key to build the CSR from -- it errors "Cannot save
+    #      Signing Certificates without certificate private key" and
+    #      silently leaves nothing for the rest of the step to find (which
+    #      is why "Set up code signing" was reporting success in ~1s the
+    #      whole time -- everything after that error was just searching
+    #      empty directories). Deliberately stored as a persistent
+    #      Codemagic env var rather than generated fresh inside the script
+    #      each run: `--certificate-key` isn't passed explicitly below, so
+    #      the CLI tool automatically checks this exact env var name on its
+    #      own (per its own docs) -- no YAML change needed once it's set.
+    #      Generating a new key per-build instead would create a brand-new
+    #      Apple Distribution certificate every single run (since each
+    #      build would have no local copy of any previous run's key to
+    #      reuse), and Apple caps an account at 3 such certificates --
+    #      persisting one key/cert pair across builds avoids hitting that
+    #      ceiling entirely.
     #
     # Uses Codemagic's own `xcode-project use-profiles`/`build-ipa` CLI
     # tools (pre-installed on their Mac images) rather than hand-rolling
@@ -185,6 +207,15 @@ workflows:
     integrations:
       app_store_connect: MinQs_SeamlessMixer
     environment:
+      # `groups` pulls in a named Codemagic variable group so its variables
+      # (here: CERTIFICATE_PRIVATE_KEY, per the prerequisites above) are
+      # injected into this workflow's environment -- Codemagic's UI asked
+      # Andy to file the new variable under a group when adding it, and
+      # this is what actually wires that group to this workflow. Named
+      # `testflight_signing` — must match whatever group name Andy actually
+      # created in Codemagic's UI exactly, or the variable won't be seen.
+      groups:
+        - testflight_signing
       vars:
         APP_STORE_CONNECT_APP_APPLE_ID: 6800611456
         BUNDLE_ID: com.misterminq.SeamlessMixer
