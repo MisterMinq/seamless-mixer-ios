@@ -83,6 +83,22 @@ targets:
         # workflow) -- ties the version number to actual TestFlight
         # submission attempts, not incidental Simulator pushes.
         CURRENT_PROJECT_VERSION: $(BUILD_NUMBER)
+        # Build 12 (commit f7d2f3d) got CFBundleVersion right (showed "12",
+        # matching BUILD_NUMBER) but then failed a different way: "The main
+        # Info.plist did not contain 'CFBundleShortVersionString'." Cause:
+        # `MARKETING_VERSION` was never defined as a build setting anywhere
+        # in this project (confirmed absent from a real -showBuildSettings
+        # dump) — so the $(MARKETING_VERSION) placeholder just added to
+        # Info.plist's CFBundleShortVersionString resolved to nothing, and
+        # Xcode dropped the key entirely rather than writing an empty
+        # string. Per Apple/Codemagic's own convention (docs.codemagic.io/
+        # knowledge-codemagic/build-versioning): CFBundleShortVersionString
+        # is the public "1.0"-style release version and should be static,
+        # manually bumped per real release — unlike CFBundleVersion, it's
+        # deliberately NOT tied to BUILD_NUMBER. Set as a real, fixed value
+        # here so the placeholder has something to resolve to; bump this by
+        # hand when an actual versioned release happens, not automatically.
+        MARKETING_VERSION: "1.0"
     info:
       path: App/Info.plist
       properties:
