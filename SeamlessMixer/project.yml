@@ -146,3 +146,19 @@ targets:
         # not used by this first screen yet, declared now so the prompt
         # text is decided deliberately rather than bolted on later.
         NSAppleMusicUsageDescription: "Seamless Mixer reads your music library so it can build seamless playlists from songs you already own."
+        # Export compliance declaration, added 2026-08-12 after a real
+        # TestFlight submission failure: "422: The build is missing export
+        # compliance." Apple requires every build to declare whether it uses
+        # non-exempt encryption before it can go to beta review — without
+        # this key, Codemagic's automated `submit_to_testflight: true` has
+        # no way to answer that question (it's normally a manual per-build
+        # toggle on the App Store Connect website), so the submission call
+        # itself fails. This app has no server component at all (per ADR-2,
+        # "on-device, live, at playback time") and doesn't implement any
+        # custom cryptography — it only uses whatever standard HTTPS/TLS the
+        # OS and its frameworks (MediaPlayer, AVFoundation) provide, which
+        # is Apple's own definition of exempt. `false` here means "does NOT
+        # use non-exempt encryption," which answers Apple's compliance
+        # question at build time and skips the manual per-build web-form
+        # step entirely, matching this app's actual behavior.
+        ITSAppUsesNonExemptEncryption: false
