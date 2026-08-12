@@ -163,6 +163,7 @@ workflows:
         bundle_identifier: com.misterminq.SeamlessMixer
       vars:
         APP_STORE_CONNECT_APP_APPLE_ID: 6800611456
+        BUNDLE_ID: com.misterminq.SeamlessMixer
       xcode: latest
     scripts:
       - name: Install XcodeGen
@@ -191,6 +192,12 @@ workflows:
       #     the keychain `xcode-project use-profiles` (still needed after
       #     this, to apply the now-existing profile to the Xcode project's
       #     signing settings) reads from.
+      # `BUNDLE_ID` is defined once at the workflow's own `environment.vars`
+      # above (2026-08-12: a first attempt put it in a per-script
+      # `environment:` block here instead, which Codemagic's schema doesn't
+      # allow on an individual script step — caught before any build even
+      # started, by Codemagic's own YAML validation in the "Start new
+      # build" dialog, not by a running build).
       - name: Set up code signing
         script: |
           cd SeamlessMixer
@@ -200,9 +207,6 @@ workflows:
             --create
           keychain add-certificates
           xcode-project use-profiles
-        environment:
-          vars:
-            BUNDLE_ID: com.misterminq.SeamlessMixer
       - name: Build and archive
         script: |
           cd SeamlessMixer
