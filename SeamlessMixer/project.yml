@@ -67,6 +67,22 @@ targets:
     info:
       path: App/Info.plist
       properties:
+        # Working display name, set 2026-08-12 per Andy: "call it
+        # SeamlessDJ for now and change name later" — this is CFBundleDisplayName
+        # only (what shows under the icon on-device and in TestFlight), a
+        # deliberately narrow change. NOT renamed: the Xcode target/project
+        # name (still "SeamlessMixer" everywhere in this file), the bundle
+        # identifier (still com.misterminq.SeamlessMixer — already
+        # registered with Apple and Codemagic's signing setup; renaming it
+        # would mean a new App ID, a new App Store Connect app record, and
+        # redoing the whole 0.18.3-0.18.9 signing setup from scratch), and
+        # the App Store Connect app record's own "Name" metadata field
+        # (separate from CFBundleDisplayName, set once when Andy created
+        # the app record — still says "SeamlessMixer" there, change it in
+        # App Store Connect directly if/when the name is finalized). A full
+        # rename across all of these is real, separate work — flagged here,
+        # not done piecemeal.
+        CFBundleDisplayName: SeamlessDJ
         UILaunchScreen: {}
         # Background audio session, per the confirmed mixing-engine design
         # ("Background playback" in CLAUDE.md) — required from day one so
