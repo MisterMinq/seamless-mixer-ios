@@ -306,7 +306,11 @@ struct SourceSelectionHubView: View {
 }
 
 #Preview {
+    // Same reasoning as `MyMixesView`'s preview -- a successful Build Mix
+    // navigates to `PlaylistDetailView`, which requires `PlaybackEngine` as
+    // an `@EnvironmentObject`.
     NavigationStack {
         SourceSelectionHubView(store: PlaylistStore())
     }
+    .environmentObject(PlaybackEngine())
 }

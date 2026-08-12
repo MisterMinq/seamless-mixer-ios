@@ -46,6 +46,16 @@ import MediaPlayer
 /// against the polling timer re-triggering a second crossfade for the same
 /// transition while one is already in progress.
 ///
+/// **Now published beyond just `isPlaying`/`nowPlayingTrackID`:**
+/// `nextTrackPersistentID` (for a "blending into next" indicator),
+/// `elapsedSeconds`/`currentTrackDurationSec` (for a progress bar) — added
+/// alongside the Now Playing screen, the first real consumer of anything
+/// beyond play/stop state. `elapsedSeconds` is read live off the active
+/// chain's own render clock every tick rather than accumulated by hand;
+/// `currentTrackDurationSec` comes from the decoded `AVAudioFile` itself
+/// (this class never sees the analyzed `Track` record, only a
+/// `trackPersistentID`).
+///
 /// **Highest-risk file in the app target — first use of AVAudioEngine/
 /// AVAudioSession/AVAudioFile anywhere in this codebase, and this slice
 /// adds real-time volume automation and elapsed-position polling on top of
@@ -78,6 +88,24 @@ final class PlaybackEngine: ObservableObject {
     /// "now playing" only once it's the sole audible one, matching how a
     /// listener would describe what's playing mid-blend.
     @Published private(set) var nowPlayingTrackID: Int64?
+    /// The track right after `nowPlayingTrackID` in the queue, or `nil` if
+    /// there isn't one — what Now Playing's "blending into next" indicator
+    /// reads from. Kept in sync alongside `nowPlayingTrackID` rather than
+    /// computed on demand by a view, since only this class actually knows
+    /// `currentIndex`/`queue`.
+    @Published private(set) var nextTrackPersistentID: Int64?
+    /// Elapsed seconds into the currently active track, refreshed every
+    /// timer tick from the active chain's own render clock (see
+    /// `computeElapsedSeconds(for:)`) — not manually accumulated, so it
+    /// stays correct across pauses/seeks this class doesn't even support
+    /// yet.
+    @Published private(set) var elapsedSeconds: Double = 0
+    /// Duration of the currently active track, read directly off the
+    /// decoded `AVAudioFile` at schedule time (`length` frames / sample
+    /// rate) rather than from `Track.durationSec` — this class only ever
+    /// sees a `trackPersistentID`, never the analyzed `Track` record, so
+    /// the file itself is the only duration source it actually has.
+    @Published private(set) var currentTrackDurationSec: Double = 0
 
     private struct PlayerChain {
         let player: AVAudioPlayerNode
@@ -121,6 +149,13 @@ final class PlaybackEngine: ObservableObject {
 
     private var timer: Timer?
     private let tickIntervalSec: Double = 0.1
+
+    /// The next (incoming) track's duration, computed and stashed the
+    /// moment `beginCrossfade` schedules it, then applied to
+    /// `currentTrackDurationSec` once `completeCrossfade` makes it the
+    /// active track — the file's already open and decoded by then, no
+    /// reason to look it up twice.
+    private var pendingIncomingDurationSec: Double = 0
 
     init() {
         configureGraph()
@@ -186,7 +221,7 @@ final class PlaybackEngine: ObservableObject {
     /// however long the engine has actually been rendering audio for this
     /// node. Returns `nil` before the node has started rendering (no valid
     /// render time yet).
-    private func elapsedSeconds(for player: AVAudioPlayerNode) -> Double? {
+    private func computeElapsedSeconds(for player: AVAudioPlayerNode) -> Double? {
         guard let nodeTime = player.lastRenderTime, nodeTime.isSampleTimeValid,
               let playerTime = player.playerTime(forNodeTime: nodeTime) else {
             return nil
@@ -232,6 +267,9 @@ final class PlaybackEngine: ObservableObject {
         guard queue.indices.contains(currentIndex) else {
             isPlaying = false
             nowPlayingTrackID = nil
+            nextTrackPersistentID = nil
+            elapsedSeconds = 0
+            currentTrackDurationSec = 0
             stopTimer()
             return
         }
@@ -243,6 +281,7 @@ final class PlaybackEngine: ObservableObject {
             playbackError = "Couldn't find a playable file for this track."
             isPlaying = false
             nowPlayingTrackID = nil
+            nextTrackPersistentID = nil
             stopTimer()
             return
         }
@@ -273,12 +312,22 @@ final class PlaybackEngine: ObservableObject {
             chain.player.play()
             isPlaying = true
             nowPlayingTrackID = trackPersistentID
+            currentTrackDurationSec = Double(file.length) / file.fileFormat.sampleRate
+            elapsedSeconds = 0
+            updateNextTrackID()
         } catch {
             playbackError = "Couldn't play this track: \(error.localizedDescription)"
             isPlaying = false
             nowPlayingTrackID = nil
+            nextTrackPersistentID = nil
             stopTimer()
         }
+    }
+
+    /// Refreshes `nextTrackPersistentID` from `queue`/`currentIndex` — called
+    /// any time either changes so a view never has to compute this itself.
+    private func updateNextTrackID() {
+        nextTrackPersistentID = queue.indices.contains(currentIndex + 1) ? queue[currentIndex + 1].trackPersistentID : nil
     }
 
     /// Fires when a *scheduled file* finishes or is superseded. Only acts
@@ -316,6 +365,9 @@ final class PlaybackEngine: ObservableObject {
 
     private func tick() {
         guard isPlaying else { return }
+        if let elapsed = computeElapsedSeconds(for: activeChain.player) {
+            elapsedSeconds = elapsed
+        }
         if isCrossfading {
             advanceCrossfade()
         } else {
@@ -331,7 +383,7 @@ final class PlaybackEngine: ObservableObject {
         guard queue.indices.contains(currentIndex), currentIndex + 1 < queue.count else { return }
         let offset = queue[currentIndex].crossfadeStartOffsetSec
         guard offset.isFinite, offset > 0 else { return }
-        guard let elapsed = elapsedSeconds(for: activeChain.player), elapsed >= offset else { return }
+        guard let elapsed = computeElapsedSeconds(for: activeChain.player), elapsed >= offset else { return }
         beginCrossfade()
     }
 
@@ -350,6 +402,7 @@ final class PlaybackEngine: ObservableObject {
 
         do {
             let file = try AVAudioFile(forReading: url)
+            pendingIncomingDurationSec = Double(file.length) / file.fileFormat.sampleRate
 
             playbackGeneration += 1
             let generation = playbackGeneration
@@ -404,6 +457,8 @@ final class PlaybackEngine: ObservableObject {
         activeIsA.toggle()
         currentIndex += 1
         nowPlayingTrackID = queue[currentIndex].trackPersistentID
+        currentTrackDurationSec = pendingIncomingDurationSec
+        updateNextTrackID()
         isCrossfading = false
         crossfadeProgress = 0
     }
@@ -429,5 +484,8 @@ final class PlaybackEngine: ObservableObject {
         currentIndex = 0
         isPlaying = false
         nowPlayingTrackID = nil
+        nextTrackPersistentID = nil
+        elapsedSeconds = 0
+        currentTrackDurationSec = 0
     }
 }

@@ -230,5 +230,12 @@ private struct FavoriteCard: View {
 }
 
 #Preview {
+    // `.environmentObject` needed here even though this screen never reads
+    // `PlaybackEngine` itself -- Xcode Previews render the whole navigable
+    // subtree, and tapping through to `PlaylistDetailView` (which does
+    // require it, as an `@EnvironmentObject`) would otherwise crash in the
+    // preview canvas the same way it would at runtime with no injection
+    // anywhere in the view hierarchy.
     MyMixesView(store: PlaylistStore())
+        .environmentObject(PlaybackEngine())
 }

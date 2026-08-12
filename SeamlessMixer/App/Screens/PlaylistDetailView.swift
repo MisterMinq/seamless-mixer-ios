@@ -19,19 +19,24 @@ import PlaylistCore
 ///   list) without this screen being told directly — see `displayName`'s
 ///   and the sheet's `onDismiss` doc comments below for how that's kept in
 ///   sync without this view observing `store.playlists` itself.
-/// - **Play is real now, and actually blends transitions.** `PlaybackEngine`
-///   (built up over three slices: single-track playback, sequential
-///   auto-advance, and now equal-power crossfade blending) is the first
-///   real implementation of CLAUDE.md's "Mixing Engine — AVAudioEngine
-///   Design" — tapping Play starts the first track, and each track blends
-///   into the next at its stored `crossfadeStartOffsetSec` using the same
-///   sqrt equal-power curve `playlist_mixer.py` already validated, all the
-///   way through the playlist. Not yet done: tempo nudging during the
-///   blend (the design's "≤6% tempo nudge," not yet driven), and the
-///   crossfade window length is still a fixed constant rather than derived
-///   per-transition. The now-playing row is highlighted in the track list
-///   so it's clear where playback actually is, even mid-blend (it still
-///   shows the outgoing track until the blend completes).
+/// - **Play is real now, blends transitions, and now navigates to Now
+///   Playing** — matching the confirmed Navigation Flow (Play -> Now
+///   Playing) for the first time; previously Play just started audio
+///   in-place with no Now Playing screen to go to. `PlaybackEngine` (built
+///   up over four slices: single-track playback, sequential auto-advance,
+///   equal-power crossfade blending, and now the elapsed/duration/next-
+///   track state Now Playing needs) is a real implementation of CLAUDE.md's
+///   "Mixing Engine — AVAudioEngine Design". **It's now an
+///   `@EnvironmentObject`, not a per-screen `@StateObject`** — injected once
+///   at the app root (`SeamlessMixerApp`) so playback survives navigating
+///   away from this screen, rather than being torn down and rebuilt every
+///   time. Tapping Play always restarts this playlist from track 1, even if
+///   something else is already playing elsewhere — a deliberate
+///   simplification (not yet "resume if this playlist is already the one
+///   playing"), flagged for a later pass once it's a felt gap. The
+///   now-playing row is still highlighted in the track list here too, so
+///   this screen keeps making sense as its own view of playback state, not
+///   just a launch point for Now Playing.
 /// - Collage artwork is the same flat placeholder tile `MyMixesView` uses,
 ///   not real per-track artwork compositing.
 /// - Each track row's "..." is a real `Menu` (Tier 3): "Remove from this
@@ -61,7 +66,8 @@ struct PlaylistDetailView: View {
     let store: PlaylistStore
 
     @StateObject private var viewModel = PlaylistDetailViewModel()
-    @StateObject private var playbackEngine = PlaybackEngine()
+    @EnvironmentObject private var playbackEngine: PlaybackEngine
+    @State private var showNowPlaying = false
     // Seeded from `playlist.isFavorite` at init so the star renders correctly
     // immediately, then updated optimistically on tap — `playlist` itself is
     // a `let` snapshot from navigation, not observed, so it wouldn't reflect
@@ -176,6 +182,15 @@ struct PlaylistDetailView: View {
         .task {
             viewModel.load(playlist: playlist, store: store)
         }
+        // Play's destination, per the confirmed Navigation Flow (Play ->
+        // Now Playing). `rows`/`subtitle` are handed over as a plain
+        // snapshot rather than re-fetched by `NowPlayingView` itself --
+        // this screen already has them loaded, and `PlaybackEngine` only
+        // exposes track *IDs*, never titles/artists, so something has to
+        // supply that lookup.
+        .navigationDestination(isPresented: $showNowPlaying) {
+            NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle)
+        }
         // `onDismiss` re-loads regardless of which action was taken (Rename/
         // Refresh/neither) -- Refresh replaces this playlist's tracks, so
         // the track list/subtitle need a fresh read; re-running the same
@@ -225,18 +240,16 @@ struct PlaylistDetailView: View {
 
             VStack(spacing: DesignTokens.Spacing.xxs) {
                 Button {
-                    if playbackEngine.isPlaying {
-                        playbackEngine.stop()
-                    } else if !viewModel.rows.isEmpty {
-                        playbackEngine.play(queue: viewModel.rows.map {
-                            PlaybackEngine.QueuedTrack(
-                                trackPersistentID: $0.trackPersistentID,
-                                crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec
-                            )
-                        })
-                    }
+                    guard !viewModel.rows.isEmpty else { return }
+                    playbackEngine.play(queue: viewModel.rows.map {
+                        PlaybackEngine.QueuedTrack(
+                            trackPersistentID: $0.trackPersistentID,
+                            crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec
+                        )
+                    })
+                    showNowPlaying = true
                 } label: {
-                    Label(playbackEngine.isPlaying ? "Stop" : "Play", systemImage: playbackEngine.isPlaying ? "stop.fill" : "play.fill")
+                    Label("Play", systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                 }
@@ -374,4 +387,5 @@ struct PlaylistDetailView: View {
             store: PlaylistStore()
         )
     }
+    .environmentObject(PlaybackEngine())
 }
