@@ -42,11 +42,25 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.misterminq.SeamlessMixer
-        # No signing on CI — Codemagic has no distribution certs for this
-        # personal-use app, and a Simulator build doesn't need one. Andy
-        # signs locally with his own Apple ID only if/when he sideloads to
-        # his own phone — not part of this CI loop.
-        CODE_SIGNING_ALLOWED: NO
+        # CODE_SIGNING_ALLOWED: NO used to live here, on the reasoning that
+        # CI has no distribution certs and a Simulator build doesn't need
+        # signing. Removed 2026-08-12: this file is shared by BOTH the
+        # Simulator workflow (seamless-mixer-app) and the real-device
+        # TestFlight workflow (seamless-mixer-testflight) added since then.
+        # The Simulator workflow already passes CODE_SIGNING_ALLOWED=NO on
+        # its own xcodebuild command line (see codemagic.yaml), so this
+        # project-level setting was always redundant there -- but for
+        # TestFlight, nothing overrode it, so it hard-disabled signing
+        # project-wide even after `xcode-project use-profiles` correctly
+        # fetched and applied a real certificate/profile. Confirmed via a
+        # real build log: the archive itself succeeded, but `codesign`
+        # reported "code object is not signed at all" right after, which
+        # then broke `xcode-project build-ipa`'s export step (it reads
+        # entitlements off the signed app to build the export options
+        # plist, and found nothing to read). No CODE_SIGNING_ALLOWED
+        # setting belongs at the project level now that both a signed and
+        # an unsigned workflow share this spec -- each workflow controls it
+        # explicitly via its own command line instead.
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.10"
         ENABLE_PREVIEWS: YES
