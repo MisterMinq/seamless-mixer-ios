@@ -43,7 +43,7 @@ final class DatabaseManagerTests: XCTestCase {
             var pSource = PlaylistSource(playlistID: playlist.id!, sourceType: .genre, sourceValue: "smooth-jazz", sourceLabel: "Smooth jazz")
             try pSource.insert(dbConn)
 
-            var pTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 1, position: 0, crossfadeStartOffsetSec: 180, tempoNudgePct: 0.03)
+            var pTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 1, position: 0, crossfadeStartOffsetSec: 180, crossfadeDurationSec: 4, tempoNudgePct: 0.03)
             try pTrack.insert(dbConn)
         }
 
@@ -80,9 +80,9 @@ final class DatabaseManagerTests: XCTestCase {
             try source.insert(dbConn)
 
             // Deliberately inserted out of position order.
-            var second = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 2, position: 1, crossfadeStartOffsetSec: 175, tempoNudgePct: 0)
+            var second = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 2, position: 1, crossfadeStartOffsetSec: 175, crossfadeDurationSec: 3, tempoNudgePct: 0)
             try second.insert(dbConn)
-            var first = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 1, position: 0, crossfadeStartOffsetSec: 195, tempoNudgePct: 0.02)
+            var first = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: 1, position: 0, crossfadeStartOffsetSec: 195, crossfadeDurationSec: 5, tempoNudgePct: 0.02)
             try first.insert(dbConn)
 
             return playlist.id!
@@ -93,10 +93,12 @@ final class DatabaseManagerTests: XCTestCase {
         XCTAssertEqual(detail.sources.first?.sourceLabel, "Smooth jazz")
         XCTAssertEqual(detail.tracks.map(\.track.title), ["A", "B"])
         XCTAssertEqual(detail.tracks.map(\.position), [0, 1])
-        // Confirms `crossfadeStartOffsetSec` actually rides along on the
-        // join, not just `position`/`track` — added alongside PlaybackEngine's
-        // crossfade slice, which is the first real consumer of this field.
+        // Confirms `crossfadeStartOffsetSec`/`crossfadeDurationSec` actually
+        // ride along on the join, not just `position`/`track` — added
+        // alongside PlaybackEngine's crossfade slice, which is the first real
+        // consumer of these fields.
         XCTAssertEqual(detail.tracks.map(\.crossfadeStartOffsetSec), [195, 175])
+        XCTAssertEqual(detail.tracks.map(\.crossfadeDurationSec), [5, 3])
     }
 
     /// Covers `removeTrack` (added for Playlist Detail's per-track "..."
@@ -119,7 +121,7 @@ final class DatabaseManagerTests: XCTestCase {
             try playlist.insert(dbConn)
 
             for (trackID, position) in [(1, 0), (2, 1), (3, 2)] {
-                var playlistTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: Int64(trackID), position: position, crossfadeStartOffsetSec: 180, tempoNudgePct: 0)
+                var playlistTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: Int64(trackID), position: position, crossfadeStartOffsetSec: 180, crossfadeDurationSec: 4, tempoNudgePct: 0)
                 try playlistTrack.insert(dbConn)
             }
 
@@ -159,7 +161,7 @@ final class DatabaseManagerTests: XCTestCase {
 
             var ids: [Int64] = []
             for (trackID, position) in [(1, 0), (2, 1), (3, 2)] {
-                var playlistTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: Int64(trackID), position: position, crossfadeStartOffsetSec: 180, tempoNudgePct: 0)
+                var playlistTrack = PlaylistTrack(playlistID: playlist.id!, trackPersistentID: Int64(trackID), position: position, crossfadeStartOffsetSec: 180, crossfadeDurationSec: 4, tempoNudgePct: 0)
                 try playlistTrack.insert(dbConn)
                 ids.append(playlistTrack.id!)
             }

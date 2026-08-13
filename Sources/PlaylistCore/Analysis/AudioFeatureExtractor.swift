@@ -21,6 +21,23 @@ public struct AnalysisFeatures: Equatable {
     public var camelotCode: String
     public var energy: Double       // RMS, unbounded (matches Python — not clamped to 0...1 here either)
     public var brightness: Double   // mean spectral centroid in Hz (matches Python's raw value)
+    /// Seconds of leading near-silence to skip before the track's real audio
+    /// starts — a direct port of `playlist_mixer.py`'s `trim_silence`
+    /// (top_db=40, i.e. threshold ≈ 1% of peak amplitude). Added 2026-08-13
+    /// once real-device listening surfaced that the iOS mixing engine played
+    /// raw files untouched, so a crossfade could blend into a track's
+    /// leading dead air — a bug Phase 1 already hit and fixed, never carried
+    /// over to this port. See `AudioFeatureExtractor.detectTrimPoints`.
+    public var playableStartSec: Double
+    /// Duration, in seconds, of the track's real audio after trimming both
+    /// leading/trailing near-silence AND a trailing musical fade-out (a
+    /// direct port of `trim_silence` + `trim_fade_tail` combined) — i.e.
+    /// `playableStartSec ..< playableStartSec + playableDurationSec` is the
+    /// track's "real" content. This is what a transition's crossfade timing
+    /// should be computed against, not the file's raw duration, so a
+    /// crossfade lands on real audio instead of a fade-out or trailing
+    /// silence.
+    public var playableDurationSec: Double
 }
 
 public enum AudioFeatureExtractor {
@@ -98,11 +115,15 @@ public enum AudioFeatureExtractor {
     ///     (no-op, no behavior change).
     public static func extract(samples: [Float], sampleRate: Double, tempoDebugLog: ((String) -> Void)? = nil) -> AnalysisFeatures {
         let energy = rms(samples)
+        let trimPoints = detectTrimPoints(samples: samples, sampleRate: sampleRate)
 
         guard samples.count >= fftSize else {
             // Too short to frame at all — return safe Python-side fallback values
             // (mirrors the `except: bpm = 120.0` / `code = "8A"` fallbacks).
-            return AnalysisFeatures(bpm: 120.0, camelotCode: "8A", energy: Double(energy), brightness: 2000.0)
+            return AnalysisFeatures(
+                bpm: 120.0, camelotCode: "8A", energy: Double(energy), brightness: 2000.0,
+                playableStartSec: trimPoints.startSec, playableDurationSec: trimPoints.durationSec
+            )
         }
 
         let window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: fftSize, isHalfWindow: false)
@@ -132,7 +153,85 @@ public enum AudioFeatureExtractor {
         let tempoOnsetEnvelope = computeMelOnsetEnvelope(samples: samples, window: window, fft: fft, sampleRate: sampleRate)
         let bpm = estimateTempo(onsetEnvelope: tempoOnsetEnvelope, sampleRate: sampleRate, hopSize: tempoHopSize, debugLog: tempoDebugLog)
 
-        return AnalysisFeatures(bpm: bpm, camelotCode: camelotCode, energy: Double(energy), brightness: Double(brightness))
+        return AnalysisFeatures(
+            bpm: bpm, camelotCode: camelotCode, energy: Double(energy), brightness: Double(brightness),
+            playableStartSec: trimPoints.startSec, playableDurationSec: trimPoints.durationSec
+        )
+    }
+
+    /// Direct port of `playlist_mixer.py`'s `trim_silence` + `trim_fade_tail`,
+    /// combined into one pass that returns *offsets* (seconds) rather than a
+    /// cropped buffer — this only ever needs to answer "where does the real
+    /// audio start/end," never to actually produce trimmed samples, since the
+    /// real full-quality file is trimmed at playback time instead (see
+    /// `PlaybackEngine`'s use of `AVAudioPlayerNode.scheduleSegment`).
+    ///
+    /// 1. **Silence trim** (`trim_silence`, top_db=40): threshold is ~1% of
+    ///    the track's peak absolute amplitude (`10^(-40/20)`) — scans inward
+    ///    from both ends until a sample clears it.
+    /// 2. **Fade-tail trim** (`trim_fade_tail`, energy_frac=0.35,
+    ///    frame_sec=0.5): within the silence-trimmed region, scans backward
+    ///    in 0.5s frames from the end and cuts once a frame's RMS drops below
+    ///    35% of the region's median frame RMS — catches a musical fade-out,
+    ///    which lingers well above pure silence for several seconds and would
+    ///    otherwise still let a crossfade land mid-fade even after step 1.
+    ///    Same "too short to meaningfully detect a fade" bailout as Python
+    ///    (fewer than 6 frames).
+    static func detectTrimPoints(samples: [Float], sampleRate: Double) -> (startSec: Double, durationSec: Double) {
+        guard !samples.isEmpty else { return (0, 0) }
+
+        var peak: Float = 0
+        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
+        guard peak > 0 else { return (0, Double(samples.count) / sampleRate) }
+
+        let silenceThreshold = peak * Float(pow(10.0, -40.0 / 20.0))
+
+        var startIdx = 0
+        while startIdx < samples.count && abs(samples[startIdx]) < silenceThreshold {
+            startIdx += 1
+        }
+        var endIdx = samples.count - 1
+        while endIdx > startIdx && abs(samples[endIdx]) < silenceThreshold {
+            endIdx -= 1
+        }
+        guard endIdx > startIdx else {
+            // Effectively all near-silence (shouldn't happen for a real
+            // track) — fall back to the untrimmed buffer rather than
+            // returning a zero/negative duration.
+            return (0, Double(samples.count) / sampleRate)
+        }
+
+        let frameLength = Int(0.5 * sampleRate)
+        let trimmedLength = endIdx - startIdx + 1
+        let frameCount = trimmedLength / frameLength
+
+        var effectiveEndIdx = endIdx
+        if frameCount >= 6 {
+            var frameRMS = [Float](repeating: 0, count: frameCount)
+            for i in 0..<frameCount {
+                let frameStart = startIdx + i * frameLength
+                var meanSquare: Float = 0
+                vDSP_measqv(Array(samples[frameStart..<(frameStart + frameLength)]), 1, &meanSquare, vDSP_Length(frameLength))
+                frameRMS[i] = sqrt(meanSquare)
+            }
+            let median = frameRMS.sorted()[frameCount / 2]
+            let threshold = median * 0.35
+
+            var lastGood = frameCount - 1
+            var i = frameCount - 1
+            while i >= 0 {
+                if frameRMS[i] >= threshold {
+                    lastGood = i
+                    break
+                }
+                i -= 1
+            }
+            effectiveEndIdx = min(endIdx, startIdx + (lastGood + 1) * frameLength - 1)
+        }
+
+        let startSec = Double(startIdx) / sampleRate
+        let durationSec = max(0, Double(effectiveEndIdx - startIdx + 1) / sampleRate)
+        return (startSec, durationSec)
     }
 
     /// Runs an independent STFT pass at `tempoHopSize` (finer than the

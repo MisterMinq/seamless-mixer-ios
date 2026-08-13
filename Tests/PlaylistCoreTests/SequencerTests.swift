@@ -25,7 +25,14 @@ final class SequencerTests: XCTestCase {
             persistentID: Self.nextID,
             title: title, artist: "", album: "", genre: "",
             bpm: bpm, musicalKey: key, energy: energy, brightness: brightness,
-            durationSec: duration
+            durationSec: duration,
+            // `Track.isAnalyzed` (which `Sequencer.sequence` filters the
+            // pool by) now also requires these two — added 2026-08-13
+            // alongside the crossfade-timing fix, so a synthetic test track
+            // needs them too or it's silently excluded from every test here.
+            // 0/duration is the "no leading silence, whole file is playable"
+            // synthetic equivalent of real analysis output.
+            playableStartSec: 0, playableDurationSec: duration
         )
     }
 

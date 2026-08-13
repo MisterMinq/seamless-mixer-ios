@@ -16,12 +16,16 @@ public struct PlaylistTrackDetail: Identifiable, Equatable {
     /// of only knowing which tracks to play, not when to start blending
     /// them.
     public let crossfadeStartOffsetSec: Double
+    /// How long the blend into the next track lasts, in seconds — see
+    /// `PlaylistTrack.crossfadeDurationSec`'s doc comment.
+    public let crossfadeDurationSec: Double
 
-    public init(id: Int64, position: Int, track: Track, crossfadeStartOffsetSec: Double) {
+    public init(id: Int64, position: Int, track: Track, crossfadeStartOffsetSec: Double, crossfadeDurationSec: Double) {
         self.id = id
         self.position = position
         self.track = track
         self.crossfadeStartOffsetSec = crossfadeStartOffsetSec
+        self.crossfadeDurationSec = crossfadeDurationSec
     }
 }
 
@@ -58,7 +62,8 @@ extension DatabaseManager {
                 }
                 return PlaylistTrackDetail(
                     id: playlistTrack.id ?? playlistTrack.trackPersistentID, position: playlistTrack.position,
-                    track: track, crossfadeStartOffsetSec: playlistTrack.crossfadeStartOffsetSec
+                    track: track, crossfadeStartOffsetSec: playlistTrack.crossfadeStartOffsetSec,
+                    crossfadeDurationSec: playlistTrack.crossfadeDurationSec
                 )
             }
 

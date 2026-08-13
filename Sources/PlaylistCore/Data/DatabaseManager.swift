@@ -6,9 +6,9 @@ import GRDB
 /// Schema" section exactly — if a column or index changes here, update that
 /// section too (Rule 2's iOS-codebase extension).
 ///
-/// NOT compiled or tested — no Xcode/Swift toolchain is available in the
-/// environment this was written in. Build in Xcode and run
-/// `PlaylistCoreTests` before relying on this.
+/// Compiles clean and `DatabaseManagerTests` passes (migration creates all
+/// four tables, track round-trip, playlist-with-sources-and-tracks) as of
+/// the 2026-08-07 Codemagic build — see CLAUDE.md Version History 0.13.6.
 public final class DatabaseManager {
 
     public let dbQueue: DatabaseQueue
@@ -98,6 +98,33 @@ public final class DatabaseManager {
             }
             // Fast ordered playback retrieval — per CLAUDE.md.
             try db.create(index: "idx_playlist_tracks_playlist_position", on: "playlist_tracks", columns: ["playlist_id", "position"])
+        }
+
+        // Added 2026-08-13, after Andy's first real-device listening pass
+        // surfaced that the mixing engine's crossfades were badly timed and
+        // sometimes landed mid-fade-out — root cause was `crossfadeStartOffsetSec`
+        // being a flat, unvalidated placeholder (`duration - 5s`) and the
+        // engine playing raw files with no silence/fade-tail trimming, unlike
+        // Phase 1's Python pipeline. See CLAUDE.md's Version History for the
+        // full fix.
+        migrator.registerMigration("v2_trim_and_crossfade_duration") { db in
+            try db.alter(table: "tracks") { t in
+                // Both nullable: nil means "not yet (re-)analyzed under this
+                // schema" — `Track.isAnalyzed` treats a nil here as
+                // needing analysis, so existing rows get backfilled the next
+                // time they're pulled into a Build Mix/Refresh pool, rather
+                // than silently keeping stale placeholder crossfade timing.
+                t.add(column: "playable_start_sec", .double)
+                t.add(column: "playable_duration_sec", .double)
+            }
+            try db.alter(table: "playlist_tracks") { t in
+                // NOT NULL with a default so this backfills cleanly for any
+                // playlist_tracks rows that already exist — those rows keep
+                // their old (now-known-wrong) crossfade_start_offset_sec
+                // until their playlist is next Refreshed, at which point
+                // MixBuilder recomputes both real values together.
+                t.add(column: "crossfade_duration_sec", .double).notNull().defaults(to: 4.0)
+            }
         }
 
         return migrator
