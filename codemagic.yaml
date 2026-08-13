@@ -321,4 +321,35 @@ workflows:
     publishing:
       app_store_connect:
         auth: integration
-        submit_to_testflight: true
+        # Changed 2026-08-14: was `true`, which submits every build for
+        # Apple's EXTERNAL TestFlight beta review — the process that produced
+        # the four-round Beta App Information/Description/export-compliance
+        # saga (0.18.15-0.18.17) and later the "Another build is in review"
+        # 422 conflict (only one build per version train can be in external
+        # review at a time). Andy is currently the sole registered tester and
+        # confirmed he already receives builds on his phone with zero review
+        # wait — Apple delivers to *internal* testers (App Store Connect
+        # users with access, which Andy has as the sole team member) the
+        # moment a build finishes processing, entirely independent of
+        # external beta review. So external submission was never actually
+        # gating his own testing; it was only ever producing failures to
+        # ignore. `false` stops the workflow from attempting that submission
+        # at all. Confirmed via Codemagic's own docs
+        # (docs.codemagic.io/yaml-publishing/app-store-connect) and a
+        # maintainer-confirmed GitHub discussion (codemagic-ci-cd/discussions/2536)
+        # that `beta_groups` + omitting/false-ing `submit_to_testflight` is
+        # exactly this project's use case.
+        submit_to_testflight: false
+        # Added 2026-08-14: explicitly targets Andy's real internal testing
+        # group (named "SeamlessDJ Testers" in App Store Connect's TestFlight
+        # tab, confirmed by Andy directly rather than assumed/guessed) so
+        # every build is added to it automatically — no manual per-build step
+        # in App Store Connect's UI needed. Andy plans to add a few more
+        # testers to this same internal group; external testers stay off the
+        # table until he says otherwise (see `submit_to_testflight` above).
+        # Not yet verified against a live Codemagic run — same standing
+        # caveat as every other change in this file; if the group name here
+        # doesn't exactly match what's in App Store Connect, expect a clear
+        # error naming the mismatch rather than a silent no-op.
+        beta_groups:
+          - SeamlessDJ Testers
