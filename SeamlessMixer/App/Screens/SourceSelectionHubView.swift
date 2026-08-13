@@ -233,15 +233,38 @@ struct SourceSelectionHubView: View {
     /// — `MixBuilder` already accepted `targetSeconds` as a parameter, this
     /// screen just never gave the user a way to set it. 10...120 min, by 5,
     /// matches `playlist_mixer.py`'s `--max-minutes` default cap at the top.
+    ///
+    /// **"Include everything" toggle added 2026-08-14** — real-device
+    /// feedback asked why picking one bounded source (a genre, an artist)
+    /// still gets trimmed to a duration rather than just including
+    /// everything in it, mirroring Phase 1's `--keep-all` mode. Grays out
+    /// the Stepper while on, same "mutually exclusive, visually disabled"
+    /// treatment `categoryRows` already uses for "Use your whole library".
     private var durationControl: some View {
-        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
-            Text("Target length")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(DesignTokens.Color.textSecondary)
-            Stepper(value: $viewModel.targetMinutes, in: 10...120, step: 5) {
-                Text("\(viewModel.targetMinutes) min")
-                    .foregroundStyle(DesignTokens.Color.textPrimary)
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
+            Toggle(isOn: $viewModel.includeEverything) {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+                    Text("Include everything")
+                        .font(.body)
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                    Text("No length limit — every available song in the selected pool is included.")
+                        .font(.caption)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                }
             }
+            .tint(DesignTokens.Color.primary)
+
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                Text("Target length")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                Stepper(value: $viewModel.targetMinutes, in: 10...120, step: 5) {
+                    Text("\(viewModel.targetMinutes) min")
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                }
+            }
+            .opacity(viewModel.includeEverything ? 0.4 : 1.0)
+            .disabled(viewModel.includeEverything)
         }
     }
 
@@ -261,6 +284,7 @@ struct SourceSelectionHubView: View {
                             selectedSources: viewModel.selectedSources,
                             mode: viewModel.mode,
                             targetSeconds: Double(viewModel.targetMinutes * 60),
+                            keepAll: viewModel.includeEverything,
                             store: store
                         )
                         if let playlist { builtPlaylist = playlist }

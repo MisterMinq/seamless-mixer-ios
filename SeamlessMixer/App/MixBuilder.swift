@@ -48,19 +48,26 @@ final class MixBuilder: ObservableObject {
     @Published private(set) var progressText = ""
     @Published var buildError: String?
 
+    /// - Parameter keepAll: when true, includes every analyzed/DRM-accessible
+    ///   track in the pool and ignores `targetSeconds` entirely — the iOS
+    ///   equivalent of `playlist_mixer.py`'s `--keep-all`, threaded straight
+    ///   through to `Sequencer.sequence(..., keepAll:)`, which already
+    ///   supported this. Added 2026-08-14, the UI-level half of a gap real
+    ///   feedback surfaced: a bounded source (a genre, an artist) had no way
+    ///   to be included in full, only trimmed to a target length.
     /// - Returns: the newly-created `Playlist` on success (caller navigates
     ///   to Playlist Detail with it, per the confirmed Navigation Flow —
     ///   Build Mix lands on Playlist Detail, not back on My Mixes), or `nil`
     ///   on failure (`buildError` is set for the caller's alert).
     @discardableResult
-    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, store: PlaylistStore) async -> Playlist? {
+    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool = false, store: PlaylistStore) async -> Playlist? {
         guard !isBuilding else { return nil }
         isBuilding = true
         buildError = nil
         defer { isBuilding = false; progressText = "" }
 
         do {
-            let playlist = try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, store: store)
+            let playlist = try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, keepAll: keepAll, store: store)
             store.refresh()
             return playlist
         } catch {
@@ -69,7 +76,7 @@ final class MixBuilder: ObservableObject {
         }
     }
 
-    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, store: PlaylistStore) async throws -> Playlist {
+    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool, store: PlaylistStore) async throws -> Playlist {
         // `.songs` ("whole library") is the one remaining unsupported type —
         // it's never actually produced by `SelectedSource` today (whole
         // library is its own `useWholeLibrary` toggle, not a picked source),
@@ -91,7 +98,7 @@ final class MixBuilder: ObservableObject {
         }
 
         progressText = "Sequencing…"
-        let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: sequencingMode(for: mode))
+        let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: sequencingMode(for: mode), keepAll: keepAll)
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
         progressText = "Saving…"

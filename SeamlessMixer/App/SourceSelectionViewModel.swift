@@ -76,6 +76,18 @@ final class SourceSelectionViewModel: ObservableObject {
     /// 120 at the top end.
     @Published var targetMinutes: Int = 30
 
+    /// When true, Build Mix includes every analyzed/DRM-accessible track in
+    /// the selected pool, ignoring `targetMinutes` entirely — the iOS
+    /// equivalent of `playlist_mixer.py`'s `--keep-all` mode (Sequencer
+    /// already supports this via its own `keepAll` parameter; this is just
+    /// the first UI control to actually set it). Added 2026-08-14 after
+    /// real-device feedback questioned why a picked source (e.g. one genre)
+    /// gets trimmed to a duration at all rather than just including
+    /// everything in it. Mutually exclusive in spirit with `targetMinutes`
+    /// (the Hub grays out the Stepper while this is on), though both remain
+    /// real, independent properties rather than one replacing the other.
+    @Published var includeEverything: Bool = false
+
     /// True once "Use your whole library" is picked — per the confirmed
     /// design, this clears/disables the four category rows since combining
     /// it with anything else is redundant.

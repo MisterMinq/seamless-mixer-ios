@@ -19,6 +19,17 @@ import PlaylistCore
 /// Rows are now tappable through to `PlaylistDetailView`, and the "..."
 /// button opens the real `PlaylistOverflowSheet` (Favourite/Rename/Refresh/
 /// Delete) — both previously missing, see `MixRow`'s own doc comment.
+///
+/// **CTA clarity fixed 2026-08-14**: the empty state already had a clear,
+/// labeled "New mix" button, but once real playlists exist, the only way to
+/// start a new one was the bare "+" glyph in the toolbar — real-device
+/// feedback confirmed this reads as "add a playlist" rather than "build a
+/// new mix" (a fair critique; Apple's own toolbar "+" affordances are
+/// usually paired with a list-management context this app doesn't have).
+/// Added a persistent, explicitly-labeled "Build Mix" bar at the bottom of
+/// the non-empty list, matching how the empty state's own labeled button
+/// already reads unambiguously. The toolbar "+" stays too, as a quick-access
+/// shortcut, but is no longer the *only* way in.
 struct MyMixesView: View {
     @ObservedObject var store: PlaylistStore
 
@@ -134,6 +145,29 @@ struct MyMixesView: View {
             // required if it wasn't), rather than relying on inference.
             await store.refresh()
         }
+        .safeAreaInset(edge: .bottom) { buildMixBar }
+    }
+
+    /// The explicitly-labeled "Build Mix" entry point for when playlists
+    /// already exist — see this file's own doc comment for why the bare
+    /// toolbar "+" wasn't enough on its own.
+    private var buildMixBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            NavigationLink {
+                SourceSelectionHubView(store: store)
+            } label: {
+                Label("Build Mix", systemImage: "plus")
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(DesignTokens.Color.primary)
+            .foregroundStyle(DesignTokens.Color.onPrimary)
+            .padding(.horizontal, DesignTokens.Spacing.md)
+            .padding(.vertical, DesignTokens.Spacing.xs)
+        }
+        .background(DesignTokens.Color.surface)
     }
 }
 
