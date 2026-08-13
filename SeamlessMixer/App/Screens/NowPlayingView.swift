@@ -88,78 +88,96 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
-        VStack(spacing: DesignTokens.Spacing.lg) {
-            if !sourceCaption.isEmpty {
-                // Real scrolling marquee (2026-08-14) — a static, centered,
-                // single-line caption truncated for longer source
-                // descriptions (e.g. several combined sources), with no way
-                // to read the rest without leaving this screen.
-                MarqueeText(text: sourceCaption)
+        // Wrapped in a ScrollView as of 2026-08-14 -- real-device feedback
+        // found the play button, the time labels, and long titles cut off
+        // ("out of range, not in the screen range") once a track was
+        // playing. Root cause: this was a plain VStack with no scroll
+        // container, so on a screen too short for the fixed-size artwork
+        // (260x260) plus a two-line title plus the full transport row, the
+        // overflow simply clipped rather than becoming reachable. The
+        // GeometryReader + `.frame(minHeight:)` combination keeps the
+        // original centered look on a screen tall enough to fit everything
+        // (the inner Spacers still expand to fill the extra room) while
+        // making it scrollable rather than clipped on one that isn't.
+        GeometryReader { geo in
+            ScrollView {
+                VStack(spacing: DesignTokens.Spacing.lg) {
+                    if !sourceCaption.isEmpty {
+                        // Real scrolling marquee (2026-08-14) — a static,
+                        // centered, single-line caption truncated for longer
+                        // source descriptions (e.g. several combined
+                        // sources), with no way to read the rest without
+                        // leaving this screen.
+                        MarqueeText(text: sourceCaption)
+                            .padding(.horizontal, DesignTokens.Spacing.lg)
+                    }
+
+                    Spacer()
+
+                    artworkTile
+
+                    if let row = nowPlayingRow {
+                        VStack(spacing: DesignTokens.Spacing.xxs) {
+                            Text(row.title)
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(DesignTokens.Color.textPrimary)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                            Text(row.artist)
+                                .font(.body)
+                                .foregroundStyle(DesignTokens.Color.textSecondary)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, DesignTokens.Spacing.lg)
+                    } else {
+                        Text("Nothing playing")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                    }
+
+                    progressBar
+
+                    controls
+
+                    if let nextRow {
+                        HStack(spacing: DesignTokens.Spacing.xs) {
+                            Image(systemName: "arrow.triangle.merge")
+                                .font(.footnote)
+                                .foregroundStyle(DesignTokens.Color.secondary)
+                            Text("Blending into \(nextRow.title)")
+                                .font(.footnote)
+                                .foregroundStyle(DesignTokens.Color.textSecondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer()
+
+                    // Bottom row per the confirmed design: connected output
+                    // device + queue icon. Output device is still deferred
+                    // (see this file's own doc comment) -- shown as a
+                    // disabled placeholder so the layout's final shape is
+                    // already right. Queue icon is real as of 2026-08-14
+                    // (see `QueueView`).
+                    HStack {
+                        Label("This iPhone", systemImage: "hifispeaker")
+                            .font(.caption)
+                            .foregroundStyle(DesignTokens.Color.textDisabled)
+                        Spacer()
+                        Button {
+                            showQueue = true
+                        } label: {
+                            Image(systemName: "list.bullet")
+                                .foregroundStyle(DesignTokens.Color.primaryText)
+                        }
+                        .disabled(nowPlayingRow == nil)
+                    }
                     .padding(.horizontal, DesignTokens.Spacing.lg)
-            }
-
-            Spacer()
-
-            artworkTile
-
-            if let row = nowPlayingRow {
-                VStack(spacing: DesignTokens.Spacing.xxs) {
-                    Text(row.title)
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(DesignTokens.Color.textPrimary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                    Text(row.artist)
-                        .font(.body)
-                        .foregroundStyle(DesignTokens.Color.textSecondary)
-                        .lineLimit(1)
                 }
-                .padding(.horizontal, DesignTokens.Spacing.lg)
-            } else {
-                Text("Nothing playing")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                .padding(.vertical, DesignTokens.Spacing.lg)
+                .frame(minHeight: geo.size.height)
             }
-
-            progressBar
-
-            controls
-
-            if let nextRow {
-                HStack(spacing: DesignTokens.Spacing.xs) {
-                    Image(systemName: "arrow.triangle.merge")
-                        .font(.footnote)
-                        .foregroundStyle(DesignTokens.Color.secondary)
-                    Text("Blending into \(nextRow.title)")
-                        .font(.footnote)
-                        .foregroundStyle(DesignTokens.Color.textSecondary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer()
-
-            // Bottom row per the confirmed design: connected output device +
-            // queue icon. Output device is still deferred (see this file's
-            // own doc comment) -- shown as a disabled placeholder so the
-            // layout's final shape is already right. Queue icon is real as
-            // of 2026-08-14 (see `QueueView`).
-            HStack {
-                Label("This iPhone", systemImage: "hifispeaker")
-                    .font(.caption)
-                    .foregroundStyle(DesignTokens.Color.textDisabled)
-                Spacer()
-                Button {
-                    showQueue = true
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                }
-                .disabled(nowPlayingRow == nil)
-            }
-            .padding(.horizontal, DesignTokens.Spacing.lg)
         }
-        .padding(.vertical, DesignTokens.Spacing.lg)
         .background(DesignTokens.Color.background)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: playbackEngine.isPlaying) { _, isPlaying in

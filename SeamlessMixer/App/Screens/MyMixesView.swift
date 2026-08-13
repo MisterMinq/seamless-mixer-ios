@@ -187,11 +187,28 @@ struct MyMixesView: View {
 /// on the ellipsis is what keeps its tap from also triggering the row's
 /// own navigation — the standard SwiftUI pattern for a secondary button
 /// inside a `List` row that's also a `NavigationLink`.
+///
+/// **Now-playing indicator added 2026-08-14** — real-device feedback
+/// (repeated across several rounds) flagged that this screen gave no clue
+/// which mix, if any, was currently playing — finding it was "trial and
+/// error." A real, persistent mini-player is still the confirmed design's
+/// complete answer and remains unbuilt, but this is a small, immediate,
+/// scoped piece of the same problem: whichever row's playlist matches
+/// `PlaybackEngine.currentPlaylistID` shows the real animated
+/// `NowPlayingBarsView` in place of the flat artwork-placeholder icon —
+/// tapping that row already leads to Playlist Detail, whose own Play button
+/// already resumes (not restarts) an in-progress session, so this closes a
+/// real practical gap even without the full mini-player.
 private struct MixRow: View {
     let playlist: Playlist
     let store: PlaylistStore
 
+    @EnvironmentObject private var playbackEngine: PlaybackEngine
     @State private var showOverflow = false
+
+    private var isPlaying: Bool {
+        playbackEngine.isPlaying && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
+    }
 
     var body: some View {
         NavigationLink {
@@ -202,8 +219,14 @@ private struct MixRow: View {
                     .fill(DesignTokens.Color.surfaceTint)
                     .frame(width: 56, height: 56)
                     .overlay(
-                        Image(systemName: "music.note.list")
-                            .foregroundStyle(DesignTokens.Color.primaryText)
+                        Group {
+                            if isPlaying {
+                                NowPlayingBarsView(color: DesignTokens.Color.primaryText, maxHeight: 18)
+                            } else {
+                                Image(systemName: "music.note.list")
+                                    .foregroundStyle(DesignTokens.Color.primaryText)
+                            }
+                        }
                     )
 
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {

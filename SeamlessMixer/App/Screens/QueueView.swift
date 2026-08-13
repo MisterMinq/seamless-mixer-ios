@@ -31,6 +31,17 @@ import SwiftUI
 /// (only a lightweight `rows` snapshot, per its own doc comment, to keep
 /// its footprint small) — kept out of scope for this pass rather than
 /// widening that on the strength of this one screen.
+///
+/// **Now-playing row pinned above a scrollable list, as of 2026-08-14** —
+/// the first version put every row (including now-playing) inside one
+/// `List`, so scrolling down carried the now-playing row away with
+/// everything else, leaving no visual anchor for "what's actually playing"
+/// once scrolled even slightly (exactly what real-device feedback reported:
+/// "the whole screen is scrolled up till the 'Now Playing' button
+/// disappears"). Restructured so only the *remaining* upcoming tracks live
+/// inside the scrollable `List`; the now-playing row is a fixed sibling
+/// above it, opaque against the same background, so the list visibly
+/// scrolls underneath it rather than carrying it away.
 struct QueueView: View {
     let rows: [PlaylistDetailRow]
 
@@ -52,13 +63,19 @@ struct QueueView: View {
         return Array(rows[nowPlayingIndex...])
     }
 
+    /// Everything in `upcoming` except the now-playing row itself — what
+    /// actually goes inside the scrollable `List`.
+    private var remaining: [PlaylistDetailRow] {
+        Array(upcoming.dropFirst())
+    }
+
     var body: some View {
         NavigationStack {
             Group {
                 if upcoming.isEmpty {
                     emptyState
                 } else {
-                    list
+                    content
                 }
             }
             .background(DesignTokens.Color.background)
@@ -73,26 +90,46 @@ struct QueueView: View {
         }
     }
 
-    private var list: some View {
-        List {
-            Section {
-                subtitleRow
-            }
-            .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
+    private var content: some View {
+        VStack(spacing: 0) {
+            subtitleRow
+                .padding(.horizontal, DesignTokens.Spacing.md)
+                .padding(.top, DesignTokens.Spacing.xs)
 
-            Section {
-                ForEach(Array(upcoming.enumerated()), id: \.element.id) { index, row in
-                    rowView(row, isNowPlaying: index == 0, isImminent: index == 1, isLast: index == upcoming.count - 1)
-                }
+            if let nowPlaying = upcoming.first {
+                // Pinned, not part of the scrollable List below -- see this
+                // file's own doc comment. `isImminent: true` on its own
+                // connector matches Playlist Detail's convention (the
+                // transition immediately after "now playing" is always the
+                // imminent one) -- fixes a real off-by-one in the previous
+                // version, which passed this to the *second* row instead.
+                rowView(nowPlaying, isNowPlaying: true, isImminent: true, isLast: remaining.isEmpty)
+                    .padding(.horizontal, DesignTokens.Spacing.md)
+                    .padding(.top, DesignTokens.Spacing.xs)
+                    .background(DesignTokens.Color.background)
             }
-            .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
+
+            if remaining.isEmpty {
+                Spacer()
+                Text("Nothing else queued")
+                    .font(.body)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                Spacer()
+            } else {
+                List {
+                    Section {
+                        ForEach(Array(remaining.enumerated()), id: \.element.id) { index, row in
+                            rowView(row, isNowPlaying: false, isImminent: false, isLast: index == remaining.count - 1)
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
     }
 
     /// The confirmed design's own note on this screen's title: keep it
@@ -102,7 +139,7 @@ struct QueueView: View {
         Text("Blending seamlessly, in order.")
             .font(.footnote)
             .foregroundStyle(DesignTokens.Color.textSecondary)
-            .padding(.top, DesignTokens.Spacing.xs)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var emptyState: some View {
