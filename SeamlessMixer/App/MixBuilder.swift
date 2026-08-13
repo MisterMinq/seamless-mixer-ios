@@ -177,11 +177,13 @@ final class MixBuilder: ObservableObject {
             try conn.execute(sql: "DELETE FROM playlist_tracks WHERE playlist_id = ?", arguments: [playlistID])
 
             for (index, track) in sequenced.enumerated() {
+                let timing = Self.crossfadeTiming(for: track)
                 var playlistTrack = PlaylistTrack(
                     playlistID: playlistID,
                     trackPersistentID: track.persistentID,
                     position: index,
-                    crossfadeStartOffsetSec: max(0, track.durationSec - 5),
+                    crossfadeStartOffsetSec: timing.startOffsetSec,
+                    crossfadeDurationSec: timing.durationSec,
                     tempoNudgePct: 0
                 )
                 try playlistTrack.insert(conn)
@@ -192,6 +194,34 @@ final class MixBuilder: ObservableObject {
                 try updatedPlaylist.update(conn)
             }
         }
+    }
+
+    /// Tempo-derived crossfade duration, a direct port of `playlist_mixer.py`'s
+    /// `build_mix`: `crossfade_sec = clip(beat_len_sec * 6 beats, 2.0, 12.0)`,
+    /// sized to the *outgoing* track's own tempo — a slower song gets a
+    /// longer, more graceful blend, a fast one a shorter/tighter one —
+    /// rather than the fixed 4.0s constant this project shipped with before
+    /// real-device listening (2026-08-13) surfaced that as one of three real
+    /// bugs behind "the crossfade doesn't work." Falls back to a 120bpm
+    /// assumption if `bpm` is somehow nil (shouldn't happen — `Sequencer`
+    /// already filters the pool to analyzed tracks before this ever runs),
+    /// matching Python's `max(bpm, 1e-6)` divide-by-zero guard.
+    private static func crossfadeDurationSec(forBPM bpm: Double?) -> Double {
+        let beatLenSec = 60.0 / max(bpm ?? 120.0, 0.000001)
+        return min(max(beatLenSec * 6.0, 2.0), 12.0)
+    }
+
+    /// Real per-transition crossfade timing, replacing the `duration - 5s`
+    /// placeholder flagged as a stand-in since 0.15.5 and confirmed as a real
+    /// bug once Andy actually listened on a device. `startOffsetSec` is
+    /// measured from the track's *playable* start (after leading silence is
+    /// skipped, per `Track.playableStartSec`) — `PlaybackEngine` schedules
+    /// playback starting from that same offset, so its elapsed-time
+    /// measurement lines up with this value without any extra translation.
+    private static func crossfadeTiming(for track: Track) -> (startOffsetSec: Double, durationSec: Double) {
+        let crossfadeSec = crossfadeDurationSec(forBPM: track.bpm)
+        let playableDuration = track.playableDurationSec ?? track.durationSec
+        return (max(0, playableDuration - crossfadeSec), crossfadeSec)
     }
 
     /// `PlaylistMode` (used by `Playlist`/the mode picker) and `SequencingMode`
@@ -332,6 +362,8 @@ final class MixBuilder: ObservableObject {
                 track.musicalKey = features.camelotCode
                 track.energy = features.energy
                 track.brightness = features.brightness
+                track.playableStartSec = features.playableStartSec
+                track.playableDurationSec = features.playableDurationSec
                 track.analyzedAt = Date()
             } catch {
                 // Leave unanalyzed -- Sequencer's own isAnalyzed filter
@@ -354,13 +386,13 @@ final class MixBuilder: ObservableObject {
         return finalTrack
     }
 
-    /// - Note: crossfade/tempo-nudge values below are schema-valid
-    ///   placeholders, not real transition points -- the AVAudioEngine
-    ///   mixing engine that would compute those doesn't exist yet (still a
-    ///   first-pass design, per CLAUDE.md's "Mixing Engine" section).
-    ///   Revisit once that's built; a saved playlist is still a legitimate,
-    ///   correctly-sequenced recipe without it, it just can't be *played*
-    ///   with real crossfades yet.
+    /// - Note: `crossfadeStartOffsetSec`/`crossfadeDurationSec` below are now
+    ///   real, tempo-derived transition points (`Self.crossfadeTiming`), not
+    ///   the placeholder `duration - 5s` this used before 2026-08-13's
+    ///   real-device-listening fix pass. `tempoNudgePct` is still a
+    ///   placeholder (0) — the mixing engine's `AVAudioUnitTimePitch` nodes
+    ///   are wired but not driven yet, a separate, not-yet-scoped follow-up
+    ///   per CLAUDE.md's "Mixing Engine" section.
     /// - Returns: the persisted `Playlist`, with a real `id` set from the
     ///   insert — Playlist Detail loads its sources/tracks by that id, so
     ///   the caller needs the row back, not just a success flag.
@@ -397,11 +429,13 @@ final class MixBuilder: ObservableObject {
             }
 
             for (index, track) in sequenced.enumerated() {
+                let timing = Self.crossfadeTiming(for: track)
                 var playlistTrack = PlaylistTrack(
                     playlistID: playlistID,
                     trackPersistentID: track.persistentID,
                     position: index,
-                    crossfadeStartOffsetSec: max(0, track.durationSec - 5),
+                    crossfadeStartOffsetSec: timing.startOffsetSec,
+                    crossfadeDurationSec: timing.durationSec,
                     tempoNudgePct: 0
                 )
                 try playlistTrack.insert(conn)
