@@ -4,11 +4,11 @@ import PlaylistCore
 /// One track row as displayed on Playlist Detail — position, title, artist,
 /// formatted duration. Flattened from `PlaylistCore`'s `PlaylistTrackDetail`
 /// (which carries the full `Track`) since the view only needs display
-/// fields, not the whole record. `trackPersistentID` and
-/// `crossfadeStartOffsetSec` are the two exceptions — not displayed, but
-/// needed by `PlaybackEngine` to re-resolve this track's real playable file
-/// via `MPMediaQuery` and to know when this track's blend into the next one
-/// should begin.
+/// fields, not the whole record. `trackPersistentID`, `crossfadeStartOffsetSec`,
+/// `crossfadeDurationSec`, and `playableStartSec` are the exceptions — not
+/// displayed, but needed to build a real `PlaybackEngine.QueuedTrack`: which
+/// file to resolve, when this track's blend into the next one should begin,
+/// how long that blend lasts, and how much leading silence to skip.
 struct PlaylistDetailRow: Identifiable {
     let id: Int64
     let position: Int
@@ -17,6 +17,8 @@ struct PlaylistDetailRow: Identifiable {
     let durationText: String
     let trackPersistentID: Int64
     let crossfadeStartOffsetSec: Double
+    let crossfadeDurationSec: Double
+    let playableStartSec: Double
 }
 
 @MainActor
@@ -47,7 +49,9 @@ final class PlaylistDetailViewModel: ObservableObject {
                     artist: entry.track.artist,
                     durationText: Self.formatDuration(entry.track.durationSec),
                     trackPersistentID: entry.track.persistentID,
-                    crossfadeStartOffsetSec: entry.crossfadeStartOffsetSec
+                    crossfadeStartOffsetSec: entry.crossfadeStartOffsetSec,
+                    crossfadeDurationSec: entry.crossfadeDurationSec,
+                    playableStartSec: entry.track.playableStartSec ?? 0
                 )
             }
 
@@ -105,7 +109,9 @@ final class PlaylistDetailViewModel: ObservableObject {
             PlaylistDetailRow(
                 id: row.id, position: index, title: row.title, artist: row.artist,
                 durationText: row.durationText, trackPersistentID: row.trackPersistentID,
-                crossfadeStartOffsetSec: row.crossfadeStartOffsetSec
+                crossfadeStartOffsetSec: row.crossfadeStartOffsetSec,
+                crossfadeDurationSec: row.crossfadeDurationSec,
+                playableStartSec: row.playableStartSec
             )
         }
 

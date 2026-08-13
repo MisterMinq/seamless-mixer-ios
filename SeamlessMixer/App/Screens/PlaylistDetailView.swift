@@ -30,11 +30,20 @@ import PlaylistCore
 ///   `@EnvironmentObject`, not a per-screen `@StateObject`** — injected once
 ///   at the app root (`SeamlessMixerApp`) so playback survives navigating
 ///   away from this screen, rather than being torn down and rebuilt every
-///   time. Tapping Play always restarts this playlist from track 1, even if
-///   something else is already playing elsewhere — a deliberate
-///   simplification (not yet "resume if this playlist is already the one
-///   playing"), flagged for a later pass once it's a felt gap. The
-///   now-playing row is still highlighted in the track list here too, so
+///   time. **Fixed 2026-08-13** (see `isThisPlaylistPlaying`): Play used to
+///   always restart this playlist from track 1 even if it was already the
+///   one playing — flagged at the time as "a deliberate simplification,"
+///   but Andy's first real-device listening pass showed this was a real
+///   navigation dead-end, not a minor gap: there was no persistent
+///   mini-player yet, so navigating back from Now Playing and tapping Play
+///   again to get back was the *only* way back in, and doing so restarted
+///   the session (and, combined with a separate `PlaybackEngine` bug, could
+///   leave two sessions audible at once). Now Play checks
+///   `playbackEngine.currentPlaylistID` first and just reopens Now Playing
+///   on the in-progress session when it matches, rather than restarting. A
+///   full persistent mini-player (reachable from *any* screen, not just this
+///   one) remains the confirmed design's fuller fix and is still not built.
+///   The now-playing row is still highlighted in the track list here too, so
 ///   this screen keeps making sense as its own view of playback state, not
 ///   just a launch point for Now Playing.
 /// - Collage artwork is the same flat placeholder tile `MyMixesView` uses,
@@ -82,6 +91,20 @@ struct PlaylistDetailView: View {
     @State private var displayName: String
     @State private var showOverflow = false
     @Environment(\.dismiss) private var dismiss
+
+    /// True when the session currently loaded in `PlaybackEngine` is *this*
+    /// playlist. Added 2026-08-13, alongside `PlaybackEngine.currentPlaylistID`,
+    /// to fix a real navigation dead-end Andy hit: previously the Play
+    /// button always called `play(queue:)` again regardless, which restarted
+    /// from track 1 and — combined with `PlaybackEngine`'s now-fixed
+    /// chain-overlap bug — was the direct cause of "two songs playing" when
+    /// he navigated back here and tapped Play just to get back to Now
+    /// Playing. Now, tapping Play while this exact playlist is already
+    /// playing just re-opens Now Playing on the in-progress session instead
+    /// of restarting it.
+    private var isThisPlaylistPlaying: Bool {
+        playbackEngine.isPlaying && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
+    }
 
     init(playlist: Playlist, store: PlaylistStore) {
         self.playlist = playlist
@@ -241,15 +264,27 @@ struct PlaylistDetailView: View {
             VStack(spacing: DesignTokens.Spacing.xxs) {
                 Button {
                     guard !viewModel.rows.isEmpty else { return }
-                    playbackEngine.play(queue: viewModel.rows.map {
-                        PlaybackEngine.QueuedTrack(
-                            trackPersistentID: $0.trackPersistentID,
-                            crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec
+                    // Only start a fresh session if this playlist isn't
+                    // already the one playing — otherwise just reopen Now
+                    // Playing on what's already in progress. See
+                    // `isThisPlaylistPlaying`'s doc comment for why this
+                    // matters.
+                    if !isThisPlaylistPlaying {
+                        playbackEngine.play(
+                            queue: viewModel.rows.map {
+                                PlaybackEngine.QueuedTrack(
+                                    trackPersistentID: $0.trackPersistentID,
+                                    crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec,
+                                    crossfadeDurationSec: $0.crossfadeDurationSec,
+                                    playableStartSec: $0.playableStartSec
+                                )
+                            },
+                            playlistID: playlist.id
                         )
-                    })
+                    }
                     showNowPlaying = true
                 } label: {
-                    Label("Play", systemImage: "play.fill")
+                    Label(isThisPlaylistPlaying ? "Now Playing" : "Play", systemImage: isThisPlaylistPlaying ? "waveform" : "play.fill")
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                 }
@@ -262,6 +297,12 @@ struct PlaylistDetailView: View {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(DesignTokens.Color.error)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                } else if isThisPlaylistPlaying {
+                    Text("Already playing — tap to return to Now Playing.")
+                        .font(.caption)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 } else {

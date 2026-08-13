@@ -65,6 +65,29 @@ import MediaPlayer
 /// real audio output, so there is no way to confirm the crossfade actually
 /// sounds right (timing, curve, absence of clicks/gaps) short of a real
 /// device. Needs a real-device listening check before this is trusted.
+///
+/// **Fixed 2026-08-13, after Andy's first real-device listening pass
+/// surfaced real, confirmed problems ("the crossfade doesn't happen or is
+/// way off balance... two songs playing... chaotic"), three separate bugs:**
+/// (1) `play(queue:)` only stopped whichever chain was about to be reused,
+/// never the *other* one — if a previous session had left the standby chain
+/// still sounding (e.g. mid-crossfade when the user navigated away and
+/// tapped Play again, see `PlaylistDetailView`'s resume-not-restart fix),
+/// it kept playing at full volume right alongside the freshly started
+/// track. Fixed by stopping and resetting *both* chains before every
+/// `play(queue:)` call. (2) Every transition used a fixed 4.0s crossfade
+/// window regardless of tempo — replaced with `QueuedTrack.crossfadeDurationSec`,
+/// computed per-transition by `MixBuilder` the same way Phase 1's
+/// `build_mix` does (`clip(60/bpm * 6 beats, 2s, 12s)`). (3) Playback never
+/// trimmed leading silence or a trailing musical fade-out, so a crossfade
+/// could ride straight into dead air or a fade-out already in progress —
+/// exactly the "first song really stops, fades to nothing, then next
+/// starts" symptom, and a bug Phase 1 already hit and fixed
+/// (`trim_silence`/`trim_fade_tail`) but this port never carried over.
+/// Fixed via `QueuedTrack.playableStartSec` (from `AudioFeatureExtractor
+/// .detectTrimPoints`) and `AVAudioPlayerNode.scheduleSegment` instead of
+/// `scheduleFile`, in the shared `schedule(file:on:playableStartSec:generation:)`
+/// helper both `playTrackAtCurrentIndex` and `beginCrossfade` now use.
 @MainActor
 final class PlaybackEngine: ObservableObject {
     /// One entry in a playback queue — everything `PlaybackEngine` needs to
@@ -72,12 +95,24 @@ final class PlaybackEngine: ObservableObject {
     /// it, to blend into that next one at the right moment.
     struct QueuedTrack {
         let trackPersistentID: Int64
-        /// Seconds into *this* track when the blend into the next one
-        /// should begin. Meaningless for the last track in a queue (there's
-        /// nothing to blend into) — `play(trackPersistentID:)`'s
+        /// Seconds into this track's *playable* content (after
+        /// `playableStartSec`'s leading silence is skipped) when the blend
+        /// into the next one should begin. Meaningless for the last track in
+        /// a queue (there's nothing to blend into) — `play(trackPersistentID:)`'s
         /// single-track convenience passes `.infinity` here specifically so
         /// `checkCrossfadeTrigger`'s `isFinite` guard never fires for it.
         let crossfadeStartOffsetSec: Double
+        /// How long *this* transition's blend lasts, in seconds — tempo-derived
+        /// per track by `MixBuilder.crossfadeDurationSec(forBPM:)`, not a
+        /// fixed value. Read at `beginCrossfade()` time into
+        /// `activeCrossfadeDurationSec`.
+        let crossfadeDurationSec: Double
+        /// Seconds of leading near-silence to skip when scheduling this
+        /// track — see `AudioFeatureExtractor.detectTrimPoints`. 0 for a
+        /// track with no trim data (shouldn't happen for anything the
+        /// Sequencer selected, since `Track.isAnalyzed` requires it, but a
+        /// safe no-op default regardless).
+        let playableStartSec: Double
     }
 
     @Published private(set) var isPlaying = false
@@ -88,6 +123,14 @@ final class PlaybackEngine: ObservableObject {
     /// "now playing" only once it's the sole audible one, matching how a
     /// listener would describe what's playing mid-blend.
     @Published private(set) var nowPlayingTrackID: Int64?
+    /// The `Playlist.id` whose queue is currently loaded, or `nil` when
+    /// stopped. Added 2026-08-13 so `PlaylistDetailView`'s Play button can
+    /// tell "this exact playlist is already playing" apart from "something
+    /// else is playing" or "nothing is" — tapping Play used to always
+    /// restart from track 1 regardless, which was the direct cause of the
+    /// navigation dead-end Andy hit (no way back to Now Playing except
+    /// re-tapping Play, which then restarted the whole session).
+    @Published private(set) var currentPlaylistID: Int64?
     /// The track right after `nowPlayingTrackID` in the queue, or `nil` if
     /// there isn't one — what Now Playing's "blending into next" indicator
     /// reads from. Kept in sync alongside `nowPlayingTrackID` rather than
@@ -139,13 +182,13 @@ final class PlaybackEngine: ObservableObject {
     /// `isCrossfading` is true.
     private var isCrossfading = false
     private var crossfadeProgress: Double = 0
-    /// Length of the actual blend window. Not yet derived from anything
-    /// track-specific (e.g. tempo, per the confirmed design's "sized to a
-    /// few beats at the current tempo") — a fixed, reasonable value for
-    /// this first crossfade slice, same "smallest safe slice" spirit as
-    /// everything else in this file's history. Revisit once real-device
-    /// listening feedback exists to tune against.
-    private let crossfadeDurationSec: Double = 4.0
+    /// Length of the *current* transition's blend window — set for real at
+    /// `beginCrossfade()` time from that transition's own
+    /// `QueuedTrack.crossfadeDurationSec` (tempo-derived, per the confirmed
+    /// design's "sized to a few beats at the current tempo"). The 4.0
+    /// default here only matters before the first crossfade of a session
+    /// ever runs.
+    private var activeCrossfadeDurationSec: Double = 4.0
 
     private var timer: Timer?
     private let tickIntervalSec: Double = 0.1
@@ -230,31 +273,103 @@ final class PlaybackEngine: ObservableObject {
     }
 
     /// Plays a whole ordered queue, blending between tracks per each
-    /// entry's `crossfadeStartOffsetSec` where there's a next track to
-    /// blend into. Resets both chains to a clean, full-volume state first —
-    /// a previous session may have left a chain mid-fade if `stop()` wasn't
-    /// called (shouldn't happen given how `PlaylistDetailView` drives this,
-    /// but cheap to guarantee here rather than assume).
-    func play(queue: [QueuedTrack], startIndex: Int = 0) {
+    /// entry's `crossfadeStartOffsetSec`/`crossfadeDurationSec` where
+    /// there's a next track to blend into. Always fully stops *both* chains
+    /// first, not just resets volumes — a previous session may genuinely
+    /// still be playing (e.g. the standby chain mid-crossfade when the user
+    /// navigated away and is now re-tapping Play), and starting a new
+    /// session without silencing that one is exactly the "two songs
+    /// playing, chaotic" bug found 2026-08-13 (see this class's own doc
+    /// comment). Bumping `playbackGeneration` here too ensures any
+    /// completion handler still in flight from that previous session is
+    /// recognized as stale and ignored.
+    ///
+    /// - Parameter playlistID: the `Playlist.id` this queue came from, if
+    ///   any — stored as `currentPlaylistID` so a caller (`PlaylistDetailView`)
+    ///   can tell whether tapping Play again should resume viewing this same
+    ///   session or start a genuinely new one. `nil` for the single-track
+    ///   convenience below, which has no playlist to associate with.
+    func play(queue: [QueuedTrack], startIndex: Int = 0, playlistID: Int64? = nil) {
+        stopTimer()
+        playbackGeneration += 1
+        chainA.player.stop()
+        chainB.player.stop()
+        chainA.player.volume = 1
+        chainB.player.volume = 1
+
         self.queue = queue
         self.currentIndex = startIndex
+        self.currentPlaylistID = playlistID
         activeIsA = true
         isCrossfading = false
         crossfadeProgress = 0
-        chainA.player.volume = 1
-        chainB.player.volume = 1
 
         playTrackAtCurrentIndex()
         startTimerIfNeeded()
     }
 
-    /// Convenience for the single-track case — equivalent to
-    /// `play(queue: [QueuedTrack(trackPersistentID:, crossfadeStartOffsetSec: .infinity)])`.
-    /// Kept as its own entry point since "play just this one track" is
-    /// still a meaningful, simpler action distinct from "play the whole
-    /// set."
+    /// Convenience for the single-track case. Kept as its own entry point
+    /// since "play just this one track" is still a meaningful, simpler
+    /// action distinct from "play the whole set." `crossfadeDurationSec`'s
+    /// value here is unused (`crossfadeStartOffsetSec: .infinity` means the
+    /// crossfade trigger never fires for a single-track queue).
     func play(trackPersistentID: Int64) {
-        play(queue: [QueuedTrack(trackPersistentID: trackPersistentID, crossfadeStartOffsetSec: .infinity)])
+        play(queue: [QueuedTrack(
+            trackPersistentID: trackPersistentID, crossfadeStartOffsetSec: .infinity,
+            crossfadeDurationSec: 4.0, playableStartSec: 0
+        )])
+    }
+
+    /// Schedules `file` onto `chain`, starting `playableStartSec` seconds in
+    /// rather than always at frame 0 — skips a track's leading near-silence
+    /// (per `AudioFeatureExtractor.detectTrimPoints`) so a crossfade blends
+    /// into real audio, not dead air. Shared by both `playTrackAtCurrentIndex`
+    /// (a fresh start or hard-cut advance) and `beginCrossfade` (the incoming
+    /// track) — both need the identical stop/trim/schedule/play sequence,
+    /// just onto a different chain with a different starting volume, which
+    /// the caller sets before calling this.
+    ///
+    /// Uses `AVAudioPlayerNode.scheduleSegment` instead of `scheduleFile` so
+    /// the skipped lead-in never gets decoded/rendered at all, not just
+    /// muted. Elapsed time measured afterward via `computeElapsedSeconds`
+    /// (`playerTime(forNodeTime:)`) is relative to when *this scheduled
+    /// segment* starts sounding — i.e. already relative to the playable
+    /// start, matching how `MixBuilder.crossfadeTiming` computed
+    /// `crossfadeStartOffsetSec` in the first place, no extra translation
+    /// needed at either end.
+    ///
+    /// - Returns: the playable duration in seconds (file duration minus the
+    ///   skipped lead-in), for the caller to use as the shown/stored
+    ///   duration for this track.
+    @discardableResult
+    private func schedule(file: AVAudioFile, on chain: PlayerChain, playableStartSec: Double, generation: Int) -> Double {
+        let sampleRate = file.processingFormat.sampleRate
+        let totalFrames = file.length
+        let startFrame = min(max(0, AVAudioFramePosition(playableStartSec * sampleRate)), max(0, totalFrames - 1))
+        let remainingFrames = AVAudioFrameCount(max(0, totalFrames - startFrame))
+
+        let completion: () -> Void = { [weak self] in
+            // Fires on an internal AVAudioEngine thread -- hop back to
+            // the main actor before touching any `@Published`/isolated
+            // state, same discipline `MixBuilder`'s GRDB `await`s
+            // already established.
+            Task { @MainActor in
+                self?.handleTrackFinished(generation: generation)
+            }
+        }
+
+        chain.player.stop()
+        if remainingFrames > 0 {
+            chain.player.scheduleSegment(file, startingFrame: startFrame, frameCount: remainingFrames, at: nil, completionHandler: completion)
+        } else {
+            // Degenerate case (playableStartSec >= file length) shouldn't
+            // happen for real audio, but falling back to the whole file is
+            // safer than scheduling a zero-frame segment.
+            chain.player.scheduleFile(file, at: nil, completionHandler: completion)
+        }
+        chain.player.play()
+
+        return Double(totalFrames - startFrame) / sampleRate
     }
 
     /// Schedules and plays `queue[currentIndex]` onto the *active* chain, or
@@ -274,10 +389,10 @@ final class PlaybackEngine: ObservableObject {
             return
         }
 
-        let trackPersistentID = queue[currentIndex].trackPersistentID
+        let queuedTrack = queue[currentIndex]
         playbackError = nil
 
-        guard let url = resolveFileURL(trackPersistentID: trackPersistentID) else {
+        guard let url = resolveFileURL(trackPersistentID: queuedTrack.trackPersistentID) else {
             playbackError = "Couldn't find a playable file for this track."
             isPlaying = false
             nowPlayingTrackID = nil
@@ -298,21 +413,10 @@ final class PlaybackEngine: ObservableObject {
             let generation = playbackGeneration
 
             let chain = activeChain
-            chain.player.stop()
             chain.player.volume = 1
-            chain.player.scheduleFile(file, at: nil) { [weak self] in
-                // Fires on an internal AVAudioEngine thread -- hop back to
-                // the main actor before touching any `@Published`/isolated
-                // state, same discipline `MixBuilder`'s GRDB `await`s
-                // already established.
-                Task { @MainActor in
-                    self?.handleTrackFinished(generation: generation)
-                }
-            }
-            chain.player.play()
+            currentTrackDurationSec = schedule(file: file, on: chain, playableStartSec: queuedTrack.playableStartSec, generation: generation)
             isPlaying = true
-            nowPlayingTrackID = trackPersistentID
-            currentTrackDurationSec = Double(file.length) / file.fileFormat.sampleRate
+            nowPlayingTrackID = queuedTrack.trackPersistentID
             elapsedSeconds = 0
             updateNextTrackID()
         } catch {
@@ -397,26 +501,27 @@ final class PlaybackEngine: ObservableObject {
     /// finish naturally, falling back to `handleTrackFinished`'s hard-cut
     /// advance instead of a blend for this one transition.
     private func beginCrossfade() {
+        let outgoing = queue[currentIndex]
         let next = queue[currentIndex + 1]
         guard let url = resolveFileURL(trackPersistentID: next.trackPersistentID) else { return }
 
         do {
             let file = try AVAudioFile(forReading: url)
-            pendingIncomingDurationSec = Double(file.length) / file.fileFormat.sampleRate
 
             playbackGeneration += 1
             let generation = playbackGeneration
 
             let chain = standbyChain
-            chain.player.stop()
             chain.player.volume = 0
-            chain.player.scheduleFile(file, at: nil) { [weak self] in
-                Task { @MainActor in
-                    self?.handleTrackFinished(generation: generation)
-                }
-            }
-            chain.player.play()
+            pendingIncomingDurationSec = schedule(file: file, on: chain, playableStartSec: next.playableStartSec, generation: generation)
 
+            // The blend's length is the *outgoing* track's own tempo-derived
+            // duration (per `MixBuilder.crossfadeTiming`, mirroring Python's
+            // `build_mix`, which sizes each crossfade off the track that's
+            // fading out) — not a fixed constant. `max(0.5, ...)` guards
+            // against a degenerate/zero value ever causing a division blow-up
+            // in `advanceCrossfade`'s `tickIntervalSec / activeCrossfadeDurationSec`.
+            activeCrossfadeDurationSec = max(0.5, outgoing.crossfadeDurationSec)
             crossfadeProgress = 0
             isCrossfading = true
         } catch {
@@ -432,7 +537,7 @@ final class PlaybackEngine: ObservableObject {
     /// what avoids the audible loudness dip a linear fade produces at the
     /// midpoint.
     private func advanceCrossfade() {
-        crossfadeProgress = min(1, crossfadeProgress + tickIntervalSec / crossfadeDurationSec)
+        crossfadeProgress = min(1, crossfadeProgress + tickIntervalSec / activeCrossfadeDurationSec)
         let t = crossfadeProgress
         activeChain.player.volume = Float(sqrt(1 - t))
         standbyChain.player.volume = Float(sqrt(t))
@@ -485,6 +590,7 @@ final class PlaybackEngine: ObservableObject {
         isPlaying = false
         nowPlayingTrackID = nil
         nextTrackPersistentID = nil
+        currentPlaylistID = nil
         elapsedSeconds = 0
         currentTrackDurationSec = 0
     }
