@@ -86,7 +86,10 @@ final class SourceSelectionViewModel: ObservableObject {
     /// everything in it. Mutually exclusive in spirit with `targetMinutes`
     /// (the Hub grays out the Stepper while this is on), though both remain
     /// real, independent properties rather than one replacing the other.
-    @Published var includeEverything: Bool = false
+    /// **Defaults to `true` (changed same day, explicit instruction)** —
+    /// Andy asked for "include everything" to be the standing default until
+    /// he says otherwise, not just an available option.
+    @Published var includeEverything: Bool = true
 
     /// True once "Use your whole library" is picked — per the confirmed
     /// design, this clears/disables the four category rows since combining

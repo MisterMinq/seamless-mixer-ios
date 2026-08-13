@@ -237,9 +237,18 @@ struct SourceSelectionHubView: View {
     /// **"Include everything" toggle added 2026-08-14** — real-device
     /// feedback asked why picking one bounded source (a genre, an artist)
     /// still gets trimmed to a duration rather than just including
-    /// everything in it, mirroring Phase 1's `--keep-all` mode. Grays out
-    /// the Stepper while on, same "mutually exclusive, visually disabled"
-    /// treatment `categoryRows` already uses for "Use your whole library".
+    /// everything in it, mirroring Phase 1's `--keep-all` mode. Defaults to
+    /// on (Andy's explicit instruction, same day).
+    ///
+    /// **Display bug fixed 2026-08-14** (reported in real-device testing the
+    /// same day the toggle itself shipped): the first version only grayed
+    /// out and disabled the Target Length control while the toggle was on,
+    /// rather than hiding it — and always showed the toggle's "no length
+    /// limit" explanatory text regardless of state, which read as
+    /// contradictory when off. Now the Stepper is only in the view hierarchy
+    /// at all when relevant (`if !includeEverything`), and the toggle's own
+    /// subtitle switches between the two states instead of only ever
+    /// describing the "on" one.
     private var durationControl: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
             Toggle(isOn: $viewModel.includeEverything) {
@@ -247,24 +256,28 @@ struct SourceSelectionHubView: View {
                     Text("Include everything")
                         .font(.body)
                         .foregroundStyle(DesignTokens.Color.textPrimary)
-                    Text("No length limit — every available song in the selected pool is included.")
-                        .font(.caption)
-                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                    Text(
+                        viewModel.includeEverything
+                            ? "No length limit — every available song in the selected pool is included."
+                            : "Off — the mix is trimmed to the target length below."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
                 }
             }
             .tint(DesignTokens.Color.primary)
 
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
-                Text("Target length")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
-                Stepper(value: $viewModel.targetMinutes, in: 10...120, step: 5) {
-                    Text("\(viewModel.targetMinutes) min")
-                        .foregroundStyle(DesignTokens.Color.textPrimary)
+            if !viewModel.includeEverything {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                    Text("Target length")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                    Stepper(value: $viewModel.targetMinutes, in: 10...120, step: 5) {
+                        Text("\(viewModel.targetMinutes) min")
+                            .foregroundStyle(DesignTokens.Color.textPrimary)
+                    }
                 }
             }
-            .opacity(viewModel.includeEverything ? 0.4 : 1.0)
-            .disabled(viewModel.includeEverything)
         }
     }
 

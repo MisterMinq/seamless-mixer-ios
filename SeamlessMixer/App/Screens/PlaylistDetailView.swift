@@ -284,9 +284,21 @@ struct PlaylistDetailView: View {
                     }
                     showNowPlaying = true
                 } label: {
-                    Label(isThisPlaylistPlaying ? "Now Playing" : "Play", systemImage: isThisPlaylistPlaying ? "waveform" : "play.fill")
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
+                    // `Label`'s `systemImage:` only takes a static glyph name,
+                    // not a custom view, so the "Now Playing" state is built
+                    // by hand here instead to use the real animated
+                    // `NowPlayingBarsView` (2026-08-14, replacing a static
+                    // "waveform" glyph real-device feedback called "no flair").
+                    HStack(spacing: DesignTokens.Spacing.xs) {
+                        if isThisPlaylistPlaying {
+                            NowPlayingBarsView(color: DesignTokens.Color.onPrimary, maxHeight: 16)
+                        } else {
+                            Image(systemName: "play.fill")
+                        }
+                        Text(isThisPlaylistPlaying ? "Now Playing" : "Play")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(DesignTokens.Color.primary)
@@ -334,9 +346,10 @@ struct PlaylistDetailView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: DesignTokens.Spacing.sm) {
                 if isNowPlaying {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.footnote)
-                        .foregroundStyle(DesignTokens.Color.primaryText)
+                    // Real animated bars (2026-08-14), replacing a static
+                    // "speaker.wave.2.fill" glyph — same reasoning as the
+                    // header Play button above.
+                    NowPlayingBarsView(color: DesignTokens.Color.primaryText, barWidth: 2.5, maxHeight: 12)
                         .frame(width: 20, alignment: .trailing)
                 } else {
                     Text("\(row.position + 1)")

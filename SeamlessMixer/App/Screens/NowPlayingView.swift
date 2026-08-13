@@ -30,6 +30,23 @@ import MediaPlayer
 /// codebase. Falls back to the flat placeholder tile when a track has no
 /// artwork.
 ///
+/// **Source caption is a scrolling `MarqueeText` as of 2026-08-14** — the
+/// same real-device feedback pass found the static caption truncated for
+/// longer source descriptions with no way to read the rest short of leaving
+/// this screen. See `Views/MarqueeText.swift`.
+///
+/// **Remaining time (not total duration) shown on the right of the progress
+/// bar, as of 2026-08-14** — matches Apple Music's own `-M:SS` convention,
+/// confirmed directly against a real Apple Music screenshot Andy shared.
+///
+/// **Queue icon is real, opening `QueueView`, as of 2026-08-14** — resolves
+/// a Round 4 discussion (should Playlist Detail merge into Now Playing?)
+/// started from that same screenshot: it shouldn't, since real Apple Music
+/// keeps its playlist-browsing screen separate too and only ever shows an
+/// embedded queue *preview* from Now Playing — `QueueView` is that preview,
+/// not a merge. See its own doc comment for the full reasoning and its
+/// deliberately read-only first-slice scope.
+///
 /// **Deliberate, flagged simplifications still remaining** — each omission
 /// below is a real, separate follow-up, not an oversight:
 /// - **Static background, not the confirmed dynamic artwork-derived
@@ -41,8 +58,6 @@ import MediaPlayer
 ///   speaker/amp currently in use — directly relevant to this app's whole
 ///   premise, but not wired this slice. Would read from
 ///   `AVAudioSession.sharedInstance().currentRoute.outputs`.
-/// - **No queue icon / Queue screen.** That screen doesn't exist yet
-///   either — this slice is Now Playing only.
 /// - **No favourite star / "..." overflow on this screen.** `PlaylistOverflowSheet`
 ///   is keyed off a real `Playlist`, which this screen was deliberately
 ///   *not* handed (only `rows`/`sourceCaption`, a lighter snapshot) to keep
@@ -62,6 +77,7 @@ struct NowPlayingView: View {
     @State private var isDragging = false
     @State private var dragValue: Double = 0
     @State private var artworkImage: UIImage?
+    @State private var showQueue = false
 
     private var nowPlayingRow: PlaylistDetailRow? {
         rows.first { $0.trackPersistentID == playbackEngine.nowPlayingTrackID }
@@ -74,10 +90,12 @@ struct NowPlayingView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.lg) {
             if !sourceCaption.isEmpty {
-                Text(sourceCaption)
-                    .font(.footnote)
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
-                    .multilineTextAlignment(.center)
+                // Real scrolling marquee (2026-08-14) — a static, centered,
+                // single-line caption truncated for longer source
+                // descriptions (e.g. several combined sources), with no way
+                // to read the rest without leaving this screen.
+                MarqueeText(text: sourceCaption)
+                    .padding(.horizontal, DesignTokens.Spacing.lg)
             }
 
             Spacer()
@@ -122,16 +140,22 @@ struct NowPlayingView: View {
             Spacer()
 
             // Bottom row per the confirmed design: connected output device +
-            // queue icon. Both deferred (see this file's own doc comment) --
-            // shown here as disabled placeholders so the layout's final
-            // shape is already right, not left for a later restructure.
+            // queue icon. Output device is still deferred (see this file's
+            // own doc comment) -- shown as a disabled placeholder so the
+            // layout's final shape is already right. Queue icon is real as
+            // of 2026-08-14 (see `QueueView`).
             HStack {
                 Label("This iPhone", systemImage: "hifispeaker")
                     .font(.caption)
                     .foregroundStyle(DesignTokens.Color.textDisabled)
                 Spacer()
-                Image(systemName: "list.bullet")
-                    .foregroundStyle(DesignTokens.Color.textDisabled)
+                Button {
+                    showQueue = true
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                }
+                .disabled(nowPlayingRow == nil)
             }
             .padding(.horizontal, DesignTokens.Spacing.lg)
         }
@@ -155,6 +179,9 @@ struct NowPlayingView: View {
         }
         .onAppear {
             loadArtwork(for: playbackEngine.nowPlayingTrackID)
+        }
+        .sheet(isPresented: $showQueue) {
+            QueueView(rows: rows)
         }
     }
 
@@ -223,7 +250,14 @@ struct NowPlayingView: View {
             HStack {
                 Text(Self.formatTime(isDragging ? dragValue : playbackEngine.elapsedSeconds))
                 Spacer()
-                Text(Self.formatTime(playbackEngine.currentTrackDurationSec))
+                // Remaining time, not total duration -- matches Apple
+                // Music's own convention (confirmed directly against Andy's
+                // reference screenshot, "-4:09"). Real-device feedback
+                // (Round 3, issue 6) asked for exactly this.
+                Text(Self.formatRemainingTime(
+                    elapsed: isDragging ? dragValue : playbackEngine.elapsedSeconds,
+                    total: playbackEngine.currentTrackDurationSec
+                ))
             }
             .font(.caption)
             .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -235,6 +269,11 @@ struct NowPlayingView: View {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private static func formatRemainingTime(elapsed: Double, total: Double) -> String {
+        guard total.isFinite, total > 0 else { return "-0:00" }
+        return "-" + formatTime(max(0, total - elapsed))
     }
 
     // MARK: - Controls
