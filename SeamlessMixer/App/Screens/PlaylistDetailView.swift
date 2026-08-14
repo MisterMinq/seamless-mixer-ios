@@ -61,15 +61,24 @@ import PlaylistCore
 ///   `ArtistPickerView`'s A-Z rail got): untested outside Codemagic's
 ///   compile/screenshot step, since neither proves drag actually reorders
 ///   correctly or that the per-row `Menu` stays tappable while `EditMode`
-///   is active — that needs Andy's real-device check. Header/footer live in
-///   their own non-reorderable `Section`s with hidden separators/
-///   transparent backgrounds so they blend into the `List` the same way
-///   they looked in the old `ScrollView`+`VStack` layout; the teal/gray
-///   connector line moved from a separate view *between* rows into the
-///   bottom of each row itself, since `List` rows don't have a clean way to
-///   render a shared element spanning two adjacent rows. Adding a track to
-///   an already-built playlist (short of a full Refresh) is still not
-///   implemented — see CLAUDE.md's Rule 8 gap list.
+///   is active — that needs Andy's real-device check. The footer lives in
+///   its own non-reorderable `Section` with hidden separators/transparent
+///   background so it blends into the `List` rather than reading as a list
+///   row itself; the teal/gray connector line moved from a separate view
+///   *between* rows into the bottom of each row itself, since `List` rows
+///   don't have a clean way to render a shared element spanning two
+///   adjacent rows. Adding a track to an already-built playlist (short of a
+///   full Refresh) is still not implemented — see CLAUDE.md's Rule 8 gap
+///   list.
+/// - **`header` moved out of the `List` entirely, 2026-08-14** — see
+///   `body`'s own doc comment. It used to be the `List`'s own first
+///   `Section`, which meant scrolling the track list scrolled the header
+///   (artwork/title/Play button) right along with it; real-device feedback
+///   made clear that's not what was wanted, and that this screen is what
+///   Andy had been describing all along when he talked about a "queue"
+///   under the Play button, not the separate `QueueView` screen. `header`
+///   is now a plain fixed view above the `List`, and the `List`
+///   auto-scrolls to whichever track is currently playing.
 struct PlaylistDetailView: View {
     let playlist: Playlist
     let store: PlaylistStore
@@ -127,67 +136,39 @@ struct PlaylistDetailView: View {
     }
 
     var body: some View {
-        List {
-            // Header/loading/empty states each get their own `Section` with
-            // hidden separators and a clear row background so they blend
-            // into the `List` the same way they read in the old
-            // `ScrollView`+`VStack` layout, rather than looking like list
-            // rows themselves.
-            Section {
-                header
-            }
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
+        // **Restructured 2026-08-14**, after real-device feedback made clear
+        // this screen was never actually the "Queue/Up Next" screen Andy
+        // thought he was describing -- he'd been talking about *this*
+        // screen (Playlist Detail: artwork/title/Play button + the track
+        // list underneath it) the whole time, and the real complaint was
+        // that this whole thing was one continuous `List`, so scrolling the
+        // track list dragged the header -- artwork, title, the Play button
+        // -- up and off-screen right along with it. Split into a fixed
+        // `header` (a plain view, never inside any scroll container) above
+        // a separately-scrollable track list below it, so the header is
+        // always visible and only the tracks scroll. `trackListAndFooter`
+        // also auto-scrolls to whichever track is currently playing (see
+        // `scrollToNowPlaying`), directly answering the other half of the
+        // same feedback: "after a while I do not know what is playing."
+        VStack(spacing: 0) {
+            header
+                .background(DesignTokens.Color.background)
 
-            if viewModel.isLoading {
-                Section {
+            Group {
+                if viewModel.isLoading {
                     ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, DesignTokens.Spacing.xl)
-                }
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            } else if viewModel.rows.isEmpty {
-                Section {
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if viewModel.rows.isEmpty {
                     Text("This playlist has no tracks yet.")
                         .font(.body)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .padding(.horizontal, DesignTokens.Spacing.md)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    trackListAndFooter
                 }
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            } else {
-                Section {
-                    ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
-                        trackRow(
-                            row, isLast: index == viewModel.rows.count - 1, isImminent: index == 0,
-                            // `!playbackEngine.isPaused` -- same 2026-08-14
-                            // fix as `isThisPlaylistAudiblyPlaying` above:
-                            // don't show animated bars on a paused track.
-                            isNowPlaying: playbackEngine.isPlaying && !playbackEngine.isPaused && playbackEngine.nowPlayingTrackID == row.trackPersistentID
-                        )
-                    }
-                    .onMove { source, destination in
-                        viewModel.moveTracks(from: source, to: destination, playlist: playlist, store: store)
-                    }
-                }
-                .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-
-                Section {
-                    footer
-                }
-                .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
         .background(DesignTokens.Color.background)
         .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
@@ -244,6 +225,75 @@ struct PlaylistDetailView: View {
                 onRenamed: { displayName = $0 },
                 onDeleted: { dismiss() }
             )
+        }
+    }
+
+    // MARK: - Track list + footer (scrollable, header excluded)
+
+    /// The scrollable part of this screen — track rows plus the footer —
+    /// separated out 2026-08-14 so scrolling it never moves `header` above
+    /// it (see `body`'s own doc comment for why). Still a `List` (not a
+    /// plain `ScrollView`) so `.onMove`/`EditButton` drag-to-reorder keeps
+    /// working exactly as before; only what's *inside* the scrollable area
+    /// changed, not the reordering mechanism itself.
+    ///
+    /// Wrapped in a `ScrollViewReader` so the currently-playing row can be
+    /// scrolled into view automatically — `onAppear` handles landing on
+    /// this screen while something's already playing partway through the
+    /// list, `onChange(of: playbackEngine.nowPlayingTrackID)` keeps
+    /// following it as playback advances. Directly answers the other half
+    /// of the real-device report that prompted this restructuring: "the
+    /// 3rd song playing is not on top, meaning after a while I do not know
+    /// what is playing."
+    private var trackListAndFooter: some View {
+        ScrollViewReader { proxy in
+            List {
+                Section {
+                    ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
+                        trackRow(
+                            row, isLast: index == viewModel.rows.count - 1, isImminent: index == 0,
+                            // `!playbackEngine.isPaused` -- same 2026-08-14
+                            // fix as `isThisPlaylistAudiblyPlaying` above:
+                            // don't show animated bars on a paused track.
+                            isNowPlaying: playbackEngine.isPlaying && !playbackEngine.isPaused && playbackEngine.nowPlayingTrackID == row.trackPersistentID
+                        )
+                    }
+                    .onMove { source, destination in
+                        viewModel.moveTracks(from: source, to: destination, playlist: playlist, store: store)
+                    }
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+
+                Section {
+                    footer
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: DesignTokens.Spacing.md, bottom: 0, trailing: DesignTokens.Spacing.md))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .onAppear {
+                scrollToNowPlaying(proxy: proxy)
+            }
+            .onChange(of: playbackEngine.nowPlayingTrackID) { _, _ in
+                scrollToNowPlaying(proxy: proxy)
+            }
+        }
+    }
+
+    /// Scrolls the track list so whichever row is currently playing lands
+    /// near the top of the visible area. A no-op if nothing's playing, or
+    /// if the track that's playing isn't actually part of *this* playlist
+    /// (a different mix playing in the background while this screen happens
+    /// to be open) — `first(where:)` simply finds nothing to scroll to.
+    private func scrollToNowPlaying(proxy: ScrollViewProxy) {
+        guard let nowPlayingID = playbackEngine.nowPlayingTrackID,
+              let row = viewModel.rows.first(where: { $0.trackPersistentID == nowPlayingID }) else { return }
+        withAnimation {
+            proxy.scrollTo(row.id, anchor: .top)
         }
     }
 

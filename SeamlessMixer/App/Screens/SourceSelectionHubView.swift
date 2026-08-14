@@ -15,17 +15,34 @@ import PlaylistCore
 /// wired for real** (see `MixBuilder`) and now resolves any combination of
 /// genre/playlist/artist/album selections, not just genres — only "whole
 /// library" still shows an error explaining it isn't supported yet, per the
-/// reasoning in `MixBuilder`'s own doc comment. On success this pushes to
-/// `PlaylistDetailView` (the confirmed Navigation Flow's actual next step)
-/// rather than dismissing back to My Mixes, per CLAUDE.md's "tap Build Mix
-/// -> Playlist Detail".
+/// reasoning in `MixBuilder`'s own doc comment.
+///
+/// **Navigation on success changed 2026-08-14 — a real bug, not a style
+/// choice.** This used to push `PlaylistDetailView` directly from *within*
+/// this Hub via `.navigationDestination(item:)`, which lands it on top of
+/// the Hub in `MyMixesView`'s shared `NavigationStack` — the stack becomes
+/// My Mixes → Hub → Playlist Detail. Tapping back from Playlist Detail then
+/// returned to this same (now-stale, selections-spent) Hub instead of My
+/// Mixes, which real-device feedback confirmed as a real, repeatable
+/// loophole ("a few times I have come from the Playlist Detail screen back
+/// into the Source Selection Hub screen with the greyed out Build Mix
+/// button, instead of the My Mixes screen"). Fixed by handing the built
+/// playlist (and any exclusion message) *up* to `MyMixesView` via `onBuilt`
+/// and calling `dismiss()` on this Hub immediately after — `MyMixesView`
+/// owns the push to Playlist Detail now, so the stack becomes My Mixes →
+/// Playlist Detail, with this Hub popped off entirely rather than left
+/// behind as a dead end.
 struct SourceSelectionHubView: View {
     let store: PlaylistStore
+    /// Called once, right after a successful build, with the new playlist
+    /// and any DRM-exclusion message — see this file's own doc comment for
+    /// why navigation moved up to the caller (`MyMixesView`) instead of
+    /// happening here.
+    let onBuilt: (Playlist, String?) -> Void
 
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
-    @State private var builtPlaylist: Playlist?
-    @State private var showExclusionAlert = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Group {
@@ -51,14 +68,6 @@ struct SourceSelectionHubView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(mixBuilder.buildError ?? "")
-        }
-        .alert("Some songs couldn't be included", isPresented: $showExclusionAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(mixBuilder.lastBuildExclusionMessage ?? "")
-        }
-        .navigationDestination(item: $builtPlaylist) { playlist in
-            PlaylistDetailView(playlist: playlist, store: store)
         }
     }
 
@@ -307,16 +316,11 @@ struct SourceSelectionHubView: View {
                             store: store
                         )
                         if let playlist {
-                            builtPlaylist = playlist
-                            // DRM-Exclusion UX transparency message
-                            // (2026-08-14) -- see `MixBuilder
-                            // .lastBuildExclusionMessage`'s own doc comment.
-                            // Shown as a plain alert over the just-pushed
-                            // Playlist Detail rather than blocking
-                            // navigation on it.
-                            if mixBuilder.lastBuildExclusionMessage != nil {
-                                showExclusionAlert = true
-                            }
+                            // Hand off to `MyMixesView` and pop this Hub off
+                            // the stack -- see this file's own doc comment
+                            // on why navigation moved up to the caller.
+                            onBuilt(playlist, mixBuilder.lastBuildExclusionMessage)
+                            dismiss()
                         }
                     }
                 } label: {
@@ -362,9 +366,10 @@ struct SourceSelectionHubView: View {
 #Preview {
     // Same reasoning as `MyMixesView`'s preview -- a successful Build Mix
     // navigates to `PlaylistDetailView`, which requires `PlaybackEngine` as
-    // an `@EnvironmentObject`.
+    // an `@EnvironmentObject`. `onBuilt` is a no-op here since the preview
+    // has no parent `MyMixesView` to hand the result up to.
     NavigationStack {
-        SourceSelectionHubView(store: PlaylistStore())
+        SourceSelectionHubView(store: PlaylistStore(), onBuilt: { _, _ in })
     }
     .environmentObject(PlaybackEngine())
 }

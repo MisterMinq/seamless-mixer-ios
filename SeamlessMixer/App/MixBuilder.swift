@@ -129,7 +129,25 @@ final class MixBuilder: ObservableObject {
         }
         if !unavailable.isEmpty {
             let includedCount = pool.count - unavailable.count
-            lastBuildExclusionMessage = "\(includedCount) of \(pool.count) songs included — \(unavailable.count) aren't available for seamless mixing (Apple Music subscription tracks, or a file that couldn't be analyzed)."
+            // Split into the two real, distinct causes (2026-08-14, after a
+            // real-device report of an implausibly high exclusion count that
+            // turned out to be a separate bug — see `SeamlessMixerApp`'s own
+            // doc comment on why `PlaylistStore` used to be re-constructed
+            // repeatedly, opening a storm of competing SQLite connections
+            // that could intermittently fail a track's analysis-save).
+            // Reporting which bucket is responsible, rather than one vague
+            // combined phrase, makes a real future recurrence of either
+            // immediately diagnosable from the message alone.
+            let drmCount = unavailable.filter { !$0.hasRawAudioAccess }.count
+            let analysisFailedCount = unavailable.count - drmCount
+            var reasons: [String] = []
+            if drmCount > 0 {
+                reasons.append("\(drmCount) streamed through your Apple Music subscription")
+            }
+            if analysisFailedCount > 0 {
+                reasons.append("\(analysisFailedCount) couldn't be analyzed")
+            }
+            lastBuildExclusionMessage = "\(includedCount) of \(pool.count) songs included — \(unavailable.count) aren't available for seamless mixing (\(reasons.joined(separator: ", ")))."
         }
 
         progressText = "Sequencing…"

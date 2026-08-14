@@ -34,10 +34,34 @@ import PlaylistCore
 @main
 struct SeamlessMixerApp: App {
     @StateObject private var playbackEngine = PlaybackEngine()
+    /// **Fixed 2026-08-14 — a real, severe bug, not a style nit.** This used
+    /// to be constructed inline as `MyMixesView(store: PlaylistStore())`
+    /// inside `body`. `body` is a computed property SwiftUI re-invokes any
+    /// time a `@StateObject` it references publishes a change — including
+    /// `playbackEngine`, whose `tick()` mutates `elapsedSeconds` roughly 10
+    /// times a second during playback. Since `PlaylistStore` was passed in
+    /// as a fresh constructor argument (`@ObservedObject`, not
+    /// `@StateObject`, on the receiving `MyMixesView`), every one of those
+    /// re-evaluations created a *brand-new* `PlaylistStore`, which opens a
+    /// *brand-new* `DatabaseManager`/GRDB `DatabaseQueue` — a real,
+    /// independent SQLite connection to the same on-disk file — on top of
+    /// whichever earlier ones hadn't been deallocated yet. `DatabaseQueue`
+    /// only serializes access *within one instance*; it does nothing to
+    /// protect against a second, fully independent connection to the same
+    /// file, and the database's default (non-WAL) journal mode locks the
+    /// whole file during any write transaction. A `Build Mix` write landing
+    /// while a freshly-spawned stray connection was also active was exactly
+    /// what produced the real-device "SQLite error 5: database is locked -
+    /// while executing `COMMIT TRANSACTION`" failure. Fixed the same way
+    /// `playbackEngine` already correctly avoided this: `@StateObject` here
+    /// too, so exactly one `PlaylistStore`/one SQLite connection exists for
+    /// the app's entire lifetime, and every `body` re-evaluation passes the
+    /// same instance rather than constructing a new one.
+    @StateObject private var store = PlaylistStore()
 
     var body: some Scene {
         WindowGroup {
-            MyMixesView(store: PlaylistStore())
+            MyMixesView(store: store)
                 .environmentObject(playbackEngine)
                 .preferredColorScheme(.light)
         }

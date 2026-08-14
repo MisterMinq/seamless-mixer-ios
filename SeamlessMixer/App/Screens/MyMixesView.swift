@@ -36,8 +36,26 @@ import PlaylistCore
 /// tapping it with nothing selected left Build Mix disabled there with no
 /// clear next step — genuinely more confusing than not having the shortcut
 /// at all. One unambiguous entry point now, not two.
+///
+/// **Now owns the push to Playlist Detail after a successful build
+/// (2026-08-14) — a real navigation-loophole fix, not a refactor for its
+/// own sake.** `SourceSelectionHubView` used to push `PlaylistDetailView`
+/// on top of *itself*, leaving the stack as My Mixes → Hub → Playlist
+/// Detail; tapping back from Playlist Detail then landed on the stale Hub
+/// instead of My Mixes, exactly the loophole real-device feedback caught
+/// ("a few times I have come from the Playlist Detail screen back into the
+/// Source Selection Hub screen... instead of the My Mixes screen"). Now the
+/// Hub hands the built playlist up via `handleBuilt` and pops itself
+/// (`dismiss()`) instead of pushing anything itself; this screen's own
+/// `.navigationDestination(item:)` on `navigateToPlaylist` then pushes
+/// Playlist Detail directly onto *its* stack, so the final stack is My
+/// Mixes → Playlist Detail with the Hub popped off entirely, not left
+/// behind as a dead end.
 struct MyMixesView: View {
     @ObservedObject var store: PlaylistStore
+    @State private var navigateToPlaylist: Playlist?
+    @State private var pendingExclusionMessage: String?
+    @State private var showExclusionAlert = false
 
     var body: some View {
         NavigationStack {
@@ -52,6 +70,14 @@ struct MyMixesView: View {
             }
             .background(DesignTokens.Color.background)
             .navigationTitle("My Mixes")
+            .navigationDestination(item: $navigateToPlaylist) { playlist in
+                PlaylistDetailView(playlist: playlist, store: store)
+            }
+            .alert("Some songs couldn't be included", isPresented: $showExclusionAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(pendingExclusionMessage ?? "")
+            }
             .toolbar {
                 // The toolbar "+" was removed 2026-08-14 -- real-device
                 // feedback pointed out it was genuinely redundant with the
@@ -71,6 +97,21 @@ struct MyMixesView: View {
         }
     }
 
+    /// Receives a just-built playlist (and any DRM-exclusion message) from
+    /// `SourceSelectionHubView`, which pops itself off the stack right
+    /// after calling this — see this file's own doc comment for why
+    /// navigation moved up here. Setting `navigateToPlaylist` triggers this
+    /// screen's own `.navigationDestination(item:)`, landing the user on
+    /// Playlist Detail with My Mixes (not the now-popped Hub) directly
+    /// beneath it in the stack.
+    private func handleBuilt(playlist: Playlist, exclusionMessage: String?) {
+        navigateToPlaylist = playlist
+        if let exclusionMessage {
+            pendingExclusionMessage = exclusionMessage
+            showExclusionAlert = true
+        }
+    }
+
     // MARK: - Empty state
 
     private var emptyState: some View {
@@ -85,7 +126,7 @@ struct MyMixesView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, DesignTokens.Spacing.xl)
             NavigationLink {
-                SourceSelectionHubView(store: store)
+                SourceSelectionHubView(store: store, onBuilt: handleBuilt)
             } label: {
                 Label("New mix", systemImage: "plus")
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
@@ -163,7 +204,7 @@ struct MyMixesView: View {
         VStack(spacing: 0) {
             Divider()
             NavigationLink {
-                SourceSelectionHubView(store: store)
+                SourceSelectionHubView(store: store, onBuilt: handleBuilt)
             } label: {
                 Label("Build Mix", systemImage: "plus")
                     .frame(maxWidth: .infinity)

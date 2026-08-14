@@ -234,9 +234,27 @@ final class PlaybackEngine: ObservableObject {
     /// need to fight the render clock's own reset-on-reschedule behavior.
     private var elapsedBaseSec: Double = 0
 
+    /// True while a session was paused *by an interruption* (a phone call,
+    /// another app taking over audio, an alarm) rather than by the user
+    /// tapping Pause themselves — see `handleInterruption`. Distinguishing
+    /// the two matters: only an interruption-caused pause should ever
+    /// auto-resume once the interruption ends; a manual pause must stay
+    /// paused until the user resumes it themselves.
+    private var pausedByInterruption = false
+
     init() {
         configureGraph()
+        observeInterruptions()
     }
+    // No `deinit`/observer teardown -- `PlaybackEngine` is created exactly
+    // once, as `SeamlessMixerApp`'s own `@StateObject`, and lives for the
+    // app's entire process lifetime (never deallocated while running), so
+    // there's no real leak to guard against here. Also sidesteps a real
+    // Swift-concurrency footgun: reading this `@MainActor` class's stored
+    // properties from a `deinit` (which runs nonisolated) is exactly the
+    // kind of thing this project has been bitten by before (see CLAUDE.md's
+    // 0.15.6/0.24.1 entries) -- not worth the risk for cleanup that would
+    // never actually run.
 
     /// Attaches and connects both chains into the engine's main mixer, per
     /// the confirmed design's "shared AVAudioMixerNode, which is where the
@@ -260,6 +278,80 @@ final class PlaybackEngine: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .default)
         try session.setActive(true)
+    }
+
+    /// **Added 2026-08-14, closing a real gap flagged across three separate
+    /// real-device reports** (a phone call, another app taking over audio,
+    /// and an alarm all reported the identical symptom: playback stopped
+    /// and never resumed). All three trigger the exact same
+    /// `AVAudioSession.interruptionNotification` — a phone call and an
+    /// alarm both count as "another app/system service took the audio
+    /// session," from `AVAudioSession`'s point of view, regardless of how
+    /// different they feel to a listener. This had never been observed at
+    /// all before now; nothing paused this engine when an interruption
+    /// began, so the two chains kept trying to render into an audio session
+    /// that had just been seized by something else.
+    ///
+    /// Registered once, in `init`, using the block-based API rather than
+    /// `self`-as-observer/`#selector` — this class has no Objective-C
+    /// runtime dependency anywhere else, no reason to introduce one just for
+    /// this. The closure hops onto the main actor before touching any
+    /// `@Published`/isolated state, the same discipline every other
+    /// AVFoundation completion handler in this file already follows.
+    private func observeInterruptions() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: nil
+        ) { [weak self] notification in
+            Task { @MainActor in
+                self?.handleInterruption(notification: notification)
+            }
+        }
+    }
+
+    /// `.began`: pause in place (both chains, if a crossfade happens to be
+    /// mid-blend) and remember that *this* pause was interruption-caused,
+    /// not a user tap, via `pausedByInterruption` -- otherwise `.ended`
+    /// couldn't tell "resume this, the user didn't mean to stop" apart from
+    /// "leave this alone, the user paused on purpose right before the
+    /// interruption arrived."
+    ///
+    /// `.ended`: only acts if `pausedByInterruption` is still true (guards
+    /// against a stray `.ended` with nothing to resume). Checks
+    /// `AVAudioSessionInterruptionOptionKey`'s `.shouldResume` flag, which
+    /// iOS sets when it's telling apps it's safe to resume audio on their
+    /// own (true for a phone call ending or an alarm being dismissed/
+    /// snoozed; iOS does *not* set this for some interruptions, e.g. another
+    /// app that's still actively playing audio itself) -- resuming only
+    /// when iOS actually says to is what keeps this from fighting another
+    /// app that intends to keep the audio session for itself.
+    /// Re-activates the session before calling `resume()` since the
+    /// interruption may have deactivated it out from under this engine.
+    private func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+        switch type {
+        case .began:
+            guard isPlaying, !isPaused else { return }
+            pause()
+            pausedByInterruption = true
+
+        case .ended:
+            guard pausedByInterruption else { return }
+            pausedByInterruption = false
+            let shouldResume = (userInfo[AVAudioSessionInterruptionOptionKey] as? UInt).map {
+                AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume)
+            } ?? false
+            guard shouldResume else { return }
+            try? activateSession()
+            resume()
+
+        @unknown default:
+            break
+        }
     }
 
     /// Resolves a track's real, playable file via `MPMediaQuery`, filtered
