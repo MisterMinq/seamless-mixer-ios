@@ -184,7 +184,8 @@ struct NowPlayingView: View {
                     .padding(.horizontal, DesignTokens.Spacing.lg)
                 }
                 .padding(.vertical, DesignTokens.Spacing.lg)
-                .frame(width: geo.size.width, minHeight: geo.size.height)
+                .frame(width: geo.size.width)
+                .frame(minHeight: geo.size.height)
             }
         }
         .background(DesignTokens.Color.background)
