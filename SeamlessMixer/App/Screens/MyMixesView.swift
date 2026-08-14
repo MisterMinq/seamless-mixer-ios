@@ -54,8 +54,11 @@ import PlaylistCore
 struct MyMixesView: View {
     @ObservedObject var store: PlaylistStore
     @State private var navigateToPlaylist: Playlist?
+    /// The just-built playlist's DRM-exclusion message, if any -- handed to
+    /// `PlaylistDetailView` at push time (see `navigationDestination` below)
+    /// rather than shown as an alert *here*. See `handleBuilt`'s doc comment
+    /// for why this moved 2026-08-14.
     @State private var pendingExclusionMessage: String?
-    @State private var showExclusionAlert = false
 
     var body: some View {
         NavigationStack {
@@ -71,12 +74,7 @@ struct MyMixesView: View {
             .background(DesignTokens.Color.background)
             .navigationTitle("My Mixes")
             .navigationDestination(item: $navigateToPlaylist) { playlist in
-                PlaylistDetailView(playlist: playlist, store: store)
-            }
-            .alert("Some songs couldn't be included", isPresented: $showExclusionAlert) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(pendingExclusionMessage ?? "")
+                PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage)
             }
             .toolbar {
                 // The toolbar "+" was removed 2026-08-14 -- real-device
@@ -104,12 +102,22 @@ struct MyMixesView: View {
     /// screen's own `.navigationDestination(item:)`, landing the user on
     /// Playlist Detail with My Mixes (not the now-popped Hub) directly
     /// beneath it in the stack.
+    ///
+    /// **Exclusion alert moved to `PlaylistDetailView` itself, 2026-08-14
+    /// — a real bug, not a style choice.** This used to also flip a local
+    /// `showExclusionAlert` right here, presenting the alert *and* pushing
+    /// the navigation destination from the same state update on the same
+    /// view — real-device testing found this left a blank white screen
+    /// after tapping the alert's OK button, recoverable only by tapping
+    /// back. SwiftUI's `.navigationDestination(item:)` push and a same-view
+    /// `.alert(...)` presentation fighting over the same transition is a
+    /// known footgun; decoupling them by handing the message down to the
+    /// screen that's actually being pushed to, and letting it present its
+    /// own alert once it's genuinely on-screen, avoids the race instead of
+    /// trying to sequence around it.
     private func handleBuilt(playlist: Playlist, exclusionMessage: String?) {
+        pendingExclusionMessage = exclusionMessage
         navigateToPlaylist = playlist
-        if let exclusionMessage {
-            pendingExclusionMessage = exclusionMessage
-            showExclusionAlert = true
-        }
     }
 
     // MARK: - Empty state

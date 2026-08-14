@@ -326,8 +326,9 @@ final class PlaybackEngine: ObservableObject {
     /// app that's still actively playing audio itself) -- resuming only
     /// when iOS actually says to is what keeps this from fighting another
     /// app that intends to keep the audio session for itself.
-    /// Re-activates the session before calling `resume()` since the
-    /// interruption may have deactivated it out from under this engine.
+    /// `resume()` itself now handles reactivating the session and, if
+    /// needed, restarting the engine (fixed 2026-08-14 — see its own doc
+    /// comment) -- no separate `activateSession()` call needed here anymore.
     private func handleInterruption(notification: Notification) {
         guard let userInfo = notification.userInfo,
               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -346,7 +347,6 @@ final class PlaybackEngine: ObservableObject {
                 AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume)
             } ?? false
             guard shouldResume else { return }
-            try? activateSession()
             resume()
 
         @unknown default:
@@ -764,8 +764,34 @@ final class PlaybackEngine: ObservableObject {
     }
 
     /// Resumes a paused session. See `pause()`.
+    ///
+    /// **Fixed 2026-08-14, after real-device testing found interruption
+    /// recovery (below) still silent — animated "now playing" indicators
+    /// active, no audio — even though `handleInterruption`'s `.ended` case
+    /// was calling this correctly.** Root cause: this never checked
+    /// `engine.isRunning`, unlike `playTrackAtCurrentIndex()` just below.
+    /// A system interruption (a Timer/Alarm ringing, another app seizing the
+    /// session) can stop the underlying `AVAudioEngine` itself, not just
+    /// this app's player nodes — calling `.play()` on a player node attached
+    /// to a *stopped* engine doesn't throw, it just silently produces no
+    /// audio, so `isPaused` flipped to `false` (bars animating, transport
+    /// showing "playing") while nothing was actually rendering. Now
+    /// reactivates the session and restarts the engine first, matching
+    /// `playTrackAtCurrentIndex()`'s own guard exactly; if either step
+    /// fails, `isPaused` deliberately stays `true` and `playbackError` is
+    /// set, so the UI honestly reports "still paused" rather than claiming
+    /// to be playing when it isn't.
     func resume() {
         guard isPlaying, isPaused else { return }
+        do {
+            try activateSession()
+            if !engine.isRunning {
+                try engine.start()
+            }
+        } catch {
+            playbackError = "Couldn't resume playback: \(error.localizedDescription)"
+            return
+        }
         activeChain.player.play()
         if isCrossfading {
             standbyChain.player.play()

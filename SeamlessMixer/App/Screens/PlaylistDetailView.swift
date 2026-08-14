@@ -86,6 +86,19 @@ struct PlaylistDetailView: View {
     @StateObject private var viewModel = PlaylistDetailViewModel()
     @EnvironmentObject private var playbackEngine: PlaybackEngine
     @State private var showNowPlaying = false
+    /// The DRM-exclusion message from the build that landed the user here,
+    /// if any — see `showExclusionAlert`'s doc comment on `init` for why
+    /// this screen owns presenting it rather than `MyMixesView`.
+    private let initialExclusionMessage: String?
+    /// Seeded straight from `initialExclusionMessage` at `init` time (not
+    /// toggled by an `.onAppear`) so the alert is already primed to show
+    /// the moment this screen actually mounts — added 2026-08-14, moved
+    /// here from `MyMixesView` after real-device testing found presenting
+    /// this alert *there*, in the same state update as the navigation push
+    /// that reaches this screen, left a blank white screen behind it once
+    /// dismissed. See `MyMixesView.handleBuilt`'s doc comment for the full
+    /// diagnosis.
+    @State private var showExclusionAlert: Bool
     // Seeded from `playlist.isFavorite` at init so the star renders correctly
     // immediately, then updated optimistically on tap — `playlist` itself is
     // a `let` snapshot from navigation, not observed, so it wouldn't reflect
@@ -128,11 +141,13 @@ struct PlaylistDetailView: View {
         isThisPlaylistLoaded && !playbackEngine.isPaused
     }
 
-    init(playlist: Playlist, store: PlaylistStore) {
+    init(playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil) {
         self.playlist = playlist
         self.store = store
+        self.initialExclusionMessage = initialExclusionMessage
         _isFavorite = State(initialValue: playlist.isFavorite)
         _displayName = State(initialValue: playlist.name)
+        _showExclusionAlert = State(initialValue: initialExclusionMessage != nil)
     }
 
     var body: some View {
@@ -225,6 +240,14 @@ struct PlaylistDetailView: View {
                 onRenamed: { displayName = $0 },
                 onDeleted: { dismiss() }
             )
+        }
+        // Moved here from `MyMixesView` 2026-08-14 -- see `showExclusionAlert`'s
+        // own doc comment for why presenting this alongside a navigation
+        // push (on the pushing screen) caused a real blank-white-screen bug.
+        .alert("Some songs couldn't be included", isPresented: $showExclusionAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(initialExclusionMessage ?? "")
         }
     }
 
