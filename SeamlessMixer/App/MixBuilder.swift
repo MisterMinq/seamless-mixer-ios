@@ -30,6 +30,7 @@ final class MixBuilder: ObservableObject {
     enum BuildError: Error, LocalizedError {
         case noSupportedSources
         case emptyPool
+        case allExcluded
         case databaseUnavailable
 
         var errorDescription: String? {
@@ -38,6 +39,11 @@ final class MixBuilder: ObservableObject {
                 return "\"Use your whole library\" isn't wired up yet — pick one or more playlists, genres, artists, or albums instead."
             case .emptyPool:
                 return "None of the selected songs could be used for a seamless mix."
+            case .allExcluded:
+                // Matches CLAUDE.md's confirmed DRM-Exclusion UX copy for
+                // this exact edge case exactly, per the "no mention of DRM/
+                // FairPlay in user-facing copy" rule.
+                return "None of the songs in this selection can be used for seamless mixing — they're all streamed through your Apple Music subscription or otherwise unavailable. Try a source with songs you've downloaded or purchased."
             case .databaseUnavailable:
                 return "Couldn't open the library database."
             }
@@ -47,6 +53,18 @@ final class MixBuilder: ObservableObject {
     @Published private(set) var isBuilding = false
     @Published private(set) var progressText = ""
     @Published var buildError: String?
+    /// Set after a successful build/refresh when some of the selected pool
+    /// couldn't be included — the confirmed DRM-Exclusion UX's "quiet,
+    /// factual line" (e.g. "44 of 47 songs included — 3 aren't available
+    /// for seamless mixing"), added 2026-08-14. This was designed back when
+    /// the schema/DRM-exclusion behavior was first confirmed but never
+    /// actually surfaced anywhere — `Sequencer` was always silently
+    /// excluding unanalyzed/DRM-protected tracks with zero visibility into
+    /// how many or why, which real-device feedback flagged as indistinguishable
+    /// from a real bug (a source with far fewer songs in the built mix than
+    /// expected). `nil` when nothing was excluded, so a caller can treat
+    /// "show this message" and "don't" with a single optional check.
+    @Published private(set) var lastBuildExclusionMessage: String?
 
     /// - Parameter keepAll: when true, includes every analyzed/DRM-accessible
     ///   track in the pool and ignores `targetSeconds` entirely — the iOS
@@ -64,6 +82,7 @@ final class MixBuilder: ObservableObject {
         guard !isBuilding else { return nil }
         isBuilding = true
         buildError = nil
+        lastBuildExclusionMessage = nil
         defer { isBuilding = false; progressText = "" }
 
         do {
@@ -95,6 +114,22 @@ final class MixBuilder: ObservableObject {
             progressText = "Analyzing \(index + 1) of \(items.count)…"
             let track = try await upsertAndAnalyzeIfNeeded(item: item, db: db)
             pool.append(track)
+        }
+
+        // DRM-Exclusion UX transparency message, computed here (not inside
+        // `Sequencer`, which stays unaware of *why* a track didn't qualify)
+        // — see `lastBuildExclusionMessage`'s own doc comment for why this
+        // was added. `unavailable` is exactly what `Sequencer.sequence`
+        // itself is about to silently filter out via its own
+        // `isAnalyzed && hasRawAudioAccess` check, computed independently
+        // here so the message reflects the real reason, not a guess.
+        let unavailable = pool.filter { !($0.isAnalyzed && $0.hasRawAudioAccess) }
+        if !unavailable.isEmpty && unavailable.count == pool.count {
+            throw BuildError.allExcluded
+        }
+        if !unavailable.isEmpty {
+            let includedCount = pool.count - unavailable.count
+            lastBuildExclusionMessage = "\(includedCount) of \(pool.count) songs included — \(unavailable.count) aren't available for seamless mixing (Apple Music subscription tracks, or a file that couldn't be analyzed)."
         }
 
         progressText = "Sequencing…"
@@ -129,6 +164,12 @@ final class MixBuilder: ObservableObject {
         guard !isBuilding else { return false }
         isBuilding = true
         buildError = nil
+        // `lastBuildExclusionMessage` is reset but not recomputed here --
+        // Refresh doesn't currently surface it (kept out of scope for this
+        // pass, same "smallest safe slice" reasoning as everywhere else in
+        // this file); resetting it at least avoids showing a stale message
+        // left over from an earlier Build Mix.
+        lastBuildExclusionMessage = nil
         defer { isBuilding = false; progressText = "" }
 
         do {

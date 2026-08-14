@@ -93,17 +93,30 @@ struct PlaylistDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     /// True when the session currently loaded in `PlaybackEngine` is *this*
-    /// playlist. Added 2026-08-13, alongside `PlaybackEngine.currentPlaylistID`,
-    /// to fix a real navigation dead-end Andy hit: previously the Play
-    /// button always called `play(queue:)` again regardless, which restarted
-    /// from track 1 and — combined with `PlaybackEngine`'s now-fixed
-    /// chain-overlap bug — was the direct cause of "two songs playing" when
-    /// he navigated back here and tapped Play just to get back to Now
-    /// Playing. Now, tapping Play while this exact playlist is already
-    /// playing just re-opens Now Playing on the in-progress session instead
-    /// of restarting it.
-    private var isThisPlaylistPlaying: Bool {
+    /// playlist — loaded, not necessarily audibly playing (see
+    /// `isThisPlaylistAudiblyPlaying` below for that distinction). Added
+    /// 2026-08-13, alongside `PlaybackEngine.currentPlaylistID`, to fix a
+    /// real navigation dead-end Andy hit: previously the Play button always
+    /// called `play(queue:)` again regardless, which restarted from track 1
+    /// and — combined with `PlaybackEngine`'s now-fixed chain-overlap bug —
+    /// was the direct cause of "two songs playing" when he navigated back
+    /// here and tapped Play just to get back to Now Playing. Now, tapping
+    /// Play while this exact playlist is already loaded (playing OR paused)
+    /// just re-opens Now Playing on the in-progress session instead of
+    /// restarting it.
+    private var isThisPlaylistLoaded: Bool {
         playbackEngine.isPlaying && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
+    }
+
+    /// True only when this playlist is loaded *and* actually audible right
+    /// now — distinct from `isThisPlaylistLoaded`, which stays true while
+    /// paused (deliberately, so "resume this session" logic keeps working).
+    /// Added 2026-08-14 to fix a real bug: the animated `NowPlayingBarsView`
+    /// was keyed off `isThisPlaylistLoaded` alone, so it kept animating —
+    /// visually claiming something was playing — even after the user tapped
+    /// Pause and no audio was actually sounding.
+    private var isThisPlaylistAudiblyPlaying: Bool {
+        isThisPlaylistLoaded && !playbackEngine.isPaused
     }
 
     init(playlist: Playlist, store: PlaylistStore) {
@@ -151,7 +164,10 @@ struct PlaylistDetailView: View {
                     ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
                         trackRow(
                             row, isLast: index == viewModel.rows.count - 1, isImminent: index == 0,
-                            isNowPlaying: playbackEngine.isPlaying && playbackEngine.nowPlayingTrackID == row.trackPersistentID
+                            // `!playbackEngine.isPaused` -- same 2026-08-14
+                            // fix as `isThisPlaylistAudiblyPlaying` above:
+                            // don't show animated bars on a paused track.
+                            isNowPlaying: playbackEngine.isPlaying && !playbackEngine.isPaused && playbackEngine.nowPlayingTrackID == row.trackPersistentID
                         )
                     }
                     .onMove { source, destination in
@@ -265,11 +281,11 @@ struct PlaylistDetailView: View {
                 Button {
                     guard !viewModel.rows.isEmpty else { return }
                     // Only start a fresh session if this playlist isn't
-                    // already the one playing — otherwise just reopen Now
-                    // Playing on what's already in progress. See
-                    // `isThisPlaylistPlaying`'s doc comment for why this
+                    // already loaded (playing OR paused) — otherwise just
+                    // reopen Now Playing on what's already in progress. See
+                    // `isThisPlaylistLoaded`'s doc comment for why this
                     // matters.
-                    if !isThisPlaylistPlaying {
+                    if !isThisPlaylistLoaded {
                         playbackEngine.play(
                             queue: viewModel.rows.map {
                                 PlaybackEngine.QueuedTrack(
@@ -290,12 +306,18 @@ struct PlaylistDetailView: View {
                     // `NowPlayingBarsView` (2026-08-14, replacing a static
                     // "waveform" glyph real-device feedback called "no flair").
                     HStack(spacing: DesignTokens.Spacing.xs) {
-                        if isThisPlaylistPlaying {
+                        // Bars only animate when actually audible -- keyed
+                        // off `isThisPlaylistAudiblyPlaying`, not just
+                        // "loaded," so a paused session doesn't visually
+                        // claim to be playing (2026-08-14 fix).
+                        if isThisPlaylistAudiblyPlaying {
                             NowPlayingBarsView(color: DesignTokens.Color.onPrimary, maxHeight: 16)
+                        } else if isThisPlaylistLoaded {
+                            Image(systemName: "pause.fill")
                         } else {
                             Image(systemName: "play.fill")
                         }
-                        Text(isThisPlaylistPlaying ? "Now Playing" : "Play")
+                        Text(isThisPlaylistLoaded ? "Now Playing" : "Play")
                     }
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
@@ -311,7 +333,7 @@ struct PlaylistDetailView: View {
                         .foregroundStyle(DesignTokens.Color.error)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
-                } else if isThisPlaylistPlaying {
+                } else if isThisPlaylistLoaded {
                     Text("Already playing — tap to return to Now Playing.")
                         .font(.caption)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -350,12 +372,21 @@ struct PlaylistDetailView: View {
                     // "speaker.wave.2.fill" glyph — same reasoning as the
                     // header Play button above.
                     NowPlayingBarsView(color: DesignTokens.Color.primaryText, barWidth: 2.5, maxHeight: 12)
-                        .frame(width: 20, alignment: .trailing)
+                        .frame(width: 26, alignment: .trailing)
                 } else {
+                    // `.lineLimit(1)` added 2026-08-14 -- a real bug: with no
+                    // line limit, a 20pt-wide frame wasn't always quite wide
+                    // enough for two-digit numbers at this font, so SwiftUI
+                    // wrapped some of them onto two lines instead of keeping
+                    // them on one ("25" rendering as "2" over "5"). Widened
+                    // this frame to 26pt to match -- both branches must stay
+                    // the same width, or the row content shifts sideways
+                    // depending on whether it's the now-playing row.
                     Text("\(row.position + 1)")
                         .font(.footnote)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
-                        .frame(width: 20, alignment: .trailing)
+                        .lineLimit(1)
+                        .frame(width: 26, alignment: .trailing)
                 }
 
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
@@ -421,7 +452,7 @@ struct PlaylistDetailView: View {
         Rectangle()
             .fill(isImminent ? DesignTokens.Color.primary : DesignTokens.Color.border)
             .frame(width: 2, height: DesignTokens.Spacing.md)
-            .padding(.leading, 20 + DesignTokens.Spacing.sm)
+            .padding(.leading, 26 + DesignTokens.Spacing.sm)
     }
 
     // MARK: - Footer

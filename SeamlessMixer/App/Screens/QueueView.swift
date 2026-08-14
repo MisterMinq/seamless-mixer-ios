@@ -157,8 +157,19 @@ struct QueueView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: DesignTokens.Spacing.sm) {
                 if isNowPlaying {
-                    NowPlayingBarsView(color: DesignTokens.Color.primaryText, barWidth: 2.5, maxHeight: 12)
-                        .frame(width: 20, alignment: .trailing)
+                    // Bars only animate while actually audible, not just
+                    // "this is the now-playing slot" -- same 2026-08-14 fix
+                    // as `PlaylistDetailView`/`MyMixesView` (paused sessions
+                    // were incorrectly still showing animated bars).
+                    if !playbackEngine.isPaused {
+                        NowPlayingBarsView(color: DesignTokens.Color.primaryText, barWidth: 2.5, maxHeight: 12)
+                            .frame(width: 20, alignment: .trailing)
+                    } else {
+                        Image(systemName: "pause.fill")
+                            .font(.footnote)
+                            .foregroundStyle(DesignTokens.Color.primaryText)
+                            .frame(width: 20, alignment: .trailing)
+                    }
                 } else {
                     Spacer().frame(width: 20)
                 }

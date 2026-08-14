@@ -28,8 +28,14 @@ import PlaylistCore
 /// usually paired with a list-management context this app doesn't have).
 /// Added a persistent, explicitly-labeled "Build Mix" bar at the bottom of
 /// the non-empty list, matching how the empty state's own labeled button
-/// already reads unambiguously. The toolbar "+" stays too, as a quick-access
-/// shortcut, but is no longer the *only* way in.
+/// already reads unambiguously.
+///
+/// **Toolbar "+" removed entirely, same day, on further real-device
+/// feedback**: keeping it "as a quick-access shortcut" turned out to just
+/// be a second, differently-labeled path to the exact same screen, and
+/// tapping it with nothing selected left Build Mix disabled there with no
+/// clear next step — genuinely more confusing than not having the shortcut
+/// at all. One unambiguous entry point now, not two.
 struct MyMixesView: View {
     @ObservedObject var store: PlaylistStore
 
@@ -47,15 +53,17 @@ struct MyMixesView: View {
             .background(DesignTokens.Color.background)
             .navigationTitle("My Mixes")
             .toolbar {
+                // The toolbar "+" was removed 2026-08-14 -- real-device
+                // feedback pointed out it was genuinely redundant with the
+                // labeled "Build Mix" bar below (both led to the same
+                // screen), and worse, tapping it with nothing selected left
+                // Build Mix disabled there with no obvious way forward,
+                // which read as more confusing than having no shortcut at
+                // all. One clear, labeled entry point beats two differently
+                // -labeled ones to the same place.
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Button(action: {}) {
                         Image(systemName: "gearshape")
-                    }
-                    .tint(DesignTokens.Color.primaryText)
-                    NavigationLink {
-                        SourceSelectionHubView(store: store)
-                    } label: {
-                        Image(systemName: "plus")
                     }
                     .tint(DesignTokens.Color.primaryText)
                 }
@@ -206,8 +214,12 @@ private struct MixRow: View {
     @EnvironmentObject private var playbackEngine: PlaybackEngine
     @State private var showOverflow = false
 
+    /// `!playbackEngine.isPaused` added 2026-08-14 — a real bug: this used
+    /// to key off `isPlaying` alone, which stays true while paused (by
+    /// design, elsewhere), so a paused mix's row kept showing animated bars
+    /// as if it were still audibly playing.
     private var isPlaying: Bool {
-        playbackEngine.isPlaying && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
+        playbackEngine.isPlaying && !playbackEngine.isPaused && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
     }
 
     var body: some View {

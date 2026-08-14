@@ -32,6 +32,20 @@ import SwiftUI
 /// `repeatForever`'s restart behavior at all, which is the specific thing
 /// that broke last time, so it's a materially different approach, not a
 /// tweak of the same one.
+///
+/// **Hardened 2026-08-14 (same day again)** — this view's two side-by-side
+/// `.fixedSize()` text copies are *deliberately* wider than any reasonable
+/// container (that's the whole point, they need somewhere to scroll to),
+/// but that turned out to let their oversized ideal width leak into
+/// whatever laid this view out, forcing the entire screen wider than the
+/// device and cutting off unrelated content on both edges — see
+/// `NowPlayingView`'s own doc comment for the full incident. Wrapped the
+/// scrolling content in its own `GeometryReader` so this view always
+/// self-constrains to whatever width its immediate parent actually gives
+/// it, rather than trusting every future call site to separately remember
+/// to pin a width — `GeometryReader` fills the space it's offered without
+/// ever requesting more based on its children, which is exactly the
+/// "stop this size from propagating upward" behavior needed here.
 struct MarqueeText: View {
     let text: String
     var font: Font = .footnote
@@ -47,19 +61,21 @@ struct MarqueeText: View {
     private var loopWidth: CGFloat { textWidth + gap }
 
     var body: some View {
-        TimelineView(.animation) { context in
-            let elapsed = context.date.timeIntervalSince(startDate)
-            let offset = currentOffset(elapsedSeconds: elapsed)
+        GeometryReader { geo in
+            TimelineView(.animation) { context in
+                let elapsed = context.date.timeIntervalSince(startDate)
+                let offset = currentOffset(elapsedSeconds: elapsed)
 
-            HStack(spacing: gap) {
-                textView
-                textView
+                HStack(spacing: gap) {
+                    textView
+                    textView
+                }
+                .offset(x: offset)
             }
-            .offset(x: offset)
+            .frame(width: geo.size.width, height: lineHeight, alignment: .leading)
+            .clipped()
         }
-        .frame(height: lineHeight, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .clipped()
+        .frame(height: lineHeight)
         .background(
             // Invisible, unwrapped copy purely to measure the text's own
             // natural width — the two visible copies above are `.fixedSize()`

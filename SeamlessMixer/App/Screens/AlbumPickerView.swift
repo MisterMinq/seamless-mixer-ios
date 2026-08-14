@@ -98,7 +98,16 @@ struct AlbumPickerView: View {
             viewModel.toggle(source)
         } label: {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
-                ZStack(alignment: .topTrailing) {
+                // Checkmark moved to `.topLeading` 2026-08-14 -- real-device
+                // feedback found the right column of this 2-column grid put
+                // its checkmark right next to the A-Z index rail pinned at
+                // the screen's own trailing edge, so taps meant for the
+                // checkmark were landing on the rail instead and jumping to
+                // a different letter. Left-aligned matches Genres/Artists'
+                // own convention anyway -- Playlists (no A-Z rail to
+                // conflict with) is the one screen that keeps the
+                // trailing-side treatment.
+                ZStack(alignment: .topLeading) {
                     artworkTile(for: album)
                     Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                         .font(.title3)

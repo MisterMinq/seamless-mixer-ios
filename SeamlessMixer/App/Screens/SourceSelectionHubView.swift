@@ -25,6 +25,7 @@ struct SourceSelectionHubView: View {
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
     @State private var builtPlaylist: Playlist?
+    @State private var showExclusionAlert = false
 
     var body: some View {
         Group {
@@ -50,6 +51,11 @@ struct SourceSelectionHubView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(mixBuilder.buildError ?? "")
+        }
+        .alert("Some songs couldn't be included", isPresented: $showExclusionAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(mixBuilder.lastBuildExclusionMessage ?? "")
         }
         .navigationDestination(item: $builtPlaylist) { playlist in
             PlaylistDetailView(playlist: playlist, store: store)
@@ -300,7 +306,18 @@ struct SourceSelectionHubView: View {
                             keepAll: viewModel.includeEverything,
                             store: store
                         )
-                        if let playlist { builtPlaylist = playlist }
+                        if let playlist {
+                            builtPlaylist = playlist
+                            // DRM-Exclusion UX transparency message
+                            // (2026-08-14) -- see `MixBuilder
+                            // .lastBuildExclusionMessage`'s own doc comment.
+                            // Shown as a plain alert over the just-pushed
+                            // Playlist Detail rather than blocking
+                            // navigation on it.
+                            if mixBuilder.lastBuildExclusionMessage != nil {
+                                showExclusionAlert = true
+                            }
+                        }
                     }
                 } label: {
                     Text("Build Mix")

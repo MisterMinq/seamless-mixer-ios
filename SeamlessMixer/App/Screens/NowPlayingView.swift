@@ -91,14 +91,23 @@ struct NowPlayingView: View {
         // Wrapped in a ScrollView as of 2026-08-14 -- real-device feedback
         // found the play button, the time labels, and long titles cut off
         // ("out of range, not in the screen range") once a track was
-        // playing. Root cause: this was a plain VStack with no scroll
-        // container, so on a screen too short for the fixed-size artwork
-        // (260x260) plus a two-line title plus the full transport row, the
-        // overflow simply clipped rather than becoming reachable. The
-        // GeometryReader + `.frame(minHeight:)` combination keeps the
-        // original centered look on a screen tall enough to fit everything
-        // (the inner Spacers still expand to fill the extra room) while
-        // making it scrollable rather than clipped on one that isn't.
+        // playing.
+        //
+        // **Corrected 2026-08-14 (same day) — the first fix only addressed
+        // vertical overflow.** Real-device screenshots after that fix showed
+        // the cutoff was actually *horizontal* (left and right edges both
+        // cut, content not centered) — a different bug the vertical-only fix
+        // didn't touch at all. Root cause: `.frame(minHeight: geo.size.height)`
+        // constrained height but never explicitly constrained *width*, and
+        // `MarqueeText`'s inner content (two `.fixedSize()` copies of
+        // `sourceCaption` side by side, deliberately wider than the screen
+        // so it has somewhere to scroll to) could report that large ideal
+        // width back up through the view hierarchy — `MarqueeText`'s own
+        // `.clipped()` stops it from *rendering* outside its bounds, but
+        // doesn't stop it from *sizing* its ancestors that way, so the
+        // whole content column (title, transport row, everything) could end
+        // up wider than the actual screen with no explicit width to stop it.
+        // Fixed by pinning both dimensions explicitly instead of just one.
         GeometryReader { geo in
             ScrollView {
                 VStack(spacing: DesignTokens.Spacing.lg) {
@@ -175,7 +184,7 @@ struct NowPlayingView: View {
                     .padding(.horizontal, DesignTokens.Spacing.lg)
                 }
                 .padding(.vertical, DesignTokens.Spacing.lg)
-                .frame(minHeight: geo.size.height)
+                .frame(width: geo.size.width, minHeight: geo.size.height)
             }
         }
         .background(DesignTokens.Color.background)
