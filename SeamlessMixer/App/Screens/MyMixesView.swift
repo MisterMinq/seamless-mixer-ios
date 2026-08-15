@@ -82,6 +82,10 @@ struct MyMixesView: View {
     /// rather than shown as an alert *here*. See `handleBuilt`'s doc comment
     /// for why this moved 2026-08-14.
     @State private var pendingExclusionMessage: String?
+    /// **Added 2026-08-15** — the gear icon was a no-op button since this
+    /// screen was first built; now opens `SettingsView`'s first real slice
+    /// (just the version/build number, per Andy's direct request).
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -114,11 +118,16 @@ struct MyMixesView: View {
                 // all. One clear, labeled entry point beats two differently
                 // -labeled ones to the same place.
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Button(action: {}) {
+                    Button {
+                        showSettings = true
+                    } label: {
                         Image(systemName: "gearshape")
                     }
                     .tint(DesignTokens.Color.primaryText)
                 }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
             }
         }
     }
@@ -352,6 +361,24 @@ private struct MixRow: View {
                 } label: {
                     Image(systemName: "ellipsis")
                         .foregroundStyle(DesignTokens.Color.textSecondary)
+                        // Circular pill background added 2026-08-15 -- Andy
+                        // clarified this was always the actual ask, not just
+                        // spacing: "I wanted the 3 dots in the My Mixes list
+                        // to be styled the same as in the Playlist Detail
+                        // screen. It was not documented." That screen's
+                        // per-track "..." is a `Menu`, not a plain `Button`
+                        // like this one -- a `Menu` with a bare glyph label
+                        // gets a light circular chrome from iOS by default,
+                        // which is the "style" being referenced, not
+                        // anything explicitly coded there. Since this
+                        // button presents a `.sheet`, not an inline menu (a
+                        // deliberately different pattern -- My Mixes' overflow
+                        // is Favourite/Rename/Refresh/Delete, a heavier set of
+                        // actions than a per-track menu needs), converting it
+                        // to a `Menu` isn't the right fix -- matching the
+                        // *visual* chrome by hand is.
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(DesignTokens.Color.surfaceTint))
                         .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
                 }
                 .buttonStyle(.borderless)

@@ -254,6 +254,13 @@ final class PlaybackEngine: ObservableObject {
     /// paused until the user resumes it themselves.
     private var pausedByInterruption = false
 
+    /// True while a `resume()` call is already in flight — see `resume()`'s
+    /// own doc comment. Prevents a second, overlapping trigger (interruption
+    /// ending and a route change firing close together for the same
+    /// real-world event) from racing a second `AVAudioSession.setActive(true)`/
+    /// `engine.start()` attempt against the first.
+    private var isResuming = false
+
     init() {
         configureGraph()
         observeInterruptions()
@@ -380,15 +387,18 @@ final class PlaybackEngine: ObservableObject {
     /// out from under this app when the active audio route changes, same as
     /// it can during an interruption.
     ///
-    /// Deliberately calls the exact same recovery Andy already found worked
-    /// manually on a real device (tap Pause, tap Play again) rather than
-    /// inventing a new one — `pause()` then `resume()` back-to-back,
-    /// `resume()`'s own engine-restart guard (see its doc comment) does the
-    /// real work. Only acts if this app actually thinks it's still playing
-    /// and the engine has genuinely stopped — a route change that didn't
-    /// disrupt the engine (or one that happens while nothing is playing at
-    /// all) is a no-op here, not just cheap but so this doesn't glitch
-    /// audio on every harmless route change.
+    /// **`!engine.isRunning` guard removed 2026-08-15, same day, after
+    /// real-device testing showed this recovery never actually fired.**
+    /// The original assumption — a route change stops the engine the same
+    /// way an interruption does — was wrong: on a real device, switching
+    /// output devices does *not* reliably flip `engine.isRunning` to
+    /// `false` even while audio has genuinely gone silent (iOS reroutes the
+    /// output without necessarily tearing down the render graph), so the
+    /// guard silently blocked this whole recovery path from ever running.
+    /// Now attempts the same recovery (`pause()` then `resume()`) on *every*
+    /// route change while a session is actively playing, regardless of
+    /// `engine.isRunning` — `resume()`'s own guards make this cheap and safe
+    /// even when nothing was actually wrong (see its doc comment).
     private func observeRouteChanges() {
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
@@ -403,7 +413,7 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func handleRouteChange() {
-        guard isPlaying, !isPaused, !engine.isRunning else { return }
+        guard isPlaying, !isPaused else { return }
         pause()
         resume()
     }
@@ -849,9 +859,9 @@ final class PlaybackEngine: ObservableObject {
     /// to be playing when it isn't.
     ///
     /// **Retry added 2026-08-15** — that honest-failure path did its job
-    /// (the error genuinely showed up on screen this time: "Couldn't resume
-    /// playback: Session activation fail...") but real-device testing found
-    /// a real trigger for it: resuming right after a Reminders-app alert (as
+    /// (the error genuinely showed up on screen: "Couldn't resume playback:
+    /// Session activation fail...") but real-device testing found a real
+    /// trigger for it: resuming right after a Reminders-app alert (as
     /// opposed to a Clock alarm, already confirmed working) failed outright,
     /// with no further recovery — the Play button just stayed paused
     /// forever. `AVAudioSession.setActive(true)` can genuinely fail on the
@@ -862,9 +872,31 @@ final class PlaybackEngine: ObservableObject {
     /// that; this function now hands off to it via a `Task` rather than
     /// activating synchronously, so those retries don't block the main
     /// actor.
+    ///
+    /// **Re-entrancy guard added 2026-08-15, same day** — real-device
+    /// testing found the *retried* version still failing with the identical
+    /// error on the very next round, which pointed at a second, separate
+    /// cause rather than the retry window just being too short: an
+    /// interruption ending and a route change can plausibly fire close
+    /// together for the same real-world event (e.g. a Reminders alert can
+    /// itself trigger a brief route change), and both `handleInterruption`'s
+    /// `.ended` case and `handleRouteChange` call `resume()` independently —
+    /// nothing stopped two overlapping `resume()` calls from both passing
+    /// the `isPaused` guard and racing each other into
+    /// `AVAudioSession.setActive(true)`/`engine.start()` at the same time,
+    /// which is exactly the kind of call Apple's own docs warn is not
+    /// reentrant-safe. `isResuming` now makes a second concurrent call a
+    /// no-op instead of a second racing attempt. Also widened the retry
+    /// budget itself (3 attempts/300ms → 5 attempts/500ms, ~2s total) in
+    /// case a Reminders alert's own sound genuinely takes longer to release
+    /// the session than a Clock alarm's, and the displayed error now
+    /// includes the raw `NSError` code so a future recurrence can be
+    /// diagnosed from Andy's screenshot alone, without needing Xcode.
     func resume() {
-        guard isPlaying, isPaused else { return }
+        guard isPlaying, isPaused, !isResuming else { return }
+        isResuming = true
         Task { @MainActor in
+            defer { isResuming = false }
             guard await activateSessionWithRetry() else { return }
             activeChain.player.play()
             if isCrossfading {
@@ -881,7 +913,7 @@ final class PlaybackEngine: ObservableObject {
     /// the final attempt fails, so a transient first-try failure that the
     /// retry recovers from never flashes an error the user didn't need to
     /// see.
-    private func activateSessionWithRetry(attempts: Int = 3, delayNs: UInt64 = 300_000_000) async -> Bool {
+    private func activateSessionWithRetry(attempts: Int = 5, delayNs: UInt64 = 500_000_000) async -> Bool {
         for attempt in 1...attempts {
             do {
                 try activateSession()
@@ -891,7 +923,8 @@ final class PlaybackEngine: ObservableObject {
                 return true
             } catch {
                 if attempt == attempts {
-                    playbackError = "Couldn't resume playback: \(error.localizedDescription)"
+                    let code = (error as NSError).code
+                    playbackError = "Couldn't resume playback: \(error.localizedDescription) (code \(code))"
                     return false
                 }
                 try? await Task.sleep(nanoseconds: delayNs)

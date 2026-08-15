@@ -57,6 +57,12 @@ struct SourceSelectionHubView: View {
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
 
+    /// Caps a single chip's label width in `chipRow`, below — see that
+    /// property's own doc comment for the real screen-misalignment bug this
+    /// fixes. Roughly a third of a standard iPhone's content width, wide
+    /// enough to show a real name without truncating almost everything.
+    private let chipMaxWidth: CGFloat = 160
+
     var body: some View {
         Group {
             switch viewModel.authorizationStatus {
@@ -302,6 +308,21 @@ struct SourceSelectionHubView: View {
     /// Andy hit selecting 4 genres + 2 albums. Wrapping onto additional rows
     /// means the chip row grows downward instead, so every current
     /// selection is visible without an extra gesture.
+    ///
+    /// **Chip label width capped, same day, after real-device testing found
+    /// the whole Hub screen misaligning horizontally once wrapping was
+    /// live.** Root cause: a `SelectedSource.label` can legitimately be very
+    /// long (a compilation/collaboration credit like "George Benson, Al
+    /// Jarreau & Herbie Hancock" is a real artist name Andy hit, not an edge
+    /// case) — an uncapped `Text` reports its full, unclipped intrinsic
+    /// width to the layout system regardless of the screen's actual width,
+    /// and `FlowLayout` (correctly) sizes each row to fit whatever its
+    /// children report, so one long chip could make a whole row — and
+    /// therefore the whole screen's content width — wider than the device,
+    /// the same class of bug already fixed for `NowPlayingView`'s
+    /// `MarqueeText` overflow. Capping each chip to `chipMaxWidth` with
+    /// `.lineLimit(1)`/`.truncationMode(.tail)` means a long label truncates
+    /// with an ellipsis instead of ever reporting an oversized width.
     @ViewBuilder
     private var chipRow: some View {
         if !viewModel.selectedSources.isEmpty {
@@ -310,6 +331,9 @@ struct SourceSelectionHubView: View {
                     HStack(spacing: DesignTokens.Spacing.xxs) {
                         Text(source.label)
                             .font(.footnote)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: chipMaxWidth, alignment: .leading)
                         Button {
                             viewModel.toggle(source)
                         } label: {

@@ -272,6 +272,27 @@ final class SourceSelectionViewModel: ObservableObject {
             }
         }
 
+        // **Added 2026-08-15** — real-device testing found an artist Andy
+        // knows is in his library ("Shalamar") came back with zero matches,
+        // even though the direct `MPMediaQuery.artists()` loop above should
+        // have caught it. Leading hypothesis, not yet confirmed against
+        // Andy's real library: `MPMediaQuery.artists()` groups by each
+        // track's own `MPMediaItemPropertyArtist` tag — if a track's Artist
+        // field reads something else (e.g. a compilation tagged "Various
+        // Artists" at the track level with the real performer only in Album
+        // Artist), that artist never gets its own top-level grouping there
+        // at all, direct-name match or not. This second query searches
+        // `MPMediaItemPropertyArtist` on individual songs directly (not
+        // through the `.artists()` grouping), so an artist missing from that
+        // grouping for this reason is still findable via any track that
+        // actually carries their name in its own Artist field.
+        let artistSongQuery = MPMediaQuery.songs()
+        artistSongQuery.addFilterPredicate(MPMediaPropertyPredicate(value: query, forProperty: MPMediaItemPropertyArtist, comparisonType: .contains))
+        for item in (artistSongQuery.items ?? []).prefix(25) {
+            guard let artist = item.artist, !artist.isEmpty else { continue }
+            add(SelectedSource(id: "artist:\(item.artistPersistentID)", type: .artist, label: artist, persistentID: item.artistPersistentID))
+        }
+
         searchResults = Array(results.prefix(40))
     }
 }

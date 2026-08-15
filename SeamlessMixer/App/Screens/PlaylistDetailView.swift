@@ -185,22 +185,32 @@ struct PlaylistDetailView: View {
             }
         }
         .background(DesignTokens.Color.background)
-        .navigationTitle(displayName)
+        // **Visible title text suppressed 2026-08-15, fixed for real
+        // 2026-08-15 (same day).** Andy flagged this as real, pointless
+        // duplication: the mix's name already reads prominently in
+        // `header`, right below the artwork, and the confirmed design's own
+        // top-row spec was always just "back chevron + star/dots" (matching
+        // Now Playing's "no large title, just a collapse chevron") — a
+        // nav-bar title text was never part of the intended layout here, it
+        // just quietly crept in. **First attempt didn't actually work**:
+        // kept `.navigationTitle(displayName)` set and added an empty
+        // `ToolbarItem(placement: .principal) { EmptyView() }`, on the
+        // (textbook, but wrong in practice) assumption that a `.principal`
+        // toolbar item fully overrides the title view — a real-device
+        // screenshot showed the name still rendering next to Edit despite
+        // that. Fixed by setting `.navigationTitle("")` directly instead —
+        // the empty string is what SwiftUI's real nav bar actually reads
+        // for what to draw, so this is the version confirmed to work rather
+        // than the "should work" one. Trade-off, accepted deliberately: an
+        // empty title means VoiceOver's own automatic screen-title
+        // announcement and a subsequent screen's back-button label (this
+        // app never pushes deeper than this from here today, so the latter
+        // doesn't currently matter in practice) lose that value too — worth
+        // a real accessibility label on this screen if that's ever raised
+        // as its own issue, not folded into this fix blind.
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            // **Visible title text suppressed 2026-08-15** — Andy flagged
-            // this as real, pointless duplication: the mix's name already
-            // reads prominently in `header`, right below the artwork, and
-            // the confirmed design's own top-row spec was always just "back
-            // chevron + star/dots" (matching Now Playing's "no large title,
-            // just a collapse chevron") — a nav-bar title text was never
-            // part of the intended layout here, it just quietly crept in.
-            // `.navigationTitle(displayName)` above stays set, since iOS
-            // still uses it for accessibility (VoiceOver announcing the
-            // screen) and back-navigation bookkeeping even when nothing
-            // visible renders from it — only the *visible* title view is
-            // replaced here, with an empty one.
-            ToolbarItem(placement: .principal) { EmptyView() }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 // Drag-to-reorder's entry point -- SwiftUI's standard
                 // pattern for a `List` with `.onMove`: toggles the
