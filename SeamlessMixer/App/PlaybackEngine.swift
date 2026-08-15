@@ -265,6 +265,7 @@ final class PlaybackEngine: ObservableObject {
         configureGraph()
         observeInterruptions()
         observeRouteChanges()
+        observeEngineConfigurationChanges()
         updateOutputRouteName()
     }
     // No `deinit`/observer teardown -- `PlaybackEngine` is created exactly
@@ -387,18 +388,19 @@ final class PlaybackEngine: ObservableObject {
     /// out from under this app when the active audio route changes, same as
     /// it can during an interruption.
     ///
-    /// **`!engine.isRunning` guard removed 2026-08-15, same day, after
-    /// real-device testing showed this recovery never actually fired.**
-    /// The original assumption — a route change stops the engine the same
-    /// way an interruption does — was wrong: on a real device, switching
-    /// output devices does *not* reliably flip `engine.isRunning` to
-    /// `false` even while audio has genuinely gone silent (iOS reroutes the
-    /// output without necessarily tearing down the render graph), so the
-    /// guard silently blocked this whole recovery path from ever running.
-    /// Now attempts the same recovery (`pause()` then `resume()`) on *every*
-    /// route change while a session is actively playing, regardless of
-    /// `engine.isRunning` — `resume()`'s own guards make this cheap and safe
-    /// even when nothing was actually wrong (see its doc comment).
+    /// **Three separate auto-recovery attempts (removing the `!engine
+    /// .isRunning` gate, then forcing a hard engine restart) all failed to
+    /// reliably restore real audio — Andy's explicit call, 2026-08-16, after
+    /// the third: "If I do the same thing with Apple Music, it stops
+    /// playing. Period! So maybe we should just let it stop playing if
+    /// there is no other solution available."** Checked and confirmed —
+    /// real Apple Music doesn't attempt to auto-resume across a route
+    /// change either. Stopped chasing a fix for silently restoring audio
+    /// across an arbitrary route change and instead now stops playback
+    /// outright, honestly — matching that real-world behavior rather than
+    /// leaving the UI claiming "still playing" over silence, which was the
+    /// actual complaint underneath all three attempts. The user taps Play
+    /// again to start a fresh session on whatever's now the active route.
     private func observeRouteChanges() {
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
@@ -414,8 +416,50 @@ final class PlaybackEngine: ObservableObject {
 
     private func handleRouteChange() {
         guard isPlaying, !isPaused else { return }
+        stop()
+    }
+
+    /// **Added 2026-08-16, from web research done while digging into why
+    /// interruption-triggered resume regressed** (see `resume()`'s own doc
+    /// comment) — a third, previously-unobserved notification, distinct
+    /// from both `AVAudioSession.interruptionNotification` and
+    /// `.routeChangeNotification`. Per Apple's documentation and multiple
+    /// independent developer write-ups: when `AVAudioEngine`'s I/O unit
+    /// detects a change to the hardware's channel count or sample rate, the
+    /// engine stops and uninitializes *itself*, silently, and posts this
+    /// notification — described as "a side effect of events like
+    /// interruption and route change" (i.e. it can fire *in addition to*
+    /// those two, not instead of them, and can arrive slightly *after* an
+    /// interruption's own `.ended` has already been handled). This lines up
+    /// exactly with Andy's "spark of trying to resume but then stops"
+    /// description: our own interruption recovery could genuinely succeed
+    /// for a moment, only for this separate, never-observed notification to
+    /// silently stop the engine again immediately after, with nothing in
+    /// this class listening for it before now.
+    ///
+    /// Deliberately routed through the *same* verified `pause()`/`resume()`
+    /// path interruptions already use (not `handleRouteChange`'s "just
+    /// stop" outcome) — this notification is a precise, well-documented
+    /// "the engine specifically needs restarting" signal, not the vaguer
+    /// "something about the route changed" signal a plain route change is;
+    /// recovering here is far more likely to actually succeed than the
+    /// route-change case Andy already decided wasn't worth chasing further.
+    private func observeEngineConfigurationChanges() {
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleEngineConfigurationChange()
+            }
+        }
+    }
+
+    private func handleEngineConfigurationChange() {
+        guard isPlaying, !isPaused else { return }
         pause()
-        resume(forceEngineRestart: true)
+        resume()
     }
 
     /// Reads the current output route straight off `AVAudioSession` — the
@@ -893,35 +937,90 @@ final class PlaybackEngine: ObservableObject {
     /// includes the raw `NSError` code so a future recurrence can be
     /// diagnosed from Andy's screenshot alone, without needing Xcode.
     ///
-    /// **`forceEngineRestart` added 2026-08-15, same day** — real-device
-    /// testing found the route-change fix below (which now always calls
-    /// this) still silent even after the `!engine.isRunning` guard was
-    /// removed from *when* to attempt recovery: "Animation active. No
-    /// sound." The remaining gap is here, in *how* recovery restarts the
-    /// engine — `if !engine.isRunning { try engine.start() }` skips the
-    /// restart entirely whenever `isRunning` (already proven unreliable
-    /// after a route change) happens to still read `true`, leaving the
-    /// engine's render graph running against a now-stale route. `handleRouteChange`
-    /// now passes `forceEngineRestart: true`, which unconditionally stops
-    /// the engine before restarting it, guaranteeing a real restart against
-    /// whatever the current route actually is — deliberately *not* the
-    /// default for a plain manual resume or an interruption-triggered one,
-    /// since those have already been confirmed working via the cheaper
-    /// conditional restart, and an unconditional stop/start on every single
-    /// resume risks a small audible click even when nothing was wrong.
-    func resume(forceEngineRestart: Bool = false) {
+    /// **`forceEngineRestart` (added 2026-08-15) removed again 2026-08-16**
+    /// — the route change path that was its only caller now calls `stop()`
+    /// instead of attempting recovery at all (per this class's own
+    /// `handleRouteChange` doc comment, Andy's explicit call after three
+    /// failed route-change recovery attempts). Its actual mechanism — an
+    /// unconditional `engine.stop()` before restarting, rather than trusting
+    /// `engine.isRunning` — wasn't wasted, though: it's now used internally
+    /// by the verification retry below, on the pass where a first "success"
+    /// turned out to be false.
+    ///
+    /// **Deep-dive investigation, 2026-08-16 — real regression, not the same
+    /// bug reappearing.** Andy: "it worked before with the alarm so what
+    /// changed? Go deep to look for it." Traced every change to this
+    /// specific interruption-driven path since the version confirmed
+    /// working twice with a real Clock alarm (see the "Retry added" note
+    /// above — that's the version that worked). What's different since:
+    /// `resume()` became `async` (spawns a `Task` and returns immediately,
+    /// rather than completing synchronously within the notification
+    /// handler), and — the real suspect — a retry loop was added that
+    /// treats `activateSession()`/`engine.start()` *not throwing* as proof
+    /// the resume succeeded. That's a false-positive risk specifically
+    /// right after an interruption: those calls can return successfully
+    /// while the underlying hardware pipeline hasn't actually stabilized
+    /// yet (the interruption's own teardown on iOS's side may not be fully
+    /// complete the instant `.ended` fires, even though the API contract
+    /// doesn't surface that as an error) — matching exactly what Andy
+    /// described: "There is a spark as if it wants to resume but then
+    /// stops. Animation and everything shows playback." A spark of real
+    /// audio is consistent with a genuine-but-unstable start, immediately
+    /// undone by the still-settling interruption teardown, while our code
+    /// had already marked `isPaused = false` on the strength of the API
+    /// calls alone, with nothing verifying playback actually kept going.
+    /// The original synchronous, no-retry version this project confirmed
+    /// working never faced this specific failure mode, because there was
+    /// only ever one attempt, made once genuinely safe to try (iOS's
+    /// `.ended`/`shouldResume` signal itself, unmodified since) — the retry
+    /// loop is what introduced the possibility of trusting a premature
+    /// success.
+    ///
+    /// **Fixed**: `resume()` no longer marks itself successful just because
+    /// `activateSessionWithRetry` didn't throw. It calls `.play()`, waits a
+    /// brief moment, then checks whether the active chain's render clock
+    /// (`computeElapsedSeconds`) is actually advancing and the engine is
+    /// genuinely running — only then does it mark the session resumed. If
+    /// that check fails, it retries once more, this time forcing a hard
+    /// engine restart (the same mechanism `forceEngineRestart` used to
+    /// expose publicly) rather than trusting `engine.isRunning`. Only after
+    /// both passes fail does it report an honest error. **Known, flagged
+    /// limitation**: the render clock advancing confirms the engine is
+    /// genuinely rendering samples, which is the strongest signal available
+    /// without private APIs — it is not an absolute guarantee sound is
+    /// reaching the physical output, so this narrows the false-positive gap
+    /// significantly without claiming to close it completely.
+    func resume() {
         guard isPlaying, isPaused, !isResuming else { return }
         isResuming = true
         Task { @MainActor in
             defer { isResuming = false }
-            guard await activateSessionWithRetry(forceRestart: forceEngineRestart) else { return }
+            guard await attemptResumeWithVerification() else { return }
+            isPaused = false
+            startTimerIfNeeded()
+        }
+    }
+
+    /// Two passes: the first trusts the cheaper conditional engine restart
+    /// (already confirmed reliable for the ordinary case); if verification
+    /// shows nothing actually started rendering, the second pass forces a
+    /// hard engine restart instead — see `resume()`'s own doc comment for
+    /// the full reasoning behind both the verification step and the
+    /// two-pass structure.
+    private func attemptResumeWithVerification() async -> Bool {
+        for pass in 1...2 {
+            guard await activateSessionWithRetry(forceRestart: pass > 1) else { return false }
             activeChain.player.play()
             if isCrossfading {
                 standbyChain.player.play()
             }
-            isPaused = false
-            startTimerIfNeeded()
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if computeElapsedSeconds(for: activeChain.player) != nil, engine.isRunning {
+                return true
+            }
         }
+        playbackError = "Couldn't resume playback: audio didn't actually start."
+        return false
     }
 
     /// Attempts `activateSession()` + an engine restart up to `attempts`
