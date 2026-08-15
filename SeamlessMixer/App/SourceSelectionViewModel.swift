@@ -97,6 +97,7 @@ final class SourceSelectionViewModel: ObservableObject {
     @Published var useWholeLibrary: Bool = false {
         didSet {
             if useWholeLibrary { selectedSources.removeAll() }
+            refreshPreviewSongCount()
         }
     }
 
@@ -105,6 +106,18 @@ final class SourceSelectionViewModel: ObservableObject {
     /// Albums) are real pickers as of `AlbumPickerView`. This is what the
     /// confirmed design's chip row reads from.
     @Published private(set) var selectedSources: [SelectedSource] = []
+
+    /// How many distinct songs the current selection resolves to, before
+    /// "Build Mix" is even tapped — added 2026-08-14, real-device feedback
+    /// asked for a way to compare "how many songs did I pick" against "how
+    /// many actually made it into the finished mix" without waiting for a
+    /// full build. Recomputed via `MediaLibraryResolver` (the exact same
+    /// resolution/de-duplication `MixBuilder` uses, moved into its own
+    /// shared type specifically so this preview and the real build can't
+    /// drift apart) any time `selectedSources`/`useWholeLibrary` changes.
+    /// `nil` for "whole library" (never resolved this way — see
+    /// `refreshPreviewSongCount`) or while nothing is selected.
+    @Published private(set) var previewSongCount: Int?
 
     var hasSelection: Bool { useWholeLibrary || !selectedSources.isEmpty }
 
@@ -127,6 +140,22 @@ final class SourceSelectionViewModel: ObservableObject {
         } else {
             selectedSources.append(source)
         }
+        refreshPreviewSongCount()
+    }
+
+    /// Re-runs the same `MPMediaQuery` resolution `MixBuilder` will run at
+    /// Build Mix time, purely for the live count — synchronous and local
+    /// (no network, no analysis), so recomputing on every selection change
+    /// is cheap at personal-library scale. `useWholeLibrary` has no source
+    /// list to resolve (it was never modeled as a `SelectedSource`, see
+    /// `MediaLibraryResolver`'s own doc comment), so the count is `nil`
+    /// rather than a misleading 0.
+    private func refreshPreviewSongCount() {
+        guard !useWholeLibrary, !selectedSources.isEmpty else {
+            previewSongCount = nil
+            return
+        }
+        previewSongCount = MediaLibraryResolver.resolveItems(for: selectedSources).count
     }
 
     func requestAccessAndLoadCounts() {

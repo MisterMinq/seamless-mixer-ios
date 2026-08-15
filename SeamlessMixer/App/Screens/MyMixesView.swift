@@ -37,23 +37,46 @@ import PlaylistCore
 /// clear next step — genuinely more confusing than not having the shortcut
 /// at all. One unambiguous entry point now, not two.
 ///
-/// **Now owns the push to Playlist Detail after a successful build
-/// (2026-08-14) — a real navigation-loophole fix, not a refactor for its
-/// own sake.** `SourceSelectionHubView` used to push `PlaylistDetailView`
-/// on top of *itself*, leaving the stack as My Mixes → Hub → Playlist
-/// Detail; tapping back from Playlist Detail then landed on the stale Hub
-/// instead of My Mixes, exactly the loophole real-device feedback caught
-/// ("a few times I have come from the Playlist Detail screen back into the
-/// Source Selection Hub screen... instead of the My Mixes screen"). Now the
-/// Hub hands the built playlist up via `handleBuilt` and pops itself
-/// (`dismiss()`) instead of pushing anything itself; this screen's own
-/// `.navigationDestination(item:)` on `navigateToPlaylist` then pushes
-/// Playlist Detail directly onto *its* stack, so the final stack is My
-/// Mixes → Playlist Detail with the Hub popped off entirely, not left
-/// behind as a dead end.
+/// **Owns the entire navigation stack via a single `path`, 2026-08-14 — a
+/// real bug fix, the second one in this area, not a refactor for its own
+/// sake.** The first attempt at the navigation-loophole fix (Hub hands the
+/// built playlist up via `handleBuilt`, calls its own `dismiss()`, while
+/// this screen separately set a `navigateToPlaylist` item to push Playlist
+/// Detail) genuinely closed the original loophole, but introduced a new,
+/// real race: two independent navigation-stack mutations — a child popping
+/// *itself* via `dismiss()`, and a parent pushing a *new* destination via a
+/// state change — fired in the same tick from two different views, with no
+/// guaranteed ordering between them. Real-device testing caught this
+/// directly: Build Mix would briefly flash My Mixes, then show a blank
+/// screen "probably on top of the Selection Hub screen," recoverable only
+/// by tapping back — the mix itself was always saved correctly (visible
+/// once you navigated back), so this was a pure UI/navigation-stack glitch,
+/// not a data bug.
+///
+/// Fixed by giving this screen ONE `path: [Destination]`, with *every* push
+/// — Hub included — flowing through it, rather than mixing a plain
+/// `NavigationLink { Hub() }` (opaque, not part of any path) with a
+/// separate item-driven push for Playlist Detail. `handleBuilt` now
+/// replaces the whole path in a single atomic assignment
+/// (`path = [.playlist(playlist)]`), which SwiftUI resolves as one coherent
+/// transition (pop Hub, push Playlist Detail) instead of two separate,
+/// racing operations — `SourceSelectionHubView` no longer needs to (and no
+/// longer does) call `dismiss()` on itself at all.
 struct MyMixesView: View {
     @ObservedObject var store: PlaylistStore
-    @State private var navigateToPlaylist: Playlist?
+
+    /// Every screen reachable from here via a *managed* push. `.hub` and
+    /// `.playlist` are the only two cases because those are the only two
+    /// pushes that ever need to be driven by this screen's own state
+    /// (`MixRow`'s row-tap push to Playlist Detail stays a plain, opaque
+    /// `NavigationLink` — see its own doc comment — since nothing needs to
+    /// coordinate around it).
+    private enum Destination: Hashable {
+        case hub
+        case playlist(Playlist)
+    }
+
+    @State private var path: [Destination] = []
     /// The just-built playlist's DRM-exclusion message, if any -- handed to
     /// `PlaylistDetailView` at push time (see `navigationDestination` below)
     /// rather than shown as an alert *here*. See `handleBuilt`'s doc comment
@@ -61,7 +84,7 @@ struct MyMixesView: View {
     @State private var pendingExclusionMessage: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if let error = store.loadError {
                     errorState(error)
@@ -73,8 +96,13 @@ struct MyMixesView: View {
             }
             .background(DesignTokens.Color.background)
             .navigationTitle("My Mixes")
-            .navigationDestination(item: $navigateToPlaylist) { playlist in
-                PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage)
+            .navigationDestination(for: Destination.self) { destination in
+                switch destination {
+                case .hub:
+                    SourceSelectionHubView(store: store, onBuilt: handleBuilt)
+                case .playlist(let playlist):
+                    PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage)
+                }
             }
             .toolbar {
                 // The toolbar "+" was removed 2026-08-14 -- real-device
@@ -96,28 +124,21 @@ struct MyMixesView: View {
     }
 
     /// Receives a just-built playlist (and any DRM-exclusion message) from
-    /// `SourceSelectionHubView`, which pops itself off the stack right
-    /// after calling this — see this file's own doc comment for why
-    /// navigation moved up here. Setting `navigateToPlaylist` triggers this
-    /// screen's own `.navigationDestination(item:)`, landing the user on
-    /// Playlist Detail with My Mixes (not the now-popped Hub) directly
-    /// beneath it in the stack.
+    /// `SourceSelectionHubView`. Replaces `path` outright rather than
+    /// appending to it — see this file's own doc comment for why a single
+    /// atomic replacement (as opposed to the Hub popping itself while this
+    /// screen separately pushes something new) is what actually closes the
+    /// navigation race, not just the loophole it was originally meant to fix.
     ///
-    /// **Exclusion alert moved to `PlaylistDetailView` itself, 2026-08-14
-    /// — a real bug, not a style choice.** This used to also flip a local
-    /// `showExclusionAlert` right here, presenting the alert *and* pushing
-    /// the navigation destination from the same state update on the same
-    /// view — real-device testing found this left a blank white screen
-    /// after tapping the alert's OK button, recoverable only by tapping
-    /// back. SwiftUI's `.navigationDestination(item:)` push and a same-view
-    /// `.alert(...)` presentation fighting over the same transition is a
-    /// known footgun; decoupling them by handing the message down to the
-    /// screen that's actually being pushed to, and letting it present its
-    /// own alert once it's genuinely on-screen, avoids the race instead of
-    /// trying to sequence around it.
+    /// **Exclusion alert lives on `PlaylistDetailView` itself, not here** —
+    /// a separate, earlier fix for a related but different race (this
+    /// screen presenting an `.alert(...)` and pushing a navigation
+    /// destination from the same state update). `pendingExclusionMessage`
+    /// is still set here since `PlaylistDetailView` needs the value, just
+    /// not presented here.
     private func handleBuilt(playlist: Playlist, exclusionMessage: String?) {
         pendingExclusionMessage = exclusionMessage
-        navigateToPlaylist = playlist
+        path = [.playlist(playlist)]
     }
 
     // MARK: - Empty state
@@ -133,9 +154,7 @@ struct MyMixesView: View {
                 .foregroundStyle(DesignTokens.Color.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, DesignTokens.Spacing.xl)
-            NavigationLink {
-                SourceSelectionHubView(store: store, onBuilt: handleBuilt)
-            } label: {
+            NavigationLink(value: Destination.hub) {
                 Label("New mix", systemImage: "plus")
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                     .padding(.horizontal, DesignTokens.Spacing.lg)
@@ -211,9 +230,7 @@ struct MyMixesView: View {
     private var buildMixBar: some View {
         VStack(spacing: 0) {
             Divider()
-            NavigationLink {
-                SourceSelectionHubView(store: store, onBuilt: handleBuilt)
-            } label: {
+            NavigationLink(value: Destination.hub) {
                 Label("Build Mix", systemImage: "plus")
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
@@ -256,6 +273,23 @@ struct MyMixesView: View {
 /// tapping that row already leads to Playlist Detail, whose own Play button
 /// already resumes (not restarts) an in-progress session, so this closes a
 /// real practical gap even without the full mini-player.
+///
+/// **Stays a plain, opaque `NavigationLink { PlaylistDetailView(...) }`,
+/// deliberately not converted to `MyMixesView`'s managed `path`** — unlike
+/// the Hub/Build-Mix push (see that file's own doc comment on the
+/// navigation race that fix closed), tapping an existing row is a single,
+/// simple, user-initiated push with nothing else racing it, so there's no
+/// reason to route it through `path` too.
+///
+/// **Ellipsis trailing padding added 2026-08-15** — real-device feedback:
+/// the "..." button's tap target sat right up against `List`'s own
+/// system-provided disclosure chevron (added automatically for any
+/// `NavigationLink` row), with almost no visual or functional gap between
+/// them — Andy reported landing on the ellipsis instead of the chevron
+/// "almost 90% of the time" when trying to open Playlist Detail. Adding
+/// breathing room after the button doesn't change either tap target's own
+/// size, just separates them enough that a tap near the row's trailing
+/// edge reliably lands on the chevron instead.
 private struct MixRow: View {
     let playlist: Playlist
     let store: PlaylistStore
@@ -315,6 +349,7 @@ private struct MixRow: View {
                         .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
                 }
                 .buttonStyle(.borderless)
+                .padding(.trailing, DesignTokens.Spacing.xs)
             }
         }
         .padding(.vertical, DesignTokens.Spacing.xxs)

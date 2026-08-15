@@ -106,7 +106,7 @@ final class MixBuilder: ObservableObject {
         guard let db = store.db else { throw BuildError.databaseUnavailable }
 
         progressText = "Finding songs…"
-        let items = resolveMediaItems(for: resolvableSources)
+        let items = MediaLibraryResolver.resolveItems(for: resolvableSources)
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
         var pool: [Track] = []
@@ -119,36 +119,18 @@ final class MixBuilder: ObservableObject {
         // DRM-Exclusion UX transparency message, computed here (not inside
         // `Sequencer`, which stays unaware of *why* a track didn't qualify)
         // — see `lastBuildExclusionMessage`'s own doc comment for why this
-        // was added. `unavailable` is exactly what `Sequencer.sequence`
-        // itself is about to silently filter out via its own
-        // `isAnalyzed && hasRawAudioAccess` check, computed independently
-        // here so the message reflects the real reason, not a guess.
-        let unavailable = pool.filter { !($0.isAnalyzed && $0.hasRawAudioAccess) }
-        if !unavailable.isEmpty && unavailable.count == pool.count {
+        // was added. `DRMExclusionSummary` (moved into `PlaylistCore`
+        // 2026-08-14, alongside `CrossfadeTiming` below, specifically so
+        // this logic could be unit-tested — see `DRMExclusionSummaryTests`)
+        // mirrors exactly what `Sequencer.sequence` is about to silently
+        // filter out via its own `isAnalyzed && hasRawAudioAccess` check,
+        // computed independently here so the message reflects the real
+        // reason, not a guess.
+        let exclusionSummary = DRMExclusionSummary.summarize(pool: pool)
+        if exclusionSummary.isAllExcluded {
             throw BuildError.allExcluded
         }
-        if !unavailable.isEmpty {
-            let includedCount = pool.count - unavailable.count
-            // Split into the two real, distinct causes (2026-08-14, after a
-            // real-device report of an implausibly high exclusion count that
-            // turned out to be a separate bug — see `SeamlessMixerApp`'s own
-            // doc comment on why `PlaylistStore` used to be re-constructed
-            // repeatedly, opening a storm of competing SQLite connections
-            // that could intermittently fail a track's analysis-save).
-            // Reporting which bucket is responsible, rather than one vague
-            // combined phrase, makes a real future recurrence of either
-            // immediately diagnosable from the message alone.
-            let drmCount = unavailable.filter { !$0.hasRawAudioAccess }.count
-            let analysisFailedCount = unavailable.count - drmCount
-            var reasons: [String] = []
-            if drmCount > 0 {
-                reasons.append("\(drmCount) streamed through your Apple Music subscription")
-            }
-            if analysisFailedCount > 0 {
-                reasons.append("\(analysisFailedCount) couldn't be analyzed")
-            }
-            lastBuildExclusionMessage = "\(includedCount) of \(pool.count) songs included — \(unavailable.count) aren't available for seamless mixing (\(reasons.joined(separator: ", ")))."
-        }
+        lastBuildExclusionMessage = exclusionSummary.message
 
         progressText = "Sequencing…"
         let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: sequencingMode(for: mode), keepAll: keepAll)
@@ -164,7 +146,7 @@ final class MixBuilder: ObservableObject {
     /// item `documentation/Editability_UX_Gap_Analysis.docx` calls out as
     /// most directly delivering on the editability principle ("this is
     /// exactly why the playlist_sources table exists"). Deliberately
-    /// reuses `resolveMediaItems`/`upsertAndAnalyzeIfNeeded`/
+    /// reuses `MediaLibraryResolver.resolveItems`/`upsertAndAnalyzeIfNeeded`/
     /// `sequencingMode` rather than duplicating them — the only genuinely
     /// new piece here is replacing the track rows instead of inserting a
     /// new playlist.
@@ -212,7 +194,7 @@ final class MixBuilder: ObservableObject {
         guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
 
         progressText = "Finding songs…"
-        let items = resolveMediaItems(for: selectedSources)
+        let items = MediaLibraryResolver.resolveItems(for: selectedSources)
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
         var pool: [Track] = []
@@ -243,7 +225,7 @@ final class MixBuilder: ObservableObject {
             try conn.execute(sql: "DELETE FROM playlist_tracks WHERE playlist_id = ?", arguments: [playlistID])
 
             for (index, track) in sequenced.enumerated() {
-                let timing = Self.crossfadeTiming(for: track)
+                let timing = CrossfadeTiming.timing(for: track)
                 var playlistTrack = PlaylistTrack(
                     playlistID: playlistID,
                     trackPersistentID: track.persistentID,
@@ -262,33 +244,15 @@ final class MixBuilder: ObservableObject {
         }
     }
 
-    /// Tempo-derived crossfade duration, a direct port of `playlist_mixer.py`'s
-    /// `build_mix`: `crossfade_sec = clip(beat_len_sec * 6 beats, 2.0, 12.0)`,
-    /// sized to the *outgoing* track's own tempo — a slower song gets a
-    /// longer, more graceful blend, a fast one a shorter/tighter one —
-    /// rather than the fixed 4.0s constant this project shipped with before
-    /// real-device listening (2026-08-13) surfaced that as one of three real
-    /// bugs behind "the crossfade doesn't work." Falls back to a 120bpm
-    /// assumption if `bpm` is somehow nil (shouldn't happen — `Sequencer`
-    /// already filters the pool to analyzed tracks before this ever runs),
-    /// matching Python's `max(bpm, 1e-6)` divide-by-zero guard.
-    private static func crossfadeDurationSec(forBPM bpm: Double?) -> Double {
-        let beatLenSec = 60.0 / max(bpm ?? 120.0, 0.000001)
-        return min(max(beatLenSec * 6.0, 2.0), 12.0)
-    }
-
-    /// Real per-transition crossfade timing, replacing the `duration - 5s`
-    /// placeholder flagged as a stand-in since 0.15.5 and confirmed as a real
-    /// bug once Andy actually listened on a device. `startOffsetSec` is
-    /// measured from the track's *playable* start (after leading silence is
-    /// skipped, per `Track.playableStartSec`) — `PlaybackEngine` schedules
-    /// playback starting from that same offset, so its elapsed-time
-    /// measurement lines up with this value without any extra translation.
-    private static func crossfadeTiming(for track: Track) -> (startOffsetSec: Double, durationSec: Double) {
-        let crossfadeSec = crossfadeDurationSec(forBPM: track.bpm)
-        let playableDuration = track.playableDurationSec ?? track.durationSec
-        return (max(0, playableDuration - crossfadeSec), crossfadeSec)
-    }
+    /// Tempo-derived crossfade timing — moved into `PlaylistCore` as
+    /// `CrossfadeTiming` on 2026-08-14, alongside `DRMExclusionSummary`
+    /// above, specifically so this math could be unit-tested (see
+    /// `CrossfadeTimingTests`); this file now just calls it. The two former
+    /// `private static func`s that lived here (`crossfadeDurationSec(forBPM:)`,
+    /// `crossfadeTiming(for:)`) had no test coverage at all before this move
+    /// — a real bug in this exact math (a flat `duration - 5s` placeholder)
+    /// shipped from 0.15.5 until real-device listening caught it at 0.19.0,
+    /// exactly the kind of regression a unit test would have caught first.
 
     /// `PlaylistMode` (used by `Playlist`/the mode picker) and `SequencingMode`
     /// (used by `Sequencer.sequence`) are two separate Swift enums with
@@ -333,58 +297,6 @@ final class MixBuilder: ObservableObject {
         case .songs:
             return nil
         }
-    }
-
-    /// Resolves each selected source to its real `MPMediaItem`s, switching
-    /// on `SourceType` since each needs a different `MPMediaQuery` shape —
-    /// de-duplicated across sources (a song could belong to more than one
-    /// selected grouping at once, e.g. an artist *and* one of their albums
-    /// both picked together).
-    private func resolveMediaItems(for sources: [SelectedSource]) -> [MPMediaItem] {
-        var items: [MPMediaItem] = []
-        var seenIDs = Set<MPMediaEntityPersistentID>()
-
-        func add(_ newItems: [MPMediaItem]?) {
-            for item in newItems ?? [] where seenIDs.insert(item.persistentID).inserted {
-                items.append(item)
-            }
-        }
-
-        for source in sources {
-            switch source.type {
-            case .genre:
-                let query = MPMediaQuery.songs()
-                query.addFilterPredicate(MPMediaPropertyPredicate(value: source.label, forProperty: MPMediaItemPropertyGenre))
-                add(query.items)
-
-            case .artist:
-                guard let persistentID = source.persistentID else { continue }
-                let query = MPMediaQuery.songs()
-                query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyArtistPersistentID))
-                add(query.items)
-
-            case .album:
-                guard let persistentID = source.persistentID else { continue }
-                let query = MPMediaQuery.songs()
-                query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyAlbumPersistentID))
-                add(query.items)
-
-            case .playlist:
-                // No `MPMediaItemPropertyPlaylistPersistentID` predicate
-                // exists on `MPMediaQuery.songs()` -- a playlist's tracks
-                // are read off the `MPMediaPlaylist` collection itself,
-                // found by matching its own `persistentID` among
-                // `MPMediaQuery.playlists()`'s collections.
-                guard let persistentID = source.persistentID else { continue }
-                let matchingPlaylist = MPMediaQuery.playlists().collections?
-                    .first { $0.persistentID == persistentID } as? MPMediaPlaylist
-                add(matchingPlaylist?.items)
-
-            case .songs:
-                continue
-            }
-        }
-        return items
     }
 
     /// Reuses an already-analyzed `tracks` row if one exists; otherwise
@@ -453,7 +365,7 @@ final class MixBuilder: ObservableObject {
     }
 
     /// - Note: `crossfadeStartOffsetSec`/`crossfadeDurationSec` below are now
-    ///   real, tempo-derived transition points (`Self.crossfadeTiming`), not
+    ///   real, tempo-derived transition points (`CrossfadeTiming.timing`), not
     ///   the placeholder `duration - 5s` this used before 2026-08-13's
     ///   real-device-listening fix pass. `tempoNudgePct` is still a
     ///   placeholder (0) — the mixing engine's `AVAudioUnitTimePitch` nodes
@@ -480,7 +392,7 @@ final class MixBuilder: ObservableObject {
             for source in sources {
                 // Per `PlaylistSource.sourceValue`'s own doc comment: a
                 // genre stores its name directly (the stable, re-queryable
-                // key `resolveMediaItems` already uses); everything else
+                // key `MediaLibraryResolver.resolveItems` already uses); everything else
                 // stores its `persistentID` so `selectedSource(from:)` can
                 // reconstruct an exact, re-resolvable source later (Refresh)
                 // rather than matching by display name, which isn't unique.
@@ -495,7 +407,7 @@ final class MixBuilder: ObservableObject {
             }
 
             for (index, track) in sequenced.enumerated() {
-                let timing = Self.crossfadeTiming(for: track)
+                let timing = CrossfadeTiming.timing(for: track)
                 var playlistTrack = PlaylistTrack(
                     playlistID: playlistID,
                     trackPersistentID: track.persistentID,

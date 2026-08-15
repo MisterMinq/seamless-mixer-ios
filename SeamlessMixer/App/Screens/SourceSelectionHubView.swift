@@ -17,21 +17,30 @@ import PlaylistCore
 /// library" still shows an error explaining it isn't supported yet, per the
 /// reasoning in `MixBuilder`'s own doc comment.
 ///
-/// **Navigation on success changed 2026-08-14 — a real bug, not a style
-/// choice.** This used to push `PlaylistDetailView` directly from *within*
-/// this Hub via `.navigationDestination(item:)`, which lands it on top of
-/// the Hub in `MyMixesView`'s shared `NavigationStack` — the stack becomes
-/// My Mixes → Hub → Playlist Detail. Tapping back from Playlist Detail then
-/// returned to this same (now-stale, selections-spent) Hub instead of My
-/// Mixes, which real-device feedback confirmed as a real, repeatable
-/// loophole ("a few times I have come from the Playlist Detail screen back
-/// into the Source Selection Hub screen with the greyed out Build Mix
-/// button, instead of the My Mixes screen"). Fixed by handing the built
-/// playlist (and any exclusion message) *up* to `MyMixesView` via `onBuilt`
-/// and calling `dismiss()` on this Hub immediately after — `MyMixesView`
-/// owns the push to Playlist Detail now, so the stack becomes My Mixes →
-/// Playlist Detail, with this Hub popped off entirely rather than left
-/// behind as a dead end.
+/// **Navigation on success changed twice, both real bugs, not style
+/// choices.** First (2026-08-14): this used to push `PlaylistDetailView`
+/// directly from *within* this Hub via `.navigationDestination(item:)`,
+/// landing it on top of the Hub in `MyMixesView`'s shared `NavigationStack`
+/// — My Mixes → Hub → Playlist Detail. Tapping back from Playlist Detail
+/// then returned to this same (now-stale) Hub instead of My Mixes, a real,
+/// repeatable loophole real-device feedback caught. Fixed by handing the
+/// built playlist *up* to `MyMixesView` via `onBuilt` and calling
+/// `dismiss()` on this Hub right after.
+///
+/// **Second (2026-08-15): that `dismiss()` call itself is gone now, and
+/// that's also a real bug fix, not a cleanup.** Calling `dismiss()` here
+/// while `MyMixesView` *separately* mutated its own state to push Playlist
+/// Detail — two independent navigation-stack changes from two different
+/// views, in the same tick — could race each other in SwiftUI's
+/// `NavigationStack`. Real-device testing caught it directly: Build Mix
+/// would briefly flash My Mixes, then a blank screen, recoverable only by
+/// tapping back (the mix itself was always saved correctly underneath).
+/// `MyMixesView` now owns a single managed navigation `path` covering both
+/// this Hub's own push *and* the Playlist Detail push, so replacing that
+/// path in one atomic step (pop Hub, push Playlist Detail) is enough on its
+/// own — this Hub calling `dismiss()` on top of that would just reintroduce
+/// the same race from the other direction. See `MyMixesView`'s own doc
+/// comment for the full diagnosis.
 struct SourceSelectionHubView: View {
     let store: PlaylistStore
     /// Called once, right after a successful build, with the new playlist
@@ -42,7 +51,6 @@ struct SourceSelectionHubView: View {
 
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Group {
@@ -302,9 +310,24 @@ struct SourceSelectionHubView: View {
         VStack(spacing: DesignTokens.Spacing.xxs) {
             Divider()
             HStack {
-                Text(selectionSummary)
-                    .font(.footnote)
-                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(selectionSummary)
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                    // Live song-count preview, added 2026-08-14 -- lets
+                    // Andy compare "how many songs did I actually pick"
+                    // against "how many made it into the finished mix"
+                    // without waiting for a full build, per his own request
+                    // during real-device testing of the exclusion-count
+                    // question. `nil` for "whole library" (never resolved
+                    // this way) or an empty selection -- both already covered
+                    // by `selectionSummary` above, so no redundant line.
+                    if let previewSongCount = viewModel.previewSongCount {
+                        Text("\(previewSongCount) song\(previewSongCount == 1 ? "" : "s") found")
+                            .font(.caption2)
+                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                    }
+                }
                 Spacer()
                 Button {
                     Task {
@@ -316,11 +339,12 @@ struct SourceSelectionHubView: View {
                             store: store
                         )
                         if let playlist {
-                            // Hand off to `MyMixesView` and pop this Hub off
-                            // the stack -- see this file's own doc comment
-                            // on why navigation moved up to the caller.
+                            // Hand off to `MyMixesView`, which replaces its
+                            // whole navigation path in one step (popping this
+                            // Hub and pushing Playlist Detail together) --
+                            // see this file's own doc comment on why this no
+                            // longer also calls `dismiss()` itself here.
                             onBuilt(playlist, mixBuilder.lastBuildExclusionMessage)
-                            dismiss()
                         }
                     }
                 } label: {
