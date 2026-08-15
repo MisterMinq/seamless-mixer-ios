@@ -142,7 +142,7 @@ final class MixBuilder: ObservableObject {
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
         progressText = "Saving…"
-        return try persist(sequenced: sequenced, sources: resolvableSources, mode: mode, db: db)
+        return try persist(sequenced: sequenced, sources: selectedSources, mode: mode, db: db)
     }
 
     /// Re-runs sequencing for an already-saved playlist against its own
