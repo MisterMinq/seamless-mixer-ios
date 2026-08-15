@@ -62,6 +62,10 @@ final class SourceSelectionViewModel: ObservableObject {
     @Published private(set) var genreCount: Int = 0
     @Published private(set) var artistCount: Int = 0
     @Published private(set) var albumCount: Int = 0
+    /// **Added 2026-08-16** alongside `SongPickerView`, the fifth and last
+    /// confirmed category picker (Playlist/Songs/Genre/Artist/Album, per
+    /// ADR-7).
+    @Published private(set) var songCount: Int = 0
 
     /// Segmented-control selection, per the confirmed Source Selection
     /// design ("Mode picker") — defaults to Energy Wave.
@@ -184,6 +188,7 @@ final class SourceSelectionViewModel: ObservableObject {
         genreCount = MPMediaQuery.genres().collections?.count ?? 0
         artistCount = MPMediaQuery.artists().collections?.count ?? 0
         albumCount = MPMediaQuery.albums().collections?.count ?? 0
+        songCount = MPMediaQuery.songs().items?.count ?? 0
     }
 
     // MARK: - Hub-level search
@@ -193,15 +198,21 @@ final class SourceSelectionViewModel: ObservableObject {
     /// revised twice and confirmed 2026-08-02) always specified exactly one
     /// search field living here on the Hub, searching across song titles,
     /// artist/album/genre/playlist names together, surfacing the matching
-    /// *source* — never a bare song list, since a song was never itself a
-    /// pickable source per ADR-7. That field was designed but never actually
-    /// built until now; real-device feedback (Andy: "someone at the event
-    /// had some song requests... made it easier to find") is what finally
-    /// surfaced the gap. Andy separately asked for a search box inside each
-    /// category picker too — a genuinely different, narrower need (filtering
-    /// an already-open list) — see each picker's own `searchText`/`filtered...`
+    /// *source*. That field was designed but never actually built until
+    /// now; real-device feedback (Andy: "someone at the event had some song
+    /// requests... made it easier to find") is what finally surfaced the
+    /// gap. Andy separately asked for a search box inside each category
+    /// picker too — a genuinely different, narrower need (filtering an
+    /// already-open list) — see each picker's own `searchText`/`filtered...`
     /// addition for that half; this is only the hub-level, cross-category
     /// half of the request.
+    ///
+    /// **A song-title match itself became a directly selectable result
+    /// 2026-08-16**, once `.songs` (individual song picks) became a real,
+    /// resolvable source type via `SongPickerView` — previously a song
+    /// match here could only surface its artist/album/genre, since a song
+    /// was never itself a pickable source per ADR-7 at the time this was
+    /// written.
     struct SearchResult: Identifiable {
         let id: String
         let source: SelectedSource
@@ -261,6 +272,12 @@ final class SourceSelectionViewModel: ObservableObject {
         songQuery.addFilterPredicate(MPMediaPropertyPredicate(value: query, forProperty: MPMediaItemPropertyTitle, comparisonType: .contains))
         for item in (songQuery.items ?? []).prefix(25) {
             let songTitle = item.title ?? query
+            // The song itself, now that `.songs` (individual song picks)
+            // is a real, resolvable source as of 2026-08-16 -- added
+            // alongside its artist/album/genre (below), not in place of
+            // them, since a song title match is still useful evidence for
+            // "maybe you meant this whole artist/album/genre" too.
+            add(SelectedSource(id: "songs:\(item.persistentID)", type: .songs, label: songTitle, persistentID: item.persistentID))
             if let artist = item.artist, !artist.isEmpty {
                 add(SelectedSource(id: "artist:\(item.artistPersistentID)", type: .artist, label: artist, persistentID: item.artistPersistentID), detail: "via “\(songTitle)”")
             }

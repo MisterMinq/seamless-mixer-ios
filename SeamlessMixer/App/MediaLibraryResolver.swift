@@ -7,10 +7,14 @@ import MediaPlayer
 /// a live "how many songs is this" preview on the Hub, without duplicating
 /// the per-`SourceType` `MPMediaQuery` predicates in two places.
 enum MediaLibraryResolver {
-    /// - Parameter sources: any combination of genre/artist/album/playlist
-    ///   selections — `.songs` ("whole library") is skipped, since it was
-    ///   never resolved this way (it's its own `useWholeLibrary` toggle, not
-    ///   a picked source).
+    /// - Parameter sources: any combination of genre/artist/album/playlist/
+    ///   song selections. "Whole library" itself is *not* one of these — it
+    ///   stays its own separate `useWholeLibrary` toggle, never modeled as a
+    ///   `SelectedSource` — but as of 2026-08-16, `.songs` genuinely does
+    ///   mean "one specific song," matching ADR-7's original five source
+    ///   types (Playlist/Songs/Genre/Artist/Album). It had been a dead,
+    ///   defensively-skipped case until now — see `SongPickerView`'s own doc
+    ///   comment for the real screen this finally builds.
     static func resolveItems(for sources: [SelectedSource]) -> [MPMediaItem] {
         var items: [MPMediaItem] = []
         var seenIDs = Set<MPMediaEntityPersistentID>()
@@ -52,7 +56,10 @@ enum MediaLibraryResolver {
                 add(matchingPlaylist?.items)
 
             case .songs:
-                continue
+                guard let persistentID = source.persistentID else { continue }
+                let query = MPMediaQuery.songs()
+                query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyPersistentID))
+                add(query.items)
             }
         }
         return items

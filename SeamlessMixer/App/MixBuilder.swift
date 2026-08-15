@@ -8,8 +8,8 @@ import PlaylistCore
 /// (for anything not already analyzed) -> `Sequencer` -> persistence via
 /// `DatabaseManager`.
 ///
-/// **Resolves all four per-source selection types now (genre, playlist,
-/// artist, album) — still deliberately excludes "whole library."** Andy's
+/// **Resolves all five per-source selection types now (genre, playlist,
+/// artist, album, songs) — still deliberately excludes "whole library."** Andy's
 /// real library likely runs to hundreds/thousands of tracks (the Source
 /// Selection design notes reference "hundreds of artists" alone).
 /// Inline-analyzing that much real audio synchronously the first time this
@@ -36,7 +36,7 @@ final class MixBuilder: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .noSupportedSources:
-                return "\"Use your whole library\" isn't wired up yet — pick one or more playlists, genres, artists, or albums instead."
+                return "\"Use your whole library\" isn't wired up yet — pick one or more playlists, genres, artists, albums, or songs instead."
             case .emptyPool:
                 return "None of the selected songs could be used for a seamless mix."
             case .allExcluded:
@@ -96,17 +96,22 @@ final class MixBuilder: ObservableObject {
     }
 
     private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool, store: PlaylistStore) async throws -> Playlist {
-        // `.songs` ("whole library") is the one remaining unsupported type —
-        // it's never actually produced by `SelectedSource` today (whole
-        // library is its own `useWholeLibrary` toggle, not a picked source),
-        // but filtering defensively here rather than assuming that stays true.
-        let resolvableSources = selectedSources.filter { $0.type != .songs }
-        guard !resolvableSources.isEmpty else { throw BuildError.noSupportedSources }
+        // All five confirmed source types (per ADR-7) are resolvable as of
+        // 2026-08-16 — `.songs` (individual song picks) was the last
+        // holdout, previously filtered out defensively since nothing ever
+        // produced a `.songs`-typed `SelectedSource`. `SongPickerView` now
+        // does, so no filtering happens here anymore. "Whole library" itself
+        // is still the one genuinely unsupported case — it was never
+        // modeled as a `SelectedSource` at all (it's the separate
+        // `useWholeLibrary` toggle), so there's nothing to filter here for
+        // it; `hasSelection`/the Hub's own UI already keep Build Mix
+        // disabled or erroring for that case upstream of this function.
+        guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
 
         guard let db = store.db else { throw BuildError.databaseUnavailable }
 
         progressText = "Finding songs…"
-        let items = MediaLibraryResolver.resolveItems(for: resolvableSources)
+        let items = MediaLibraryResolver.resolveItems(for: selectedSources)
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
         var pool: [Track] = []
@@ -187,9 +192,11 @@ final class MixBuilder: ObservableObject {
 
         let detail = try db.loadPlaylistDetail(playlistID: playlistID)
 
-        // Same `.songs` ("whole library") exclusion as a fresh Build Mix --
-        // see `selectedSource(from:)` for how each stored `PlaylistSource`
-        // row gets turned back into a resolvable `SelectedSource`.
+        // See `selectedSource(from:)` for how each stored `PlaylistSource`
+        // row gets turned back into a resolvable `SelectedSource` -- a
+        // playlist built (or last refreshed) before "whole library" existed
+        // as a concept has no `PlaylistSource` rows for it either way, so
+        // there's nothing special to exclude here.
         let selectedSources = detail.sources.compactMap(selectedSource(from:))
         guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
 
@@ -277,25 +284,24 @@ final class MixBuilder: ObservableObject {
     /// stable lookup key), everything else stores its `persistentID` as a
     /// string (per `PlaylistSource.sourceValue`'s own doc comment: "a genre
     /// name, or an artist's/playlist's/album's persistent ID as a string").
-    /// Returns `nil` for `.songs` rows (shouldn't exist, since "whole
-    /// library" was never persisted as a `PlaylistSource`) or a
-    /// non-genre row whose `sourceValue` doesn't parse as a persistent ID
-    /// (defensive against a malformed/pre-this-change row) rather than
-    /// crashing — `Refresh` simply won't be able to re-resolve that one
-    /// source, same "set aside, don't block" spirit as everywhere else in
-    /// this app that deals with a partially-unusable pool.
+    /// Returns `nil` for a non-genre row whose `sourceValue` doesn't parse
+    /// as a persistent ID (defensive against a malformed/pre-this-change
+    /// row) rather than crashing — `Refresh` simply won't be able to
+    /// re-resolve that one source, same "set aside, don't block" spirit as
+    /// everywhere else in this app that deals with a partially-unusable
+    /// pool. `.songs` (individual song picks) joined `.artist`/`.album`/
+    /// `.playlist`'s persistentID-based reconstruction 2026-08-16, once it
+    /// became a real, persistable source type — see `SongPickerView`.
     private func selectedSource(from playlistSource: PlaylistSource) -> SelectedSource? {
         switch playlistSource.sourceType {
         case .genre:
             return SelectedSource(id: "genre:\(playlistSource.sourceValue)", type: .genre, label: playlistSource.sourceLabel)
-        case .artist, .album, .playlist:
+        case .artist, .album, .playlist, .songs:
             guard let persistentID = MPMediaEntityPersistentID(playlistSource.sourceValue) else { return nil }
             return SelectedSource(
                 id: "\(playlistSource.sourceType.rawValue):\(persistentID)", type: playlistSource.sourceType,
                 label: playlistSource.sourceLabel, persistentID: persistentID
             )
-        case .songs:
-            return nil
         }
     }
 

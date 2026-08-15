@@ -12,15 +12,15 @@ import PlaylistCore
 /// gap directly. See `SourceSelectionViewModel.performSearch`'s own doc
 /// comment for the full reasoning and the search results list below.
 ///
-/// **All four category pickers are now real** (Genres, Playlists, Artists,
-/// Albums — `AlbumPickerView` was the last, combining the artwork-grid
-/// cell `PlaylistPickerView` established with the A-Z rail
-/// `ArtistPickerView` established), each with selection state flowing back
-/// into this Hub's chip row and live "N selected" counts. **"Build Mix" is
-/// wired for real** (see `MixBuilder`) and now resolves any combination of
-/// genre/playlist/artist/album selections, not just genres — only "whole
-/// library" still shows an error explaining it isn't supported yet, per the
-/// reasoning in `MixBuilder`'s own doc comment.
+/// **All five category rows are now real** (Genres, Playlists, Artists,
+/// Albums, and Songs — `SongPickerView`, added 2026-08-16, was the last,
+/// closing out ADR-7's original five confirmed source types), each with
+/// selection state flowing back into this Hub's chip row and live
+/// "N selected" counts. **"Build Mix" is wired for real** (see
+/// `MixBuilder`) and now resolves any combination of genre/playlist/
+/// artist/album/song selections — only "whole library" still shows an
+/// error explaining it isn't supported yet, per the reasoning in
+/// `MixBuilder`'s own doc comment.
 ///
 /// **Navigation on success changed twice, both real bugs, not style
 /// choices.** First (2026-08-14): this used to push `PlaylistDetailView`
@@ -253,6 +253,15 @@ struct SourceSelectionHubView: View {
             }
             categoryRow(title: "Albums", icon: "square.stack", count: viewModel.albumCount, type: .album) {
                 AlbumPickerView(viewModel: viewModel)
+            }
+            // Fifth and last of the confirmed category rows (per ADR-7's
+            // five source types) -- added 2026-08-16, closing the gap
+            // CLAUDE.md's 0.24.0 entry first flagged: "Songs" was always
+            // meant to be its own individual-song-browsing picker, not just
+            // the internal label the separate "whole library" toggle
+            // borrowed.
+            categoryRow(title: "Songs", icon: "music.note", count: viewModel.songCount, type: .songs) {
+                SongPickerView(viewModel: viewModel)
             }
         }
         // "All Songs" combining with anything else is redundant, per the
