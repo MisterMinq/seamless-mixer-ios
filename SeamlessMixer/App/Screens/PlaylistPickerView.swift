@@ -23,6 +23,9 @@ import PlaylistCore
 struct PlaylistPickerView: View {
     @ObservedObject var viewModel: SourceSelectionViewModel
     @State private var playlists: [PlaylistRow] = []
+    /// **Added 2026-08-15** — see `GenrePickerView`'s own note on why this
+    /// is separate from the Hub's global search.
+    @State private var searchText = ""
 
     struct PlaylistRow: Identifiable {
         let persistentID: MPMediaEntityPersistentID
@@ -34,16 +37,22 @@ struct PlaylistPickerView: View {
 
     private let columns = [GridItem(.adaptive(minimum: 140), spacing: DesignTokens.Spacing.sm)]
 
+    private var filteredPlaylists: [PlaylistRow] {
+        guard !searchText.isEmpty else { return playlists }
+        return playlists.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: DesignTokens.Spacing.md) {
-                ForEach(playlists) { playlist in
+                ForEach(filteredPlaylists) { playlist in
                     cell(for: playlist)
                 }
             }
             .padding(DesignTokens.Spacing.md)
         }
         .background(DesignTokens.Color.background)
+        .searchable(text: $searchText, prompt: "Search playlists")
         .navigationTitle("Playlists")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadPlaylists)

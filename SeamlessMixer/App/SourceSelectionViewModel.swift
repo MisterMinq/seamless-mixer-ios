@@ -185,4 +185,93 @@ final class SourceSelectionViewModel: ObservableObject {
         artistCount = MPMediaQuery.artists().collections?.count ?? 0
         albumCount = MPMediaQuery.albums().collections?.count ?? 0
     }
+
+    // MARK: - Hub-level search
+
+    /// **Added 2026-08-15** — the confirmed Source Selection design (see
+    /// CLAUDE.md's "Search: one global field on the hub, not per-category,"
+    /// revised twice and confirmed 2026-08-02) always specified exactly one
+    /// search field living here on the Hub, searching across song titles,
+    /// artist/album/genre/playlist names together, surfacing the matching
+    /// *source* — never a bare song list, since a song was never itself a
+    /// pickable source per ADR-7. That field was designed but never actually
+    /// built until now; real-device feedback (Andy: "someone at the event
+    /// had some song requests... made it easier to find") is what finally
+    /// surfaced the gap. Andy separately asked for a search box inside each
+    /// category picker too — a genuinely different, narrower need (filtering
+    /// an already-open list) — see each picker's own `searchText`/`filtered...`
+    /// addition for that half; this is only the hub-level, cross-category
+    /// half of the request.
+    struct SearchResult: Identifiable {
+        let id: String
+        let source: SelectedSource
+        /// Set only for a match that came from a *song* title, not a direct
+        /// name match — e.g. "via “Autumn Leaves”" under an artist result,
+        /// so it's clear why that artist showed up for a query that doesn't
+        /// match their name at all.
+        let matchDetail: String?
+    }
+
+    @Published var searchText: String = ""
+    @Published private(set) var searchResults: [SearchResult] = []
+
+    /// Synchronous, local `MPMediaQuery` lookups — same "cheap at personal-
+    /// library scale, no network" reasoning `refreshPreviewSongCount` above
+    /// already relies on. Direct name matches (genre/artist/album/playlist)
+    /// are searched first, then song titles — a song match surfaces its
+    /// artist, album, and genre as separate, individually-selectable
+    /// results, each tagged with which song matched, since the song itself
+    /// was never a source `MixBuilder` can resolve. Capped to 40 results so
+    /// a very broad query (e.g. a single common letter) doesn't produce an
+    /// unusably long list.
+    func performSearch() {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            searchResults = []
+            return
+        }
+        let lower = query.lowercased()
+        var results: [SearchResult] = []
+        var seenIDs = Set<String>()
+
+        func add(_ source: SelectedSource, detail: String? = nil) {
+            guard !seenIDs.contains(source.id) else { return }
+            seenIDs.insert(source.id)
+            results.append(SearchResult(id: source.id, source: source, matchDetail: detail))
+        }
+
+        for collection in MPMediaQuery.genres().collections ?? [] {
+            guard let name = collection.representativeItem?.genre, name.lowercased().contains(lower) else { continue }
+            add(SelectedSource(id: "genre:\(name)", type: .genre, label: name))
+        }
+        for collection in MPMediaQuery.artists().collections ?? [] {
+            guard let item = collection.representativeItem, let name = item.artist, name.lowercased().contains(lower) else { continue }
+            add(SelectedSource(id: "artist:\(item.artistPersistentID)", type: .artist, label: name, persistentID: item.artistPersistentID))
+        }
+        for collection in MPMediaQuery.albums().collections ?? [] {
+            guard let item = collection.representativeItem, let title = item.albumTitle, title.lowercased().contains(lower) else { continue }
+            add(SelectedSource(id: "album:\(item.albumPersistentID)", type: .album, label: title, persistentID: item.albumPersistentID))
+        }
+        for collection in MPMediaQuery.playlists().collections ?? [] {
+            guard let playlist = collection as? MPMediaPlaylist, let name = playlist.name, name.lowercased().contains(lower) else { continue }
+            add(SelectedSource(id: "playlist:\(playlist.persistentID)", type: .playlist, label: name, persistentID: playlist.persistentID))
+        }
+
+        let songQuery = MPMediaQuery.songs()
+        songQuery.addFilterPredicate(MPMediaPropertyPredicate(value: query, forProperty: MPMediaItemPropertyTitle, comparisonType: .contains))
+        for item in (songQuery.items ?? []).prefix(25) {
+            let songTitle = item.title ?? query
+            if let artist = item.artist, !artist.isEmpty {
+                add(SelectedSource(id: "artist:\(item.artistPersistentID)", type: .artist, label: artist, persistentID: item.artistPersistentID), detail: "via “\(songTitle)”")
+            }
+            if let album = item.albumTitle, !album.isEmpty {
+                add(SelectedSource(id: "album:\(item.albumPersistentID)", type: .album, label: album, persistentID: item.albumPersistentID), detail: "via “\(songTitle)”")
+            }
+            if let genre = item.genre, !genre.isEmpty {
+                add(SelectedSource(id: "genre:\(genre)", type: .genre, label: genre), detail: "via “\(songTitle)”")
+            }
+        }
+
+        searchResults = Array(results.prefix(40))
+    }
 }

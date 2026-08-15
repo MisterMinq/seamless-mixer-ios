@@ -5,7 +5,12 @@ import PlaylistCore
 /// CLAUDE.md's "Source Selection (revised, confirmed)"): a compact hub —
 /// pinned "Use your whole library" row, four category rows (Playlists/
 /// Genres/Artists/Albums), the mode picker, and a sticky "Build Mix" bar.
-/// No search field, per the confirmed 2026-08-02 revision.
+///
+/// **Global search added 2026-08-15** — the confirmed design always
+/// specified one search field here (not per-category), but it was never
+/// actually built until real-device feedback from an event surfaced the
+/// gap directly. See `SourceSelectionViewModel.performSearch`'s own doc
+/// comment for the full reasoning and the search results list below.
 ///
 /// **All four category pickers are now real** (Genres, Playlists, Artists,
 /// Albums — `AlbumPickerView` was the last, combining the artwork-grid
@@ -100,6 +105,24 @@ struct SourceSelectionHubView: View {
     }
 
     private var content: some View {
+        Group {
+            if viewModel.searchText.isEmpty {
+                hubContent
+            } else {
+                searchResultsList
+            }
+        }
+        // Hub-level global search, per the confirmed design (see
+        // `SourceSelectionViewModel.performSearch`'s own doc comment) —
+        // built 2026-08-15, real-device feedback from an actual event
+        // ("someone had a song request... made it easier to find").
+        // Standard `.searchable()` keyboard already includes the system
+        // dictation mic for free -- no separate voice-search UI needed.
+        .searchable(text: $viewModel.searchText, prompt: "Search songs, artists, albums...")
+        .onChange(of: viewModel.searchText) { _, _ in viewModel.performSearch() }
+    }
+
+    private var hubContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.lg) {
                 allSongsRow
@@ -114,6 +137,71 @@ struct SourceSelectionHubView: View {
             .padding(DesignTokens.Spacing.md)
         }
         .safeAreaInset(edge: .bottom) { buildMixBar }
+    }
+
+    // MARK: - Search results
+
+    /// Shown in place of the normal Hub content while `searchText` is
+    /// non-empty. Each row is directly selectable — tapping toggles that
+    /// source the same way a category picker's checkbox does, so a song
+    /// request can go straight from "search" to "selected" without a
+    /// detour through a category screen.
+    private var searchResultsList: some View {
+        List {
+            if viewModel.searchResults.isEmpty {
+                Text("No matches for “\(viewModel.searchText)”")
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                    .listRowSeparator(.hidden)
+            } else {
+                ForEach(viewModel.searchResults) { result in
+                    searchResultRow(result)
+                }
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    private func searchResultRow(_ result: SourceSelectionViewModel.SearchResult) -> some View {
+        let selected = viewModel.isSelected(result.source)
+        return Button {
+            viewModel.toggle(result.source)
+        } label: {
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? DesignTokens.Color.primary : DesignTokens.Color.textDisabled)
+                Image(systemName: icon(for: result.source.type))
+                    .foregroundStyle(DesignTokens.Color.primaryText)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(result.source.label)
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                    Text(result.matchDetail ?? typeLabel(for: result.source.type))
+                        .font(.caption)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                }
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func icon(for type: SourceType) -> String {
+        switch type {
+        case .playlist: return "music.note.list"
+        case .genre: return "guitars"
+        case .artist: return "person.wave.2"
+        case .album: return "square.stack"
+        case .songs: return "music.note"
+        }
+    }
+
+    private func typeLabel(for type: SourceType) -> String {
+        switch type {
+        case .playlist: return "Playlist"
+        case .genre: return "Genre"
+        case .artist: return "Artist"
+        case .album: return "Album"
+        case .songs: return "Song"
+        }
     }
 
     // MARK: - Rows

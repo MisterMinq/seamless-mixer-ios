@@ -27,6 +27,11 @@ import PlaylistCore
 struct ArtistPickerView: View {
     @ObservedObject var viewModel: SourceSelectionViewModel
     @State private var sections: [ArtistSection] = []
+    /// **Added 2026-08-15** — see `GenrePickerView`'s own note on why this
+    /// is separate from the Hub's global search. Filtering happens per
+    /// section (below) rather than flattening the list, so the A-Z rail's
+    /// own letters stay meaningful against whatever's currently visible.
+    @State private var searchText = ""
 
     struct ArtistRow: Identifiable {
         let persistentID: MPMediaEntityPersistentID
@@ -42,11 +47,23 @@ struct ArtistPickerView: View {
         var id: String { letter }
     }
 
+    /// Filters each section's own artists rather than the flat row list,
+    /// then drops any section left empty — keeps the A-Z rail (built from
+    /// this same array, see `indexRail`) showing only letters that actually
+    /// have a visible match.
+    private var filteredSections: [ArtistSection] {
+        guard !searchText.isEmpty else { return sections }
+        return sections.compactMap { section in
+            let matches = section.artists.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            return matches.isEmpty ? nil : ArtistSection(letter: section.letter, artists: matches)
+        }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ZStack(alignment: .trailing) {
                 List {
-                    ForEach(sections) { section in
+                    ForEach(filteredSections) { section in
                         Section {
                             ForEach(section.artists) { artist in
                                 row(for: artist)
@@ -59,12 +76,13 @@ struct ArtistPickerView: View {
                 }
                 .listStyle(.plain)
 
-                if sections.count > 1 {
+                if searchText.isEmpty, sections.count > 1 {
                     indexRail(proxy: proxy)
                 }
             }
         }
         .background(DesignTokens.Color.background)
+        .searchable(text: $searchText, prompt: "Search artists")
         .navigationTitle("Artists")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadArtists)

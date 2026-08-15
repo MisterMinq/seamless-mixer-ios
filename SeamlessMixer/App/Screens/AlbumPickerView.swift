@@ -24,6 +24,10 @@ import PlaylistCore
 struct AlbumPickerView: View {
     @ObservedObject var viewModel: SourceSelectionViewModel
     @State private var sections: [AlbumSection] = []
+    /// **Added 2026-08-15** — see `ArtistPickerView`'s own note; same
+    /// per-section filtering approach, since this picker shares the same
+    /// A-Z-rail structure.
+    @State private var searchText = ""
 
     struct AlbumRow: Identifiable {
         let persistentID: MPMediaEntityPersistentID
@@ -41,12 +45,20 @@ struct AlbumPickerView: View {
 
     private let columns = [GridItem(.adaptive(minimum: 140), spacing: DesignTokens.Spacing.sm)]
 
+    private var filteredSections: [AlbumSection] {
+        guard !searchText.isEmpty else { return sections }
+        return sections.compactMap { section in
+            let matches = section.albums.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+            return matches.isEmpty ? nil : AlbumSection(letter: section.letter, albums: matches)
+        }
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ZStack(alignment: .trailing) {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
-                        ForEach(sections) { section in
+                        ForEach(filteredSections) { section in
                             Text(section.letter)
                                 .font(.headline)
                                 .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -63,12 +75,13 @@ struct AlbumPickerView: View {
                     .padding(DesignTokens.Spacing.md)
                 }
 
-                if sections.count > 1 {
+                if searchText.isEmpty, sections.count > 1 {
                     indexRail(proxy: proxy)
                 }
             }
         }
         .background(DesignTokens.Color.background)
+        .searchable(text: $searchText, prompt: "Search albums")
         .navigationTitle("Albums")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadAlbums)

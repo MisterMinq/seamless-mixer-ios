@@ -17,6 +17,11 @@ import PlaylistCore
 struct GenrePickerView: View {
     @ObservedObject var viewModel: SourceSelectionViewModel
     @State private var genres: [GenreRow] = []
+    /// **Added 2026-08-15**, alongside the Hub's own global search — a
+    /// separate, narrower need Andy asked for directly: filtering the list
+    /// already open on screen, not searching across categories. See
+    /// `SourceSelectionHubView`'s doc comment for the hub-level half.
+    @State private var searchText = ""
 
     /// A plain struct rather than a tuple for `List`'s data — sidesteps any
     /// ambiguity between labeled/unlabeled tuple types across the
@@ -28,11 +33,17 @@ struct GenrePickerView: View {
         var id: String { name }
     }
 
+    private var filteredGenres: [GenreRow] {
+        guard !searchText.isEmpty else { return genres }
+        return genres.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
     var body: some View {
-        List(genres) { genre in
+        List(filteredGenres) { genre in
             row(for: genre)
         }
         .listStyle(.plain)
+        .searchable(text: $searchText, prompt: "Search genres")
         .navigationTitle("Genres")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadGenres)
