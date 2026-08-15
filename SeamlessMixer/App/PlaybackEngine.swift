@@ -267,6 +267,7 @@ final class PlaybackEngine: ObservableObject {
         observeRouteChanges()
         observeEngineConfigurationChanges()
         updateOutputRouteName()
+        setupRemoteCommands()
     }
     // No `deinit`/observer teardown -- `PlaybackEngine` is created exactly
     // once, as `SeamlessMixerApp`'s own `@StateObject`, and lives for the
@@ -644,6 +645,7 @@ final class PlaybackEngine: ObservableObject {
             elapsedSeconds = 0
             currentTrackDurationSec = 0
             stopTimer()
+            clearNowPlayingInfo()
             return
         }
 
@@ -656,6 +658,7 @@ final class PlaybackEngine: ObservableObject {
             nowPlayingTrackID = nil
             nextTrackPersistentID = nil
             stopTimer()
+            clearNowPlayingInfo()
             return
         }
 
@@ -680,12 +683,14 @@ final class PlaybackEngine: ObservableObject {
             nowPlayingTrackID = queuedTrack.trackPersistentID
             elapsedSeconds = 0
             updateNextTrackID()
+            refreshNowPlayingMetadata()
         } catch {
             playbackError = "Couldn't play this track: \(error.localizedDescription)"
             isPlaying = false
             nowPlayingTrackID = nil
             nextTrackPersistentID = nil
             stopTimer()
+            clearNowPlayingInfo()
         }
     }
 
@@ -835,6 +840,7 @@ final class PlaybackEngine: ObservableObject {
         updateNextTrackID()
         isCrossfading = false
         crossfadeProgress = 0
+        refreshNowPlayingMetadata()
     }
 
     /// Stops playback outright and clears all session state — a stopped
@@ -864,6 +870,7 @@ final class PlaybackEngine: ObservableObject {
         elapsedSeconds = 0
         elapsedBaseSec = 0
         currentTrackDurationSec = 0
+        clearNowPlayingInfo()
     }
 
     // MARK: - Transport
@@ -881,6 +888,7 @@ final class PlaybackEngine: ObservableObject {
         }
         isPaused = true
         stopTimer()
+        publishNowPlayingPlaybackState()
     }
 
     /// Resumes a paused session. See `pause()`.
@@ -998,6 +1006,7 @@ final class PlaybackEngine: ObservableObject {
             guard await attemptResumeWithVerification() else { return }
             isPaused = false
             startTimerIfNeeded()
+            publishNowPlayingPlaybackState()
         }
     }
 
@@ -1087,6 +1096,7 @@ final class PlaybackEngine: ObservableObject {
                 // the new position rather than audibly resuming.
                 chain.player.pause()
             }
+            publishNowPlayingPlaybackState()
         } catch {
             playbackError = "Couldn't seek: \(error.localizedDescription)"
         }
@@ -1126,5 +1136,124 @@ final class PlaybackEngine: ObservableObject {
         activeChain.player.volume = 1
         isCrossfading = false
         crossfadeProgress = 0
+    }
+
+    // MARK: - Lock screen / Control Center integration
+
+    /// **Added 2026-08-16** — a real, previously-tracked gap (no lock-screen/
+    /// Control Center "Now Playing" widget existed at all), picked up
+    /// specifically because it's also the leading fix candidate for the
+    /// background-interruption-resume bug (see `resume()`'s own doc
+    /// comment): real-device investigation found this app's resume only
+    /// fails when it's backgrounded at the moment an interruption ends, and
+    /// Apple's own developer support confirms that starting/resuming audio
+    /// from the background is restricted for apps that haven't registered
+    /// as the system's current media player. Apple Music — a fully
+    /// exclusive (non-mixable) app, same as this one — reliably resumes in
+    /// the identical scenario, which only makes sense if that registration
+    /// (not a mixable audio session) is the real missing piece. This is the
+    /// buildable half of that: `MPNowPlayingInfoCenter` publishes what's
+    /// playing, `MPRemoteCommandCenter` accepts lock-screen/Control-Center/
+    /// AirPods/CarPlay transport commands. Whether it actually closes the
+    /// background-resume gap is unconfirmed until tested on a real device —
+    /// flagged honestly, not claimed as a guaranteed fix.
+    private var nowPlayingMetadata: [String: Any] = [:]
+
+    /// Re-queries the current track's title/artist/artwork and republishes
+    /// the full now-playing info — called whenever `nowPlayingTrackID`
+    /// changes (a fresh track, a crossfade completing). Same synchronous
+    /// single-item `MPMediaQuery` lookup pattern `resolveFileURL`/
+    /// `NowPlayingView.loadArtwork` already use elsewhere in this app —
+    /// cheap enough not to need a detached `Task`.
+    private func refreshNowPlayingMetadata() {
+        guard let trackID = nowPlayingTrackID else {
+            clearNowPlayingInfo()
+            return
+        }
+        let query = MPMediaQuery.songs()
+        let mediaID = UInt64(bitPattern: trackID)
+        query.addFilterPredicate(MPMediaPropertyPredicate(value: mediaID, forProperty: MPMediaItemPropertyPersistentID))
+        guard let item = query.items?.first else {
+            nowPlayingMetadata = [:]
+            publishNowPlayingPlaybackState()
+            return
+        }
+        var info: [String: Any] = [:]
+        info[MPMediaItemPropertyTitle] = item.title
+        info[MPMediaItemPropertyArtist] = item.artist
+        if let artwork = item.artwork {
+            info[MPMediaItemPropertyArtwork] = artwork
+        }
+        nowPlayingMetadata = info
+        publishNowPlayingPlaybackState()
+    }
+
+    /// Republishes the full now-playing dictionary (cached metadata plus
+    /// live playback rate/elapsed time/duration) — called on every discrete
+    /// playback-state change (play, pause, resume, seek). Deliberately
+    /// *not* called on every `tick()` — the system interpolates displayed
+    /// elapsed time from `MPNowPlayingInfoPropertyElapsedPlaybackTime` plus
+    /// `MPNowPlayingInfoPropertyPlaybackRate` on its own, so republishing at
+    /// 10Hz would just be redundant, wasted work, not a way to keep it more
+    /// in sync.
+    private func publishNowPlayingPlaybackState() {
+        guard !nowPlayingMetadata.isEmpty else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+        var info = nowPlayingMetadata
+        info[MPMediaItemPropertyPlaybackDuration] = currentTrackDurationSec
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsedSeconds
+        info[MPNowPlayingInfoPropertyPlaybackRate] = (isPlaying && !isPaused) ? 1.0 : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func clearNowPlayingInfo() {
+        nowPlayingMetadata = [:]
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    /// Registered once, in `init`. `MainActor.assumeIsolated` bridges
+    /// `MPRemoteCommandCenter`'s synchronous, non-actor-isolated handler
+    /// closures into this `@MainActor` class's isolated methods — safe
+    /// because Apple's own documented behavior is that these handlers are
+    /// always invoked on the main thread, the same discipline this file's
+    /// `NotificationCenter` observers hop to explicitly via `Task { @MainActor
+    /// in }`; a remote-command handler has to return its status
+    /// synchronously, so that `Task`-hop pattern doesn't fit here the same
+    /// way.
+    private func setupRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            MainActor.assumeIsolated { self.resume() }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            MainActor.assumeIsolated { self.pause() }
+            return .success
+        }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            MainActor.assumeIsolated { self.isPaused ? self.resume() : self.pause() }
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            MainActor.assumeIsolated { self.skipToNext() }
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            MainActor.assumeIsolated { self.skipToPrevious() }
+            return .success
+        }
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            MainActor.assumeIsolated { self.seek(toSeconds: event.positionTime) }
+            return .success
+        }
     }
 }
