@@ -289,7 +289,13 @@ struct MyMixesView: View {
 /// "almost 90% of the time" when trying to open Playlist Detail. Adding
 /// breathing room after the button doesn't change either tap target's own
 /// size, just separates them enough that a tap near the row's trailing
-/// edge reliably lands on the chevron instead.
+/// edge reliably lands on the chevron instead. **Widened again the next
+/// day** (`Spacing.xs` -> `Spacing.sm`) — Andy confirmed the mis-tap itself
+/// was fixed but asked for more room, comparing it to the roomier feel of
+/// `PlaylistDetailView`'s per-track "..." menu. Not a like-for-like fix —
+/// that row has no competing chevron to crowd against in the first place,
+/// since it isn't itself a `NavigationLink` — but more trailing space here
+/// is the real, actionable part of the ask regardless.
 private struct MixRow: View {
     let playlist: Playlist
     let store: PlaylistStore
@@ -349,7 +355,7 @@ private struct MixRow: View {
                         .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
                 }
                 .buttonStyle(.borderless)
-                .padding(.trailing, DesignTokens.Spacing.xs)
+                .padding(.trailing, DesignTokens.Spacing.sm)
             }
         }
         .padding(.vertical, DesignTokens.Spacing.xxs)

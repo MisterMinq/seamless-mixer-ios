@@ -47,17 +47,19 @@ import MediaPlayer
 /// not a merge. See its own doc comment for the full reasoning and its
 /// deliberately read-only first-slice scope.
 ///
+/// **Real connected output device name, as of 2026-08-15** — replaces the
+/// hardcoded "This iPhone" placeholder with `PlaybackEngine.outputRouteName`,
+/// which tracks `AVAudioSession`'s own current route live. Prompted directly
+/// by a real-device report where switching output mid-playback (see
+/// `PlaybackEngine`'s route-change fix) was made harder to diagnose by this
+/// label never actually reflecting what was connected.
+///
 /// **Deliberate, flagged simplifications still remaining** — each omission
 /// below is a real, separate follow-up, not an oversight:
 /// - **Static background, not the confirmed dynamic artwork-derived
 ///   `MeshGradient`.** That needs Core Image dominant-color extraction from
 ///   the now-real artwork plus adaptive light/dark text — a meaningfully
 ///   bigger, separate piece of work than just displaying the artwork itself.
-/// - **No connected-output-device name.** The confirmed design (from the
-///   real Apple Music reference screenshots) shows the Bluetooth
-///   speaker/amp currently in use — directly relevant to this app's whole
-///   premise, but not wired this slice. Would read from
-///   `AVAudioSession.sharedInstance().currentRoute.outputs`.
 /// - **No favourite star / "..." overflow on this screen.** `PlaylistOverflowSheet`
 ///   is keyed off a real `Playlist`, which this screen was deliberately
 ///   *not* handed (only `rows`/`sourceCaption`, a lighter snapshot) to keep
@@ -163,15 +165,18 @@ struct NowPlayingView: View {
                     Spacer()
 
                     // Bottom row per the confirmed design: connected output
-                    // device + queue icon. Output device is still deferred
-                    // (see this file's own doc comment) -- shown as a
-                    // disabled placeholder so the layout's final shape is
-                    // already right. Queue icon is real as of 2026-08-14
-                    // (see `QueueView`).
+                    // device + queue icon. Output device is real as of
+                    // 2026-08-15 -- reads `PlaybackEngine.outputRouteName`,
+                    // which tracks `AVAudioSession`'s own current route
+                    // (the same source of truth Control Center uses), so it
+                    // updates live the moment output switches between the
+                    // phone speaker, AirPods, or a Bluetooth speaker/amp.
+                    // Queue icon is real as of 2026-08-14 (see `QueueView`).
                     HStack {
-                        Label("This iPhone", systemImage: "hifispeaker")
+                        Label(playbackEngine.outputRouteName, systemImage: "hifispeaker")
                             .font(.caption)
-                            .foregroundStyle(DesignTokens.Color.textDisabled)
+                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                            .lineLimit(1)
                         Spacer()
                         Button {
                             showQueue = true

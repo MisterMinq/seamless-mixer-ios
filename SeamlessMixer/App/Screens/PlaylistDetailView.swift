@@ -188,6 +188,19 @@ struct PlaylistDetailView: View {
         .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // **Visible title text suppressed 2026-08-15** — Andy flagged
+            // this as real, pointless duplication: the mix's name already
+            // reads prominently in `header`, right below the artwork, and
+            // the confirmed design's own top-row spec was always just "back
+            // chevron + star/dots" (matching Now Playing's "no large title,
+            // just a collapse chevron") — a nav-bar title text was never
+            // part of the intended layout here, it just quietly crept in.
+            // `.navigationTitle(displayName)` above stays set, since iOS
+            // still uses it for accessibility (VoiceOver announcing the
+            // screen) and back-navigation bookkeeping even when nothing
+            // visible renders from it — only the *visible* title view is
+            // replaced here, with an empty one.
+            ToolbarItem(placement: .principal) { EmptyView() }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 // Drag-to-reorder's entry point -- SwiftUI's standard
                 // pattern for a `List` with `.onMove`: toggles the

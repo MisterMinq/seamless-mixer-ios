@@ -171,6 +171,18 @@ final class PlaybackEngine: ObservableObject {
     /// sees a `trackPersistentID`, never the analyzed `Track` record, so
     /// the file itself is the only duration source it actually has.
     @Published private(set) var currentTrackDurationSec: Double = 0
+    /// The name of the audio route currently in use (e.g. "iPhone
+    /// Speaker", "Fosi Audio BT30D", "AirPods Pro") — per the confirmed
+    /// Now Playing design ("show the connected Bluetooth device," per the
+    /// real Apple Music reference screenshots) and directly relevant to
+    /// this app's own core scenario (playing into a speaker/amp at an
+    /// event). **Added 2026-08-15** alongside the route-change fix below —
+    /// this class already observes route changes for that bug, so it's
+    /// also the natural, single place to track this rather than a
+    /// duplicate observer elsewhere. Refreshed at `init` (so it's correct
+    /// before any route change ever fires) and on every subsequent route
+    /// change, whether or not that change disrupted playback.
+    @Published private(set) var outputRouteName: String = "This iPhone"
 
     private struct PlayerChain {
         let player: AVAudioPlayerNode
@@ -245,6 +257,8 @@ final class PlaybackEngine: ObservableObject {
     init() {
         configureGraph()
         observeInterruptions()
+        observeRouteChanges()
+        updateOutputRouteName()
     }
     // No `deinit`/observer teardown -- `PlaybackEngine` is created exactly
     // once, as `SeamlessMixerApp`'s own `@StateObject`, and lives for the
@@ -352,6 +366,58 @@ final class PlaybackEngine: ObservableObject {
         @unknown default:
             break
         }
+    }
+
+    /// **Added 2026-08-15, a real, separate gap from interruptions —
+    /// confirmed on a real device switching output between the phone
+    /// speaker, AirPods, and a Bluetooth speaker/amp mid-playback** (the
+    /// app's own core scenario). Route changes fire a *different*
+    /// notification than interruptions (`routeChangeNotification`, not
+    /// `interruptionNotification`) and were never observed at all before
+    /// this — the symptom looked identical either way (bars animating, Play
+    /// button showing "playing," progress frozen, no sound), because the
+    /// underlying cause is the same: the OS can silently stop the engine
+    /// out from under this app when the active audio route changes, same as
+    /// it can during an interruption.
+    ///
+    /// Deliberately calls the exact same recovery Andy already found worked
+    /// manually on a real device (tap Pause, tap Play again) rather than
+    /// inventing a new one — `pause()` then `resume()` back-to-back,
+    /// `resume()`'s own engine-restart guard (see its doc comment) does the
+    /// real work. Only acts if this app actually thinks it's still playing
+    /// and the engine has genuinely stopped — a route change that didn't
+    /// disrupt the engine (or one that happens while nothing is playing at
+    /// all) is a no-op here, not just cheap but so this doesn't glitch
+    /// audio on every harmless route change.
+    private func observeRouteChanges() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateOutputRouteName()
+                self?.handleRouteChange()
+            }
+        }
+    }
+
+    private func handleRouteChange() {
+        guard isPlaying, !isPaused, !engine.isRunning else { return }
+        pause()
+        resume()
+    }
+
+    /// Reads the current output route straight off `AVAudioSession` — the
+    /// same source of truth iOS itself uses, so this always matches what
+    /// Control Center shows, no separate Bluetooth/AirPlay handling needed
+    /// (per the confirmed design: "iOS routes audio to a connected
+    /// Bluetooth speaker/amp automatically... the app just needs proper
+    /// `AVAudioSession` configuration"). `.first` mirrors what a listener
+    /// actually perceives as "the output" — multi-output routes are rare
+    /// and not worth a more elaborate display for a first slice.
+    private func updateOutputRouteName() {
+        outputRouteName = AVAudioSession.sharedInstance().currentRoute.outputs.first?.portName ?? "This iPhone"
     }
 
     /// Resolves a track's real, playable file via `MPMediaQuery`, filtered
@@ -781,23 +847,57 @@ final class PlaybackEngine: ObservableObject {
     /// fails, `isPaused` deliberately stays `true` and `playbackError` is
     /// set, so the UI honestly reports "still paused" rather than claiming
     /// to be playing when it isn't.
+    ///
+    /// **Retry added 2026-08-15** — that honest-failure path did its job
+    /// (the error genuinely showed up on screen this time: "Couldn't resume
+    /// playback: Session activation fail...") but real-device testing found
+    /// a real trigger for it: resuming right after a Reminders-app alert (as
+    /// opposed to a Clock alarm, already confirmed working) failed outright,
+    /// with no further recovery — the Play button just stayed paused
+    /// forever. `AVAudioSession.setActive(true)` can genuinely fail on the
+    /// very first attempt if another app's own alert sound hasn't fully
+    /// released the session yet by the moment `.ended` fires — a documented
+    /// race, not a sign of a deeper bug — so a brief retry with backoff is
+    /// the standard fix, not a workaround. `activateSessionWithRetry` does
+    /// that; this function now hands off to it via a `Task` rather than
+    /// activating synchronously, so those retries don't block the main
+    /// actor.
     func resume() {
         guard isPlaying, isPaused else { return }
-        do {
-            try activateSession()
-            if !engine.isRunning {
-                try engine.start()
+        Task { @MainActor in
+            guard await activateSessionWithRetry() else { return }
+            activeChain.player.play()
+            if isCrossfading {
+                standbyChain.player.play()
             }
-        } catch {
-            playbackError = "Couldn't resume playback: \(error.localizedDescription)"
-            return
+            isPaused = false
+            startTimerIfNeeded()
         }
-        activeChain.player.play()
-        if isCrossfading {
-            standbyChain.player.play()
+    }
+
+    /// Attempts `activateSession()` + `engine.start()` up to `attempts`
+    /// times, waiting `delayNs` between tries — see `resume()`'s own doc
+    /// comment for why this exists. Sets `playbackError` only once, after
+    /// the final attempt fails, so a transient first-try failure that the
+    /// retry recovers from never flashes an error the user didn't need to
+    /// see.
+    private func activateSessionWithRetry(attempts: Int = 3, delayNs: UInt64 = 300_000_000) async -> Bool {
+        for attempt in 1...attempts {
+            do {
+                try activateSession()
+                if !engine.isRunning {
+                    try engine.start()
+                }
+                return true
+            } catch {
+                if attempt == attempts {
+                    playbackError = "Couldn't resume playback: \(error.localizedDescription)"
+                    return false
+                }
+                try? await Task.sleep(nanoseconds: delayNs)
+            }
         }
-        isPaused = false
-        startTimerIfNeeded()
+        return false
     }
 
     /// Jumps to `targetSeconds` within the current track's playable content

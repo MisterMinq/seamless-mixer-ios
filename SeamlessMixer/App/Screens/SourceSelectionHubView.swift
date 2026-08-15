@@ -204,31 +204,36 @@ struct SourceSelectionHubView: View {
     // MARK: - Chip row
 
     /// "How do I see what I'm combining" across categories, per the
-    /// confirmed design — a horizontally-scrollable row of removable chips,
-    /// populated live as checkboxes are ticked on any of the four category
-    /// pickers.
+    /// confirmed design — a row of removable chips, populated live as
+    /// checkboxes are ticked on any of the four category pickers.
+    ///
+    /// **Changed from a horizontal `ScrollView` to `FlowLayout` 2026-08-15**
+    /// (real bug, not a style tweak — see `FlowLayout.swift`'s own doc
+    /// comment): a horizontal scroller silently cut off every chip past one
+    /// screen-width with no visible cue more existed, which is exactly what
+    /// Andy hit selecting 4 genres + 2 albums. Wrapping onto additional rows
+    /// means the chip row grows downward instead, so every current
+    /// selection is visible without an extra gesture.
     @ViewBuilder
     private var chipRow: some View {
         if !viewModel.selectedSources.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: DesignTokens.Spacing.xs) {
-                    ForEach(viewModel.selectedSources) { source in
-                        HStack(spacing: DesignTokens.Spacing.xxs) {
-                            Text(source.label)
+            FlowLayout(spacing: DesignTokens.Spacing.xs) {
+                ForEach(viewModel.selectedSources) { source in
+                    HStack(spacing: DesignTokens.Spacing.xxs) {
+                        Text(source.label)
+                            .font(.footnote)
+                        Button {
+                            viewModel.toggle(source)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
                                 .font(.footnote)
-                            Button {
-                                viewModel.toggle(source)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.footnote)
-                            }
                         }
-                        .padding(.horizontal, DesignTokens.Spacing.sm)
-                        .padding(.vertical, DesignTokens.Spacing.xxs)
-                        .background(DesignTokens.Color.surfaceTint)
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                        .clipShape(Capsule())
                     }
+                    .padding(.horizontal, DesignTokens.Spacing.sm)
+                    .padding(.vertical, DesignTokens.Spacing.xxs)
+                    .background(DesignTokens.Color.surfaceTint)
+                    .foregroundStyle(DesignTokens.Color.primaryText)
+                    .clipShape(Capsule())
                 }
             }
         }
