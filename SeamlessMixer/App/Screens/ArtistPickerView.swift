@@ -32,6 +32,21 @@ struct ArtistPickerView: View {
     /// section (below) rather than flattening the list, so the A-Z rail's
     /// own letters stay meaningful against whatever's currently visible.
     @State private var searchText = ""
+    /// **Added 2026-08-15, real-device bug** — Andy searched "Shalamar" (an
+    /// artist confirmed via Apple Music's own library search to genuinely
+    /// exist in his library) and got no match here, even after the Hub's
+    /// own search got a defensive fallback for exactly this. Root cause
+    /// still not fully confirmed, but Apple's own app finding it directly
+    /// disproves the original "Album Artist vs. Artist tag" theory — this
+    /// picker's `sections` (built once from `MPMediaQuery.artists()
+    /// .collections`) may simply not include every artist `MPMediaQuery`
+    /// itself can otherwise resolve. Rather than guess a third theory blind,
+    /// this supplements the local filter with the same direct, live
+    /// song-level Artist-field query the Hub's search already uses —
+    /// bypassing whatever's making `.artists()`'s own grouping incomplete —
+    /// run only while actively searching (not on every full-list load, to
+    /// avoid paying a full-library query cost just to show the picker).
+    @State private var supplementalArtists: [ArtistRow] = []
 
     struct ArtistRow: Identifiable {
         let persistentID: MPMediaEntityPersistentID
@@ -50,13 +65,18 @@ struct ArtistPickerView: View {
     /// Filters each section's own artists rather than the flat row list,
     /// then drops any section left empty — keeps the A-Z rail (built from
     /// this same array, see `indexRail`) showing only letters that actually
-    /// have a visible match.
+    /// have a visible match. Also merges in `supplementalArtists` (see its
+    /// own doc comment) via the same `grouped(_:)` helper `loadArtists`
+    /// uses, so a match found only through the fallback query still gets
+    /// grouped and sorted consistently with everything else.
     private var filteredSections: [ArtistSection] {
         guard !searchText.isEmpty else { return sections }
-        return sections.compactMap { section in
-            let matches = section.artists.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-            return matches.isEmpty ? nil : ArtistSection(letter: section.letter, artists: matches)
+        let matched = sections.flatMap { section in
+            section.artists.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
         }
+        let existingIDs = Set(matched.map(\.persistentID))
+        let combined = matched + supplementalArtists.filter { !existingIDs.contains($0.persistentID) }
+        return grouped(combined)
     }
 
     var body: some View {
@@ -86,6 +106,51 @@ struct ArtistPickerView: View {
         .navigationTitle("Artists")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadArtists)
+        .onChange(of: searchText) { _, newValue in
+            performSupplementalSearch(newValue)
+        }
+    }
+
+    /// See `supplementalArtists`'s own doc comment. Queries `MPMediaQuery
+    /// .songs()` directly by `MPMediaItemPropertyArtist` rather than relying
+    /// on `MPMediaQuery.artists()`'s own grouping — the same fallback
+    /// approach `SourceSelectionViewModel.performSearch` already uses for
+    /// the Hub's search. Capped to 25 songs, matching that same limit.
+    private func performSupplementalSearch(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            supplementalArtists = []
+            return
+        }
+        let songQuery = MPMediaQuery.songs()
+        songQuery.addFilterPredicate(MPMediaPropertyPredicate(value: trimmed, forProperty: MPMediaItemPropertyArtist, comparisonType: .contains))
+        var seenIDs = Set<MPMediaEntityPersistentID>()
+        var rows: [ArtistRow] = []
+        for item in (songQuery.items ?? []).prefix(25) {
+            guard let name = item.artist, !name.isEmpty, !seenIDs.contains(item.artistPersistentID) else { continue }
+            seenIDs.insert(item.artistPersistentID)
+            rows.append(ArtistRow(
+                persistentID: item.artistPersistentID,
+                name: name,
+                songCount: 0,
+                artwork: item.artwork?.image(at: CGSize(width: 80, height: 80))
+            ))
+        }
+        supplementalArtists = rows
+    }
+
+    /// Shared by `loadArtists` (the full, unfiltered list) and
+    /// `filteredSections` (a filtered/merged subset) — same "#" bucket and
+    /// alphabetical-sort logic either way.
+    private func grouped(_ rows: [ArtistRow]) -> [ArtistSection] {
+        let byLetter = Dictionary(grouping: rows) { row -> String in
+            guard let first = row.name.first, first.isLetter else { return "#" }
+            return String(first).uppercased()
+        }
+        return byLetter.keys.sorted().map { letter in
+            let sorted = byLetter[letter]!.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return ArtistSection(letter: letter, artists: sorted)
+        }
     }
 
     private func indexRail(proxy: ScrollViewProxy) -> some View {
@@ -162,17 +227,8 @@ struct ArtistPickerView: View {
                 artwork: item.artwork?.image(at: CGSize(width: 80, height: 80))
             )
         }
-
-        // "#" catches anything that doesn't start with a letter (a number,
-        // an emoji, etc.) rather than crashing or silently dropping it.
-        let grouped = Dictionary(grouping: rows) { row -> String in
-            guard let first = row.name.first, first.isLetter else { return "#" }
-            return String(first).uppercased()
-        }
-
-        sections = grouped.keys.sorted().map { letter in
-            let sorted = grouped[letter]!.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            return ArtistSection(letter: letter, artists: sorted)
-        }
+        // "#" bucket-for-non-letters convention, per `grouped(_:)`'s own
+        // doc comment.
+        sections = grouped(rows)
     }
 }

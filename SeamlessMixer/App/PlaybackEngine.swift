@@ -415,7 +415,7 @@ final class PlaybackEngine: ObservableObject {
     private func handleRouteChange() {
         guard isPlaying, !isPaused else { return }
         pause()
-        resume()
+        resume(forceEngineRestart: true)
     }
 
     /// Reads the current output route straight off `AVAudioSession` — the
@@ -892,12 +892,29 @@ final class PlaybackEngine: ObservableObject {
     /// the session than a Clock alarm's, and the displayed error now
     /// includes the raw `NSError` code so a future recurrence can be
     /// diagnosed from Andy's screenshot alone, without needing Xcode.
-    func resume() {
+    ///
+    /// **`forceEngineRestart` added 2026-08-15, same day** — real-device
+    /// testing found the route-change fix below (which now always calls
+    /// this) still silent even after the `!engine.isRunning` guard was
+    /// removed from *when* to attempt recovery: "Animation active. No
+    /// sound." The remaining gap is here, in *how* recovery restarts the
+    /// engine — `if !engine.isRunning { try engine.start() }` skips the
+    /// restart entirely whenever `isRunning` (already proven unreliable
+    /// after a route change) happens to still read `true`, leaving the
+    /// engine's render graph running against a now-stale route. `handleRouteChange`
+    /// now passes `forceEngineRestart: true`, which unconditionally stops
+    /// the engine before restarting it, guaranteeing a real restart against
+    /// whatever the current route actually is — deliberately *not* the
+    /// default for a plain manual resume or an interruption-triggered one,
+    /// since those have already been confirmed working via the cheaper
+    /// conditional restart, and an unconditional stop/start on every single
+    /// resume risks a small audible click even when nothing was wrong.
+    func resume(forceEngineRestart: Bool = false) {
         guard isPlaying, isPaused, !isResuming else { return }
         isResuming = true
         Task { @MainActor in
             defer { isResuming = false }
-            guard await activateSessionWithRetry() else { return }
+            guard await activateSessionWithRetry(forceRestart: forceEngineRestart) else { return }
             activeChain.player.play()
             if isCrossfading {
                 standbyChain.player.play()
@@ -907,16 +924,19 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
-    /// Attempts `activateSession()` + `engine.start()` up to `attempts`
+    /// Attempts `activateSession()` + an engine restart up to `attempts`
     /// times, waiting `delayNs` between tries — see `resume()`'s own doc
-    /// comment for why this exists. Sets `playbackError` only once, after
-    /// the final attempt fails, so a transient first-try failure that the
-    /// retry recovers from never flashes an error the user didn't need to
-    /// see.
-    private func activateSessionWithRetry(attempts: Int = 5, delayNs: UInt64 = 500_000_000) async -> Bool {
+    /// comment for why this exists, and for `forceRestart`'s own reasoning.
+    /// Sets `playbackError` only once, after the final attempt fails, so a
+    /// transient first-try failure that the retry recovers from never
+    /// flashes an error the user didn't need to see.
+    private func activateSessionWithRetry(attempts: Int = 5, delayNs: UInt64 = 500_000_000, forceRestart: Bool = false) async -> Bool {
         for attempt in 1...attempts {
             do {
                 try activateSession()
+                if forceRestart {
+                    engine.stop()
+                }
                 if !engine.isRunning {
                     try engine.start()
                 }
