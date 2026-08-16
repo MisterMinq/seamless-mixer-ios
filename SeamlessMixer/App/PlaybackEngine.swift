@@ -1037,6 +1037,26 @@ final class PlaybackEngine: ObservableObject {
     /// hard engine restart instead — see `resume()`'s own doc comment for
     /// the full reasoning behind both the verification step and the
     /// two-pass structure.
+    ///
+    /// **Fixed 2026-08-17 — the verification itself was checking the wrong
+    /// thing.** Andy: "The spark that stops is there again" — the exact
+    /// "spark then silently stops" failure this verification step was
+    /// built to catch, recurring even with it in place. Root cause:
+    /// despite this function's own doc comment claiming to check whether
+    /// the render clock is "actually advancing," the code only ever did
+    /// `computeElapsedSeconds(for:) != nil` — a single point-in-time read.
+    /// `AVAudioPlayerNode.lastRenderTime` stays non-nil and "valid" even
+    /// after the engine has silently stalled; it just stops *updating*, it
+    /// doesn't revert to nil. So the exact failure mode this was meant to
+    /// catch — the engine genuinely starts for a moment (the "spark"),
+    /// then a still-settling interruption teardown kills it again — could
+    /// land its 400ms check right inside that brief real-rendering window,
+    /// see a valid (but about-to-freeze) timestamp, and wrongly declare
+    /// success. A single reading can never distinguish "playing" from
+    /// "frozen at a real-looking value" — only two readings, compared, can.
+    /// Now takes a second reading 300ms after the first and requires the
+    /// render clock to have actually moved forward by a real amount
+    /// between them before trusting the resume.
     private func attemptResumeWithVerification() async -> Bool {
         for pass in 1...2 {
             guard await activateSessionWithRetry(forceRestart: pass > 1) else { return false }
@@ -1045,7 +1065,15 @@ final class PlaybackEngine: ObservableObject {
                 standbyChain.player.play()
             }
             try? await Task.sleep(nanoseconds: 400_000_000)
-            if computeElapsedSeconds(for: activeChain.player) != nil, engine.isRunning {
+            guard let first = computeElapsedSeconds(for: activeChain.player), engine.isRunning else { continue }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let second = computeElapsedSeconds(for: activeChain.player), engine.isRunning else { continue }
+            // A genuinely playing render clock advances roughly in real
+            // time between the two reads; a stalled one reports the same
+            // (or a non-increasing) value despite `lastRenderTime` itself
+            // staying "valid" -- this comparison is what actually proves
+            // advancement, which a single reading structurally cannot.
+            if second > first + 0.05 {
                 return true
             }
         }
