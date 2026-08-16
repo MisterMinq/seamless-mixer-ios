@@ -1125,6 +1125,23 @@ final class PlaybackEngine: ObservableObject {
     /// own 2026-08-17 doc comment for why a full reschedule, not just a
     /// forced engine restart, is what this project's own real-device
     /// testing already found actually restores audible sound.
+    ///
+    /// **Fade-in added 2026-08-17, same day** — Andy heard an audible
+    /// glitch right as this kicks in and asked why, pointing out his own
+    /// streaming app resumes in the same amount of time with no audible
+    /// artifact. Researched rather than assumed it was an unavoidable
+    /// cost: a fresh `AVAudioPlayerNode` buffer starting abruptly at full
+    /// volume is a real, well-documented source of an audible click/pop —
+    /// the sample discontinuity at the exact point playback resumes, not
+    /// anything specific to this app's reschedule approach (see Apple
+    /// Developer Forums thread 51782, "AVAudioPlayerNode produces click /
+    /// popping noise"). The standard, real fix real apps use is a short
+    /// volume ramp instead of an instant jump to full volume — not a
+    /// shortcut, an actual technique. `activeChain.player.volume` now
+    /// starts at `0` (silent) instead of `1`, and `fadeInActiveChain`
+    /// ramps it up over ~200ms right after scheduling — overlapping with
+    /// `attemptResumeWithVerification`'s own 400ms settle wait rather than
+    /// adding new latency on top of it.
     private func rescheduleActiveTrack() {
         guard queue.indices.contains(currentIndex) else { return }
         cancelCrossfadeIfNeeded()
@@ -1134,9 +1151,29 @@ final class PlaybackEngine: ObservableObject {
         playbackGeneration += 1
         let generation = playbackGeneration
         let resumeAtSec = elapsedSeconds
-        activeChain.player.volume = 1
+        activeChain.player.volume = 0
         elapsedBaseSec = resumeAtSec
         schedule(file: file, on: activeChain, playableStartSec: queuedTrack.playableStartSec + resumeAtSec, generation: generation)
+        fadeInActiveChain(generation: generation)
+    }
+
+    /// Ramps `activeChain`'s volume from 0 to 1 over ~200ms, avoiding the
+    /// audible click a hard jump to full volume produces right as a fresh
+    /// buffer starts — see `rescheduleActiveTrack`'s own doc comment.
+    /// Guards against a stale fade outliving its own reschedule (e.g. a
+    /// second interruption arriving mid-fade) via the same
+    /// `playbackGeneration` mechanism every other async completion in this
+    /// class already uses, so an overlapping later reschedule's own volume
+    /// isn't clobbered by a straggling earlier fade step.
+    private func fadeInActiveChain(generation: Int) {
+        Task { @MainActor in
+            let steps = 20
+            for step in 1...steps {
+                guard generation == playbackGeneration else { return }
+                activeChain.player.volume = Float(step) / Float(steps)
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
     }
 
     /// Attempts `activateSession()` + an engine restart up to `attempts`

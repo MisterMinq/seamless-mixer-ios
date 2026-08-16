@@ -153,14 +153,12 @@ struct ArtistPickerView: View {
         }
     }
 
-    /// **Fixed 2026-08-17, second attempt** — same real-device bug found in
-    /// `SongPickerView` (its own doc comment has the full root-cause
-    /// explanation): the first fix's `GeometryReader`-divided row height
-    /// could collapse to zero on a transient `0`-height layout pass,
-    /// making the whole rail invisible instead of just hard-to-tap. Fixed
-    /// the same way — a fixed, comfortably-tappable row height, thinning
-    /// the set of letters shown when there isn't room for all of them
-    /// (always keeping the last), instead of shrinking rows to fit.
+    /// **Fixed 2026-08-17, fourth attempt — see `SongPickerView.indexRail`'s
+    /// own doc comment for the full root-cause explanation.** `.buttonStyle
+    /// (.plain)` alone didn't fix this even with the fix confirmed in the
+    /// tested build — dropped `Button` entirely in favor of a plain `Text`
+    /// with `.contentShape(Rectangle())` + `.onTapGesture`, which carries
+    /// no button chrome for the platform to render at all.
     private func indexRail(proxy: ScrollViewProxy) -> some View {
         GeometryReader { geo in
             let rowHeight: CGFloat = 18
@@ -169,14 +167,14 @@ struct ArtistPickerView: View {
 
             VStack(spacing: 0) {
                 ForEach(displayed) { section in
-                    Button {
-                        proxy.scrollTo(section.letter, anchor: .top)
-                    } label: {
-                        Text(section.letter)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(DesignTokens.Color.primaryText)
-                    }
-                    .frame(width: 18, height: rowHeight)
+                    Text(section.letter)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                        .frame(width: 18, height: rowHeight)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            proxy.scrollTo(section.letter, anchor: .top)
+                        }
                 }
             }
         }

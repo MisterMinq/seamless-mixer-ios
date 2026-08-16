@@ -129,6 +129,40 @@ struct SongPickerView: View {
     /// small but real, tappable set of letters instead of none. The last
     /// letter is always kept even after thinning, so `#`/`Z` stays
     /// reachable regardless of how aggressively the rest gets thinned.
+    ///
+    /// **Fixed 2026-08-17, third attempt — the real bug this whole time.**
+    /// Andy: "Song, Artist picker even worse now than before" — the
+    /// screenshots showed a stack of solid gray pill shapes with no visible
+    /// letters at all, not just hard-to-tap or invisible-from-zero-height.
+    /// Root cause, present since this rail was first built and carried
+    /// through both prior "fixes" without anyone noticing: the `Button`
+    /// below never had `.buttonStyle(.plain)` set. A bare, unstyled
+    /// `Button` in this context picks up the platform's default bordered/
+    /// platter chrome — a solid background capsule — which at `caption2`
+    /// size is large enough to fully cover the tiny letter text sitting on
+    /// top of it. This round's fixed, more generous 18pt row height (vs.
+    /// the prior version's inconsistent/collapsing heights) made that
+    /// background chrome *bigger and more visible*, not less — exactly
+    /// matching "even worse now." `.buttonStyle(.plain)` removes the
+    /// default chrome entirely, leaving just the letter text, the same fix
+    /// every other tappable text/icon button in this app already uses.
+    ///
+    /// **Fixed 2026-08-17, fourth attempt — `.buttonStyle(.plain)` alone
+    /// wasn't enough.** Andy re-tested with the previous fix confirmed
+    /// genuinely included in the build ("the letters are the same...
+    /// nothing changed there") — ruling out a file-push gap and meaning
+    /// the `Button`-based chrome theory, while plausible, didn't fully
+    /// explain what's on screen. Rather than guess a second style variant
+    /// on the same `Button` (a bordered look surviving `.buttonStyle
+    /// (.plain)` would be a genuinely unusual SwiftUI failure to keep
+    /// betting on), this drops `Button` entirely — a plain `Text` with an
+    /// explicit `.contentShape(Rectangle())` tap target and
+    /// `.onTapGesture`, which carries no button machinery, no style
+    /// resolution, and nothing for the platform to render a background
+    /// for. If gray pills are still visible after this, the cause is
+    /// somewhere other than this rail's own tap-target implementation
+    /// (e.g. a `List` row/section styling bleeding through at the
+    /// trailing edge) and needs a fresh screenshot to chase further.
     private func indexRail(proxy: ScrollViewProxy) -> some View {
         GeometryReader { geo in
             let rowHeight: CGFloat = 18
@@ -137,14 +171,14 @@ struct SongPickerView: View {
 
             VStack(spacing: 0) {
                 ForEach(displayed) { section in
-                    Button {
-                        proxy.scrollTo(section.letter, anchor: .top)
-                    } label: {
-                        Text(section.letter)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(DesignTokens.Color.primaryText)
-                    }
-                    .frame(width: 18, height: rowHeight)
+                    Text(section.letter)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                        .frame(width: 18, height: rowHeight)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            proxy.scrollTo(section.letter, anchor: .top)
+                        }
                 }
             }
         }
