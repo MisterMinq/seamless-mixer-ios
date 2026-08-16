@@ -153,19 +153,31 @@ struct ArtistPickerView: View {
         }
     }
 
+    /// **Fixed 2026-08-17** — same real-device bug found in `SongPickerView`
+    /// (its own doc comment has the full root-cause explanation): a plain
+    /// `VStack` of fixed-size rows had no bound on its own total height, so
+    /// a library with enough distinct letters could overflow past the
+    /// space actually available, pushing the first/last few letters
+    /// somewhere not reliably tappable. Fixed the same way — a
+    /// `GeometryReader` computes each row's height to fit the real
+    /// available space, however many letters there are.
     private func indexRail(proxy: ScrollViewProxy) -> some View {
-        VStack(spacing: 1) {
-            ForEach(sections) { section in
-                Button {
-                    proxy.scrollTo(section.letter, anchor: .top)
-                } label: {
-                    Text(section.letter)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                        .frame(width: 18)
+        GeometryReader { geo in
+            let rowHeight = geo.size.height / CGFloat(max(sections.count, 1))
+            VStack(spacing: 0) {
+                ForEach(sections) { section in
+                    Button {
+                        proxy.scrollTo(section.letter, anchor: .top)
+                    } label: {
+                        Text(section.letter)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(DesignTokens.Color.primaryText)
+                    }
+                    .frame(width: 18, height: rowHeight)
                 }
             }
         }
+        .frame(width: 18)
         .padding(.trailing, DesignTokens.Spacing.xxs)
     }
 

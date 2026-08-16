@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import MediaPlayer
 import PlaylistCore
 
@@ -18,18 +19,20 @@ import PlaylistCore
 /// list does, and Andy's library almost certainly has many more individual
 /// songs than the ~313 artists already seen in earlier testing.
 ///
-/// **Deliberately no per-song artwork thumbnail** — a real, flagged
-/// simplification, not an oversight. `ArtistPickerView`/`AlbumPickerView`
-/// load one artwork image per *collection* (hundreds of artists/albums);
-/// this screen's list is `MPMediaQuery.songs()` directly, which could
-/// plausibly run to several thousand individual rows on a real library —
-/// eagerly generating a resized thumbnail for every single one in
-/// `loadSongs()`'s upfront pass risks exactly the kind of "worked fine at
-/// smaller scale, stalls at real scale" problem this project has hit
-/// before (Rule 6, the 8-track-not-whole-library validation set). A flat
-/// placeholder icon for every row, matching the same deferred-artwork
-/// precedent My Mixes' own collage tiles already use, is the safe default
-/// until there's a reason (and a way to test) to add lazy per-row loading.
+/// **Real per-row artwork, cached per *album* — not per song.** First
+/// version of this screen skipped artwork entirely, reasoning (wrongly)
+/// that a real library's song count (plausibly thousands) meant thousands
+/// of thumbnail renders. Andy caught the real flaw in that reasoning: a
+/// song's artwork isn't its own — it's its *album's* cover, shared by
+/// every other song on that same album. The number of genuinely distinct
+/// images that ever need rendering is bounded by how many albums are
+/// represented (a few hundred, the same order of magnitude
+/// `AlbumPickerView` already renders without issue), regardless of how
+/// many thousands of songs sit across them. `loadSongs()` now renders each
+/// album's artwork once, keyed by `albumPersistentID` in a local
+/// dictionary, and every song sharing that album reuses the same already-
+/// rendered `UIImage` — so the real cost scales with album count, not song
+/// count, which is exactly the number this project already knows is safe.
 ///
 /// **Selecting individual songs re-sequences them like any other source**
 /// (Andy's explicit call, 2026-08-16) — a picked song just joins the
@@ -51,6 +54,7 @@ struct SongPickerView: View {
         let persistentID: MPMediaEntityPersistentID
         let title: String
         let artist: String
+        let artwork: UIImage?
         var id: MPMediaEntityPersistentID { persistentID }
     }
 
@@ -103,19 +107,34 @@ struct SongPickerView: View {
         .onAppear(perform: loadSongs)
     }
 
+    /// **Fixed 2026-08-17, real-device bug** — Andy: "the letters #, A, X, Y
+    /// and Z in 'Songs' can hardly be clicked on to navigate there." Root
+    /// cause: this was a plain `VStack` of fixed-size rows with no bound on
+    /// its own total height — with Songs spanning nearly the full alphabet
+    /// (unlike Genres' short list), the stacked rail could genuinely run
+    /// taller than the space actually available between the status bar and
+    /// the search field, pushing the first/last few letters into an area
+    /// that isn't reliably tappable. Now wrapped in a `GeometryReader` so
+    /// every letter's row height is computed to fit the *actual* available
+    /// height, however many letters there are — the rail can never overflow
+    /// its own bounds again, regardless of library size.
     private func indexRail(proxy: ScrollViewProxy) -> some View {
-        VStack(spacing: 1) {
-            ForEach(sections) { section in
-                Button {
-                    proxy.scrollTo(section.letter, anchor: .top)
-                } label: {
-                    Text(section.letter)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                        .frame(width: 18)
+        GeometryReader { geo in
+            let rowHeight = geo.size.height / CGFloat(max(sections.count, 1))
+            VStack(spacing: 0) {
+                ForEach(sections) { section in
+                    Button {
+                        proxy.scrollTo(section.letter, anchor: .top)
+                    } label: {
+                        Text(section.letter)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(DesignTokens.Color.primaryText)
+                    }
+                    .frame(width: 18, height: rowHeight)
                 }
             }
         }
+        .frame(width: 18)
         .padding(.trailing, DesignTokens.Spacing.xxs)
     }
 
@@ -130,14 +149,7 @@ struct SongPickerView: View {
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(selected ? DesignTokens.Color.primary : DesignTokens.Color.textDisabled)
 
-                ZStack {
-                    RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
-                        .fill(DesignTokens.Color.surfaceTint)
-                    Image(systemName: "music.note")
-                        .font(.footnote)
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                }
-                .frame(width: 36, height: 36)
+                artworkTile(for: song)
 
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                     Text(song.title)
@@ -155,11 +167,51 @@ struct SongPickerView: View {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
+    private func artworkTile(for song: SongRow) -> some View {
+        Group {
+            if let artwork = song.artwork {
+                Image(uiImage: artwork)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
+                        .fill(DesignTokens.Color.surfaceTint)
+                    Image(systemName: "music.note")
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                }
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall))
+    }
+
     private func loadSongs() {
         let items = MPMediaQuery.songs().items ?? []
+
+        // Keyed by album, not by song -- see this file's own doc comment
+        // for why that's the number that actually matters here. `0` is
+        // `MPMediaEntityPersistentID`'s value for "no album metadata,"
+        // which is never worth caching against (every such song would
+        // otherwise collide on the same cache key and wrongly share
+        // whichever one happened to render first).
+        var artworkCache: [MPMediaEntityPersistentID: UIImage] = [:]
+
         let rows: [SongRow] = items.compactMap { item in
             guard let title = item.title, !title.isEmpty else { return nil }
-            return SongRow(persistentID: item.persistentID, title: title, artist: item.artist ?? "Unknown Artist")
+
+            var artworkImage: UIImage?
+            let albumID = item.albumPersistentID
+            if albumID != 0, let cached = artworkCache[albumID] {
+                artworkImage = cached
+            } else if let rendered = item.artwork?.image(at: CGSize(width: 36, height: 36)) {
+                if albumID != 0 { artworkCache[albumID] = rendered }
+                artworkImage = rendered
+            }
+
+            return SongRow(persistentID: item.persistentID, title: title, artist: item.artist ?? "Unknown Artist", artwork: artworkImage)
         }
 
         // "#" bucket-for-non-letters convention, same as Artists/Albums.

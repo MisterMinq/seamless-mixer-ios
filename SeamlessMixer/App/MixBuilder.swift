@@ -325,7 +325,15 @@ final class MixBuilder: ObservableObject {
             return existing
         }
 
-        let hasAccess = item.assetURL != nil
+        let resolved = await resolveAudioAccess(for: item)
+        // `hasRawAudioAccess` is deliberately NOT just "did assetURL resolve"
+        // -- see `resolveAudioAccess`'s own doc comment. A local (non-cloud)
+        // track that still failed after retrying is recorded as `true` here
+        // (not real DRM, just an analysis failure) so `DRMExclusionSummary`
+        // reports it as "couldn't be analyzed," never "streamed through your
+        // Apple Music subscription" -- a false accusation for a track Andy
+        // owns outright.
+        let hasAccess = resolved.url != nil
         var track = existing ?? Track(
             persistentID: persistentID,
             title: item.title ?? "Unknown",
@@ -333,11 +341,11 @@ final class MixBuilder: ObservableObject {
             album: item.albumTitle ?? "Unknown",
             genre: item.genre ?? "Unknown",
             durationSec: item.playbackDuration,
-            hasRawAudioAccess: hasAccess
+            hasRawAudioAccess: hasAccess || !resolved.isCloud
         )
-        track.hasRawAudioAccess = hasAccess
+        track.hasRawAudioAccess = hasAccess || !resolved.isCloud
 
-        if hasAccess, let url = item.assetURL {
+        if hasAccess, let url = resolved.url {
             do {
                 let features = try await Task.detached(priority: .userInitiated) {
                     try TrackAnalyzer.analyze(fileAt: url)
@@ -368,6 +376,53 @@ final class MixBuilder: ObservableObject {
             try finalTrack.save(conn)
         }
         return finalTrack
+    }
+
+    /// **Added 2026-08-17 — fixes a real, confirmed false-positive.** Andy
+    /// owns every track on his phone outright (no Apple Music subscription
+    /// at all, told directly, more than once) — yet the DRM-exclusion
+    /// message kept telling him real songs were "streamed through your
+    /// Apple Music subscription" (10 of 11, then 12 of 16, in back-to-back
+    /// Songs-picker tests). The previous code trusted a single,
+    /// un-retried `item.assetURL != nil` read as proof of real FairPlay
+    /// DRM. That's not a safe assumption: Apple's own `assetURL` is
+    /// documented as unreliable for a plain local, owned file in at least
+    /// two situations that have nothing to do with a subscription —
+    /// (a) a transient `nil` right when a bulk `MPMediaQuery` result is
+    /// read (resolved by simply asking again), and (b) certain tracks
+    /// purchased from the iTunes Store that iOS still internally flags
+    /// `isCloudItem == true` (matched against Apple's catalog) even with
+    /// zero active subscription, which can fail `assetURL`
+    /// unpredictably despite being fully downloaded and owned.
+    ///
+    /// This re-checks a failed `assetURL` twice (an immediate re-query,
+    /// sidestepping any staleness in the bulk collection `item` came
+    /// from, then one more after a short delay for the case where the
+    /// library is still settling) before giving up. Even then, only a
+    /// track iOS itself reports as `isCloudItem == true` is treated as
+    /// real DRM — a `nil` on a genuinely local item is never blamed on a
+    /// subscription; the caller (`upsertAndAnalyzeIfNeeded`) instead
+    /// records it as an ordinary analysis failure, which
+    /// `DRMExclusionSummary` already reports as "couldn't be analyzed,"
+    /// a wholly different, honest message.
+    private func resolveAudioAccess(for item: MPMediaItem) async -> (url: URL?, isCloud: Bool) {
+        if let url = item.assetURL {
+            return (url, item.isCloudItem)
+        }
+        if let refetched = requeryItem(persistentID: item.persistentID), let url = refetched.assetURL {
+            return (url, refetched.isCloudItem)
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        if let refetched = requeryItem(persistentID: item.persistentID), let url = refetched.assetURL {
+            return (url, refetched.isCloudItem)
+        }
+        return (nil, item.isCloudItem)
+    }
+
+    private func requeryItem(persistentID: MPMediaEntityPersistentID) -> MPMediaItem? {
+        let query = MPMediaQuery.songs()
+        query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyPersistentID))
+        return query.items?.first
     }
 
     /// - Note: `crossfadeStartOffsetSec`/`crossfadeDurationSec` below are now

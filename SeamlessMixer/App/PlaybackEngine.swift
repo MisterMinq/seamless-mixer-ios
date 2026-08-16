@@ -394,30 +394,51 @@ final class PlaybackEngine: ObservableObject {
     /// reliably restore real audio — Andy's explicit call, 2026-08-16, after
     /// the third: "If I do the same thing with Apple Music, it stops
     /// playing. Period! So maybe we should just let it stop playing if
-    /// there is no other solution available."** Checked and confirmed —
-    /// real Apple Music doesn't attempt to auto-resume across a route
-    /// change either. Stopped chasing a fix for silently restoring audio
-    /// across an arbitrary route change and instead now stops playback
-    /// outright, honestly — matching that real-world behavior rather than
-    /// leaving the UI claiming "still playing" over silence, which was the
-    /// actual complaint underneath all three attempts. The user taps Play
-    /// again to start a fresh session on whatever's now the active route.
+    /// there is no other solution available."** That led to always calling
+    /// `stop()` on any route change.
+    ///
+    /// **Corrected, same day, after Andy tested Apple Music's actual
+    /// behavior more carefully and found the original assumption was
+    /// wrong.** Apple Music does *not* stop on an ordinary route change —
+    /// switching between AirPods and a Bluetooth speaker while both stay
+    /// connected, or connecting a new device while playing on the phone
+    /// speaker, continues seamlessly with no gap. It only stops outright
+    /// when the *currently active* device is genuinely disconnected
+    /// (powered off, out of Bluetooth range, unplugged) — which makes
+    /// sense, since there's nowhere left to send the audio. `AVAudioSession`
+    /// reports *why* a route changed via `AVAudioSessionRouteChangeReasonKey`
+    /// in the notification's `userInfo`, so this now branches on that reason
+    /// instead of treating every route change the same: `.oldDeviceUnavailable`
+    /// (the disconnect case) still calls `stop()`, honestly matching what
+    /// even Apple Music does there; every other reason attempts the same
+    /// silent `pause()`/`resume()` recovery `handleEngineConfigurationChange`
+    /// already uses, since the engine's render graph can still get quietly
+    /// disrupted by a route change that doesn't represent a real device
+    /// disappearing.
     private func observeRouteChanges() {
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: AVAudioSession.sharedInstance(),
             queue: nil
-        ) { [weak self] _ in
+        ) { [weak self] notification in
             Task { @MainActor in
                 self?.updateOutputRouteName()
-                self?.handleRouteChange()
+                self?.handleRouteChange(notification: notification)
             }
         }
     }
 
-    private func handleRouteChange() {
+    private func handleRouteChange(notification: Notification) {
         guard isPlaying, !isPaused else { return }
-        stop()
+        let reasonValue = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
+        let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) ?? .unknown
+
+        if reason == .oldDeviceUnavailable {
+            stop()
+        } else {
+            pause()
+            resume()
+        }
     }
 
     /// **Added 2026-08-16, from web research done while digging into why
