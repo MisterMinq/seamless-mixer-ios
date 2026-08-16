@@ -212,6 +212,20 @@ final class PlaybackEngine: ObservableObject {
     /// completion handler be told apart from a real one.
     private var playbackGeneration = 0
 
+    /// **Added 2026-08-17**, deliberately separate from `playbackGeneration`
+    /// above. Bumped every time a volume fade (in or out — `pause()`'s
+    /// fade-out, or a resume's fade-in) starts, so a newer fade can
+    /// preempt a straggling older one (e.g. a fast pause-then-resume tap)
+    /// without touching `playbackGeneration`. That counter must only
+    /// change on a real reschedule (a genuinely new `schedule(...)` call)
+    /// — it also gates whether a track's "finished naturally, advance to
+    /// the next one" completion handler is treated as current. Bumping it
+    /// on every pause/resume, which never reschedules anything, would
+    /// make a track that legitimately finishes while paused-then-resumed
+    /// get silently ignored as "stale" — a real bug caught before it
+    /// shipped, not after.
+    private var fadeGeneration = 0
+
     /// A crossfade transition's progress, 0...1, only meaningful while
     /// `isCrossfading` is true.
     private var isCrossfading = false
@@ -901,15 +915,57 @@ final class PlaybackEngine: ObservableObject {
     /// "paused." `AVAudioPlayerNode.pause()` natively preserves the node's
     /// scheduled-buffer read position, so `resume()` continues from exactly
     /// where this left off with no extra bookkeeping needed.
+    ///
+    /// **Fade-out added 2026-08-17.** Andy sent real voice recordings of
+    /// the resume glitch, which were actually decoded and measured
+    /// (ffmpeg + numpy, not just listened to) — see `rescheduleActiveTrack`'s
+    /// doc comment for the full analysis. The resume side was already
+    /// confirmed smooth by that analysis, but a faint, real transient
+    /// showed up right as an interruption *began*, before this function
+    /// even existed to run at that exact moment
+    /// (`handleInterruption`'s `.began` case calls this). `pause()`
+    /// previously cut the node off at whatever sample value it happened to
+    /// be at — the same discontinuity class already fixed on the resume
+    /// side (`fadeInActiveChain`), never addressed on the way out. A plain
+    /// non-crossfading pause now fades out over ~120ms before actually
+    /// calling `.pause()`, symmetric to the existing fade-in. A
+    /// crossfade-in-progress pause is left as an abrupt stop, to avoid
+    /// fighting `advanceCrossfade`'s own in-flight volume curve — rare
+    /// enough not to be worth the added complexity right now. Leaves
+    /// `activeChain.player.volume` at `0` afterward, same as a reschedule
+    /// does — `resume()`'s first pass now fades back in from there too
+    /// (see its own doc comment), so a plain manual pause/resume gets the
+    /// same click-free treatment as an interruption recovery, not just a
+    /// forced reschedule.
     func pause() {
         guard isPlaying, !isPaused else { return }
-        activeChain.player.pause()
-        if isCrossfading {
-            standbyChain.player.pause()
-        }
         isPaused = true
         stopTimer()
         publishNowPlayingPlaybackState()
+
+        if isCrossfading {
+            activeChain.player.pause()
+            standbyChain.player.pause()
+            return
+        }
+
+        // Uses `fadeGeneration`, not `playbackGeneration` -- this is a
+        // plain pause, no reschedule, so the buffer's own "finished
+        // naturally" completion handler (tied to `playbackGeneration`)
+        // must stay valid across it. See `fadeGeneration`'s own doc
+        // comment for why the two counters can't be shared.
+        fadeGeneration += 1
+        let generation = fadeGeneration
+        Task { @MainActor in
+            let steps = 12
+            for step in stride(from: steps - 1, through: 0, by: -1) {
+                guard generation == fadeGeneration, isPaused else { return }
+                activeChain.player.volume = Float(step) / Float(steps)
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            guard generation == fadeGeneration, isPaused else { return }
+            activeChain.player.pause()
+        }
     }
 
     /// Resumes a paused session. See `pause()`.
@@ -1089,9 +1145,29 @@ final class PlaybackEngine: ObservableObject {
         for pass in 1...2 {
             guard await activateSessionWithRetry(forceRestart: pass > 1) else { return false }
             if pass == 1 {
+                // `pause()` (2026-08-17) now always leaves `activeChain
+                // .player.volume` at 0 after a non-crossfading pause, to
+                // fade out click-free -- so a plain resume needs to fade
+                // back in too, not just the reschedule path in pass 2.
+                // Bumping `playbackGeneration` here invalidates any
+                // straggling fade-out `Task` from `pause()` that hasn't
+                // finished yet (e.g. a very fast pause-then-resume tap),
+                // so it can't fight this fade-in for control of the
+                // volume. Uses `fadeGeneration`, not `playbackGeneration`
+                // -- no reschedule happens here, so the buffer's own
+                // "finished naturally" completion handler must stay
+                // valid. Skipped while crossfading, matching `pause()`'s
+                // own crossfade exemption -- that branch never touched
+                // volume on the way out, so ramping it here would fight
+                // whatever blend level `advanceCrossfade` already left it
+                // at rather than starting cleanly from silence.
+                fadeGeneration += 1
+                let generation = fadeGeneration
                 activeChain.player.play()
                 if isCrossfading {
                     standbyChain.player.play()
+                } else {
+                    fadeInActiveChain(generation: generation)
                 }
             } else {
                 rescheduleActiveTrack()
@@ -1154,22 +1230,44 @@ final class PlaybackEngine: ObservableObject {
         activeChain.player.volume = 0
         elapsedBaseSec = resumeAtSec
         schedule(file: file, on: activeChain, playableStartSec: queuedTrack.playableStartSec + resumeAtSec, generation: generation)
-        fadeInActiveChain(generation: generation)
+        // Fades use their own `fadeGeneration` counter, not `playbackGeneration`
+        // -- see that property's own doc comment for why the two must stay
+        // separate.
+        fadeGeneration += 1
+        fadeInActiveChain(generation: fadeGeneration)
     }
 
     /// Ramps `activeChain`'s volume from 0 to 1 over ~200ms, avoiding the
     /// audible click a hard jump to full volume produces right as a fresh
     /// buffer starts — see `rescheduleActiveTrack`'s own doc comment.
-    /// Guards against a stale fade outliving its own reschedule (e.g. a
-    /// second interruption arriving mid-fade) via the same
-    /// `playbackGeneration` mechanism every other async completion in this
-    /// class already uses, so an overlapping later reschedule's own volume
-    /// isn't clobbered by a straggling earlier fade step.
+    /// Guards against a stale fade outliving a newer one (e.g. a fast
+    /// pause-then-resume tap, or a second interruption arriving mid-fade)
+    /// via `fadeGeneration` — deliberately not `playbackGeneration`, since
+    /// this same fade-in also runs on a plain manual resume that never
+    /// reschedules anything (see `attemptResumeWithVerification`'s pass 1
+    /// and `pause()`'s own fade-out), and `playbackGeneration` must stay
+    /// reserved for real reschedule events only.
+    ///
+    /// **Widened to ~900ms then reverted back to ~200ms, same day
+    /// (2026-08-17)** — briefly widened on the assumption Andy's "click,
+    /// pop scratch, one second" description meant a full second of
+    /// glitchy audio (which would need a longer fade to cover an
+    /// unstable-hardware window). Andy sent two real voice recordings
+    /// (one after a Clock alarm, one after a Reminders alert) that were
+    /// actually analyzed sample-by-sample (decoded via a locally-installed
+    /// ffmpeg + a small numpy script — not just listened to) rather than
+    /// judged by ear. The recordings disproved that assumption directly:
+    /// the resume fade is already smooth in both (volume ramps up over
+    /// ~150-200ms, no instant jump), and what follows the (at most faint,
+    /// inconsistently-present) click is genuine silence for roughly
+    /// 1.4-1.7 seconds, not glitchy noise — so widening the fade further
+    /// wouldn't address anything actually present in the recordings.
+    /// Reverted to the original, evidence-backed ~200ms.
     private func fadeInActiveChain(generation: Int) {
         Task { @MainActor in
             let steps = 20
             for step in 1...steps {
-                guard generation == playbackGeneration else { return }
+                guard generation == fadeGeneration else { return }
                 activeChain.player.volume = Float(step) / Float(steps)
                 try? await Task.sleep(nanoseconds: 10_000_000)
             }
