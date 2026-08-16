@@ -87,19 +87,22 @@ struct AlbumPickerView: View {
         .onAppear(perform: loadAlbums)
     }
 
-    /// **Fixed 2026-08-17** — same real-device bug found in `SongPickerView`
-    /// (its own doc comment has the full root-cause explanation): a plain
-    /// `VStack` of fixed-size rows had no bound on its own total height, so
-    /// a library with enough distinct letters could overflow past the
-    /// space actually available, pushing the first/last few letters
-    /// somewhere not reliably tappable. Fixed the same way — a
-    /// `GeometryReader` computes each row's height to fit the real
-    /// available space, however many letters there are.
+    /// **Fixed 2026-08-17, second attempt** — same real-device bug found in
+    /// `SongPickerView` (its own doc comment has the full root-cause
+    /// explanation): the first fix's `GeometryReader`-divided row height
+    /// could collapse to zero on a transient `0`-height layout pass,
+    /// making the whole rail invisible instead of just hard-to-tap. Fixed
+    /// the same way — a fixed, comfortably-tappable row height, thinning
+    /// the set of letters shown when there isn't room for all of them
+    /// (always keeping the last), instead of shrinking rows to fit.
     private func indexRail(proxy: ScrollViewProxy) -> some View {
         GeometryReader { geo in
-            let rowHeight = geo.size.height / CGFloat(max(sections.count, 1))
+            let rowHeight: CGFloat = 18
+            let maxVisible = max(Int(max(geo.size.height, 1) / rowHeight), 1)
+            let displayed = thinnedSections(maxVisible: maxVisible)
+
             VStack(spacing: 0) {
-                ForEach(sections) { section in
+                ForEach(displayed) { section in
                     Button {
                         proxy.scrollTo(section.letter, anchor: .top)
                     } label: {
@@ -113,6 +116,21 @@ struct AlbumPickerView: View {
         }
         .frame(width: 18)
         .padding(.trailing, DesignTokens.Spacing.xxs)
+    }
+
+    private func thinnedSections(maxVisible: Int) -> [AlbumSection] {
+        guard sections.count > maxVisible, maxVisible > 0 else { return sections }
+        let stride = Double(sections.count) / Double(maxVisible)
+        var result: [AlbumSection] = []
+        var index = 0.0
+        while Int(index) < sections.count {
+            result.append(sections[Int(index)])
+            index += stride
+        }
+        if let last = sections.last, result.last?.letter != last.letter {
+            result.append(last)
+        }
+        return result
     }
 
     private func cell(for album: AlbumRow) -> some View {

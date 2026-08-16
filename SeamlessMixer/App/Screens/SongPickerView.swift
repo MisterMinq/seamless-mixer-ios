@@ -107,22 +107,36 @@ struct SongPickerView: View {
         .onAppear(perform: loadSongs)
     }
 
-    /// **Fixed 2026-08-17, real-device bug** — Andy: "the letters #, A, X, Y
-    /// and Z in 'Songs' can hardly be clicked on to navigate there." Root
-    /// cause: this was a plain `VStack` of fixed-size rows with no bound on
-    /// its own total height — with Songs spanning nearly the full alphabet
-    /// (unlike Genres' short list), the stacked rail could genuinely run
-    /// taller than the space actually available between the status bar and
-    /// the search field, pushing the first/last few letters into an area
-    /// that isn't reliably tappable. Now wrapped in a `GeometryReader` so
-    /// every letter's row height is computed to fit the *actual* available
-    /// height, however many letters there are — the rail can never overflow
-    /// its own bounds again, regardless of library size.
+    /// **Fixed 2026-08-17, second attempt.** Andy: "the letters #, A, X, Y
+    /// and Z in 'Songs' can hardly be clicked on to navigate there." The
+    /// first fix (dividing the rail's available height evenly across every
+    /// letter via `GeometryReader`) made things worse, not better — Andy's
+    /// next report: "A-Z index rails are worse now. No letters seen." Root
+    /// cause: `GeometryReader` can report a `size.height` of `0` on an
+    /// early/transient layout pass in this `ZStack`-over-`List` arrangement
+    /// (a known SwiftUI quirk, not specific to this screen), and dividing
+    /// row height by the section count then collapsed every row to zero
+    /// height — the letters were still in the view hierarchy, just
+    /// rendered with no visible height at all.
+    ///
+    /// Replaced with a fixed, comfortably-tappable row height, and — when
+    /// there isn't room to show every letter at that height — *thinning*
+    /// the set of letters shown (evenly skipping some) rather than
+    /// shrinking rows to fit. This is the same approach UIKit's own
+    /// `sectionIndexTitles` uses on a long list, and it can never collapse
+    /// to invisible: `maxVisible` is floored at `1`, and `max(geo.size
+    /// .height, 1)` means even a bad `0`-height layout pass still yields a
+    /// small but real, tappable set of letters instead of none. The last
+    /// letter is always kept even after thinning, so `#`/`Z` stays
+    /// reachable regardless of how aggressively the rest gets thinned.
     private func indexRail(proxy: ScrollViewProxy) -> some View {
         GeometryReader { geo in
-            let rowHeight = geo.size.height / CGFloat(max(sections.count, 1))
+            let rowHeight: CGFloat = 18
+            let maxVisible = max(Int(max(geo.size.height, 1) / rowHeight), 1)
+            let displayed = thinnedSections(maxVisible: maxVisible)
+
             VStack(spacing: 0) {
-                ForEach(sections) { section in
+                ForEach(displayed) { section in
                     Button {
                         proxy.scrollTo(section.letter, anchor: .top)
                     } label: {
@@ -136,6 +150,21 @@ struct SongPickerView: View {
         }
         .frame(width: 18)
         .padding(.trailing, DesignTokens.Spacing.xxs)
+    }
+
+    private func thinnedSections(maxVisible: Int) -> [SongSection] {
+        guard sections.count > maxVisible, maxVisible > 0 else { return sections }
+        let stride = Double(sections.count) / Double(maxVisible)
+        var result: [SongSection] = []
+        var index = 0.0
+        while Int(index) < sections.count {
+            result.append(sections[Int(index)])
+            index += stride
+        }
+        if let last = sections.last, result.last?.letter != last.letter {
+            result.append(last)
+        }
+        return result
     }
 
     private func row(for song: SongRow) -> some View {

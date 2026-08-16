@@ -40,10 +40,13 @@ final class MixBuilder: ObservableObject {
             case .emptyPool:
                 return "None of the selected songs could be used for a seamless mix."
             case .allExcluded:
-                // Matches CLAUDE.md's confirmed DRM-Exclusion UX copy for
-                // this exact edge case exactly, per the "no mention of DRM/
-                // FairPlay in user-facing copy" rule.
-                return "None of the songs in this selection can be used for seamless mixing — they're all streamed through your Apple Music subscription or otherwise unavailable. Try a source with songs you've downloaded or purchased."
+                // **Reworded 2026-08-17** — see `DRMExclusionSummary.message`'s
+                // own doc comment for why this no longer blames a
+                // subscription: the signal this app has for "real DRM" turned
+                // out to be unreliable against Andy's own, fully-owned
+                // library, so the copy no longer claims a specific cause it
+                // can't actually back up.
+                return "None of the songs in this selection can be used for seamless mixing right now. Try a different source, or check back after your library finishes syncing."
             case .databaseUnavailable:
                 return "Couldn't open the library database."
             }
@@ -325,15 +328,8 @@ final class MixBuilder: ObservableObject {
             return existing
         }
 
-        let resolved = await resolveAudioAccess(for: item)
-        // `hasRawAudioAccess` is deliberately NOT just "did assetURL resolve"
-        // -- see `resolveAudioAccess`'s own doc comment. A local (non-cloud)
-        // track that still failed after retrying is recorded as `true` here
-        // (not real DRM, just an analysis failure) so `DRMExclusionSummary`
-        // reports it as "couldn't be analyzed," never "streamed through your
-        // Apple Music subscription" -- a false accusation for a track Andy
-        // owns outright.
-        let hasAccess = resolved.url != nil
+        let resolvedURL = await resolveAudioAccess(for: item)
+        let hasAccess = resolvedURL != nil
         var track = existing ?? Track(
             persistentID: persistentID,
             title: item.title ?? "Unknown",
@@ -341,11 +337,11 @@ final class MixBuilder: ObservableObject {
             album: item.albumTitle ?? "Unknown",
             genre: item.genre ?? "Unknown",
             durationSec: item.playbackDuration,
-            hasRawAudioAccess: hasAccess || !resolved.isCloud
+            hasRawAudioAccess: hasAccess
         )
-        track.hasRawAudioAccess = hasAccess || !resolved.isCloud
+        track.hasRawAudioAccess = hasAccess
 
-        if hasAccess, let url = resolved.url {
+        if hasAccess, let url = resolvedURL {
             do {
                 let features = try await Task.detached(priority: .userInitiated) {
                     try TrackAnalyzer.analyze(fileAt: url)
@@ -378,45 +374,48 @@ final class MixBuilder: ObservableObject {
         return finalTrack
     }
 
-    /// **Added 2026-08-17 — fixes a real, confirmed false-positive.** Andy
-    /// owns every track on his phone outright (no Apple Music subscription
-    /// at all, told directly, more than once) — yet the DRM-exclusion
-    /// message kept telling him real songs were "streamed through your
-    /// Apple Music subscription" (10 of 11, then 12 of 16, in back-to-back
-    /// Songs-picker tests). The previous code trusted a single,
-    /// un-retried `item.assetURL != nil` read as proof of real FairPlay
-    /// DRM. That's not a safe assumption: Apple's own `assetURL` is
-    /// documented as unreliable for a plain local, owned file in at least
-    /// two situations that have nothing to do with a subscription —
-    /// (a) a transient `nil` right when a bulk `MPMediaQuery` result is
-    /// read (resolved by simply asking again), and (b) certain tracks
-    /// purchased from the iTunes Store that iOS still internally flags
-    /// `isCloudItem == true` (matched against Apple's catalog) even with
-    /// zero active subscription, which can fail `assetURL`
-    /// unpredictably despite being fully downloaded and owned.
+    /// **Added 2026-08-17, revised the same day.** Andy owns every track on
+    /// his phone outright (no Apple Music subscription at all, told
+    /// directly, more than once) — yet the DRM-exclusion message kept
+    /// telling him real songs were "streamed through your Apple Music
+    /// subscription" (10 of 11, then 12 of 16, then still the same message
+    /// on a fresh 16-song test after the first attempt at this fix). The
+    /// original code trusted a single, un-retried `item.assetURL != nil`
+    /// read as proof of real FairPlay DRM — genuinely unsafe, since
+    /// `assetURL` is documented as unreliable for a plain local, owned file
+    /// (e.g. a transient `nil` right when a bulk `MPMediaQuery` result is
+    /// read). The retries below fix that part.
     ///
-    /// This re-checks a failed `assetURL` twice (an immediate re-query,
-    /// sidestepping any staleness in the bulk collection `item` came
-    /// from, then one more after a short delay for the case where the
-    /// library is still settling) before giving up. Even then, only a
-    /// track iOS itself reports as `isCloudItem == true` is treated as
-    /// real DRM — a `nil` on a genuinely local item is never blamed on a
-    /// subscription; the caller (`upsertAndAnalyzeIfNeeded`) instead
-    /// records it as an ordinary analysis failure, which
-    /// `DRMExclusionSummary` already reports as "couldn't be analyzed,"
-    /// a wholly different, honest message.
-    private func resolveAudioAccess(for item: MPMediaItem) async -> (url: URL?, isCloud: Bool) {
+    /// **The first attempt at this fix also tried to use `item.isCloudItem`
+    /// as a second signal** — the idea being that only a track iOS itself
+    /// flags as a "cloud item" would be treated as real DRM, with a
+    /// stubborn local nil reported as a harmless analysis failure instead.
+    /// Andy's own real-device evidence disproved that: the exclusion
+    /// message was still showing the identical "streamed through your
+    /// Apple Music subscription" wording after that fix shipped, meaning
+    /// `isCloudItem` is *also* true for tracks he genuinely owns and has
+    /// fully downloaded — a well-documented Apple quirk where a purchased
+    /// or catalog-matched track can carry that flag despite being real,
+    /// local, playable audio. There is no reliable API available to a
+    /// third-party app that can actually distinguish "real, FairPlay-locked
+    /// subscription stream" from "a local file iOS happens to flag this
+    /// way" — so this app no longer tries to guess. `hasRawAudioAccess`
+    /// is back to meaning exactly one thing: "did a real, playable URL
+    /// resolve, after retrying." The *reason* it didn't is no longer
+    /// claimed anywhere in the UI — see `DRMExclusionSummary.message`'s own
+    /// doc comment for the resulting copy change.
+    private func resolveAudioAccess(for item: MPMediaItem) async -> URL? {
         if let url = item.assetURL {
-            return (url, item.isCloudItem)
+            return url
         }
         if let refetched = requeryItem(persistentID: item.persistentID), let url = refetched.assetURL {
-            return (url, refetched.isCloudItem)
+            return url
         }
         try? await Task.sleep(nanoseconds: 300_000_000)
         if let refetched = requeryItem(persistentID: item.persistentID), let url = refetched.assetURL {
-            return (url, refetched.isCloudItem)
+            return url
         }
-        return (nil, item.isCloudItem)
+        return nil
     }
 
     private func requeryItem(persistentID: MPMediaEntityPersistentID) -> MPMediaItem? {
