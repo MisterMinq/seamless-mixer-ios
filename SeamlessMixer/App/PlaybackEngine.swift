@@ -1057,12 +1057,44 @@ final class PlaybackEngine: ObservableObject {
     /// Now takes a second reading 300ms after the first and requires the
     /// render clock to have actually moved forward by a real amount
     /// between them before trusting the resume.
+    ///
+    /// **Revised 2026-08-17, same day — the two-reading check alone still
+    /// wasn't enough.** Andy re-tested and reported the identical "spark
+    /// then no sound" symptom, but with one new, decisive detail: no red
+    /// error text appeared, meaning the two-reading check *did* pass — the
+    /// render clock genuinely was advancing — and playback was still
+    /// silent, with the progress bar/time display continuing to move.
+    /// That's real evidence of a structural limit this function's own
+    /// doc comment already flagged: a genuinely advancing render clock
+    /// proves the *engine's internal graph* is processing samples, not
+    /// that those samples are actually reaching the physical output. A
+    /// bare `activeChain.player.play()` resumes an already-scheduled node
+    /// exactly where it left off — fine for an ordinary manual pause/
+    /// resume — but after a real interruption teardown, the underlying
+    /// hardware route can apparently come back in a state where the
+    /// engine's internal clock keeps ticking while the actual output path
+    /// doesn't. There's no public API available to confirm audible output
+    /// directly, so detecting this more precisely isn't possible — but
+    /// this project already has real, empirical proof of what reliably
+    /// fixes it: skipping to the next track (which fully reschedules via
+    /// `schedule(file:on:playableStartSec:generation:)`, not a bare
+    /// `.play()`) was the one thing Andy found by hand that consistently
+    /// restored real sound after this exact kind of stall (see the Round 5
+    /// tracker note this project already recorded). Pass 2 now does that
+    /// same full reschedule — tearing down and rebuilding the node's
+    /// buffer at the current elapsed position — instead of just forcing
+    /// the engine to restart around the same, possibly still-broken
+    /// schedule.
     private func attemptResumeWithVerification() async -> Bool {
         for pass in 1...2 {
             guard await activateSessionWithRetry(forceRestart: pass > 1) else { return false }
-            activeChain.player.play()
-            if isCrossfading {
-                standbyChain.player.play()
+            if pass == 1 {
+                activeChain.player.play()
+                if isCrossfading {
+                    standbyChain.player.play()
+                }
+            } else {
+                rescheduleActiveTrack()
             }
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard let first = computeElapsedSeconds(for: activeChain.player), engine.isRunning else { continue }
@@ -1073,12 +1105,38 @@ final class PlaybackEngine: ObservableObject {
             // (or a non-increasing) value despite `lastRenderTime` itself
             // staying "valid" -- this comparison is what actually proves
             // advancement, which a single reading structurally cannot.
+            // **Known, still-flagged limitation**: this proves the engine
+            // is processing samples, not that they reach real output --
+            // see this function's own 2026-08-17 revision note above.
             if second > first + 0.05 {
                 return true
             }
         }
         playbackError = "Couldn't resume playback: audio didn't actually start."
         return false
+    }
+
+    /// Full reschedule of whatever's on `activeChain` right now, at its
+    /// current elapsed position — the same mechanism `seek(toSeconds:)`
+    /// already uses (`schedule(...)` itself calls `player.stop()` before
+    /// scheduling a fresh segment, tearing down and rebuilding the node's
+    /// buffer, not just resuming an existing one). Used by
+    /// `attemptResumeWithVerification`'s second pass — see that function's
+    /// own 2026-08-17 doc comment for why a full reschedule, not just a
+    /// forced engine restart, is what this project's own real-device
+    /// testing already found actually restores audible sound.
+    private func rescheduleActiveTrack() {
+        guard queue.indices.contains(currentIndex) else { return }
+        cancelCrossfadeIfNeeded()
+        let queuedTrack = queue[currentIndex]
+        guard let url = resolveFileURL(trackPersistentID: queuedTrack.trackPersistentID),
+              let file = try? AVAudioFile(forReading: url) else { return }
+        playbackGeneration += 1
+        let generation = playbackGeneration
+        let resumeAtSec = elapsedSeconds
+        activeChain.player.volume = 1
+        elapsedBaseSec = resumeAtSec
+        schedule(file: file, on: activeChain, playableStartSec: queuedTrack.playableStartSec + resumeAtSec, generation: generation)
     }
 
     /// Attempts `activateSession()` + an engine restart up to `attempts`
