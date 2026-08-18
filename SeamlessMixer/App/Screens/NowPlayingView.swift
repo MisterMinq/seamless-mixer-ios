@@ -155,6 +155,13 @@ struct NowPlayingView: View {
                             Image(systemName: "arrow.triangle.merge")
                                 .font(.footnote)
                                 .foregroundStyle(DesignTokens.Color.secondary)
+                            // Next-track thumbnail, added 2026-08-18 per
+                            // Andy's confirmed request. Reuses `nextRow
+                            // .artwork` directly -- already resolved by
+                            // `PlaylistDetailViewModel.load()` (via
+                            // `ArtworkResolver`) as part of building `rows`,
+                            // so this needs no new query of its own.
+                            nextTrackThumbnail(for: nextRow)
                             Text("Blending into \(nextRow.title)")
                                 .font(.footnote)
                                 .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -240,22 +247,47 @@ struct NowPlayingView: View {
             }
     }
 
-    /// Synchronous single-item `MPMediaQuery` lookup, same pattern
-    /// `PlaybackEngine.resolveFileURL` already uses — a lookup by one exact
-    /// `persistentID` is cheap enough not to need a detached `Task`.
+    /// Small artwork tile for the "Blending into [next track]" indicator —
+    /// same flat-icon fallback convention every other artwork tile in this
+    /// app uses when a track has none.
+    @ViewBuilder
+    private func nextTrackThumbnail(for row: PlaylistDetailRow) -> some View {
+        Group {
+            if let artwork = row.artwork {
+                Image(uiImage: artwork)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
+                        .fill(DesignTokens.Color.surfaceTint)
+                    Image(systemName: "music.note")
+                        .font(.caption2)
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                }
+            }
+        }
+        .frame(width: 20, height: 20)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall))
+    }
+
+    /// **Fixed 2026-08-18** — was a single-item `MPMediaQuery` lookup using
+    /// `MPMediaPropertyPredicate` on `MPMediaItemPropertyPersistentID`, the
+    /// same unreliable pattern already fixed in three other places this
+    /// project (see `MixBuilder.requeryItem`'s own doc comment) — large
+    /// `UInt64` persistentID values can silently fail to match via this
+    /// predicate even when the track genuinely exists. Found while building
+    /// `ArtworkResolver` for Playlist Detail's own per-track thumbnails;
+    /// this screen's big artwork tile now goes through that same reliable
+    /// helper instead, at its own higher resolution (`rows`' own cached
+    /// artwork, used for the small next-track thumbnail below, is rendered
+    /// at thumbnail size and would look soft blown up to 260pt).
     private func loadArtwork(for trackID: Int64?) {
         guard let trackID else {
             artworkImage = nil
             return
         }
-        let query = MPMediaQuery.songs()
-        let mediaID = UInt64(bitPattern: trackID)
-        query.addFilterPredicate(MPMediaPropertyPredicate(value: mediaID, forProperty: MPMediaItemPropertyPersistentID))
-        guard let item = query.items?.first, let artwork = item.artwork else {
-            artworkImage = nil
-            return
-        }
-        artworkImage = artwork.image(at: CGSize(width: 260, height: 260))
+        artworkImage = ArtworkResolver.loadArtwork(forTrackPersistentID: trackID, size: CGSize(width: 260, height: 260))
     }
 
     // MARK: - Progress
@@ -311,6 +343,24 @@ struct NowPlayingView: View {
 
     // MARK: - Controls
 
+    /// **`.buttonStyle(.plain)` added 2026-08-18 on all three buttons here
+    /// -- real bug, not a style tweak.** None of these buttons ever set an
+    /// explicit button style, so each picked up the platform's default
+    /// bordered/glass chrome -- a light gray pill/circle rendered behind
+    /// the icon regardless of what the icon itself draws. Andy's real
+    /// device screenshot showed exactly this: gray capsule backgrounds
+    /// behind the plain "backward.fill"/"forward.fill" glyphs (which have
+    /// no background of their own) and a second, larger gray circle behind
+    /// the "play.circle.fill"/"pause.circle.fill" glyph's own teal circle.
+    /// Same class of bug as `PlaylistDetailView`'s per-track Menu and the
+    /// A-Z index rail earlier this session -- a bare `Button`/`Menu` with
+    /// only an icon label picks up unwanted default chrome unless
+    /// `.buttonStyle(.plain)` explicitly opts out of it. Andy: "Why is
+    /// there a patch of grey behind the 3 dots? It seems to be a feature
+    /// too behind the play, ff and rewind buttons in Now Playing screen.
+    /// Let's get rid of them... in both screens." `.buttonStyle(.plain)`
+    /// removes the chrome without changing tap targets, hit areas, or the
+    /// disabled-state dimming these buttons already rely on.
     private var controls: some View {
         HStack(spacing: DesignTokens.Spacing.xl) {
             Button {
@@ -320,6 +370,7 @@ struct NowPlayingView: View {
                     .font(.title2)
                     .foregroundStyle(DesignTokens.Color.primaryText)
             }
+            .buttonStyle(.plain)
             .disabled(nowPlayingRow == nil)
 
             Button {
@@ -333,6 +384,7 @@ struct NowPlayingView: View {
                     .font(.system(size: 56))
                     .foregroundStyle(DesignTokens.Color.primary)
             }
+            .buttonStyle(.plain)
             .disabled(nowPlayingRow == nil)
 
             Button {
@@ -342,6 +394,7 @@ struct NowPlayingView: View {
                     .font(.title2)
                     .foregroundStyle(DesignTokens.Color.primaryText)
             }
+            .buttonStyle(.plain)
             .disabled(nextRow == nil)
         }
     }

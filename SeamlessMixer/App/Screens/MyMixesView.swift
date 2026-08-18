@@ -383,24 +383,21 @@ private struct MixRow: View {
                 Button {
                     showOverflow = true
                 } label: {
+                    // **Reverted 2026-08-18** -- briefly removed this circle
+                    // in the same round, on a misreading of Andy's report.
+                    // He corrected it directly: this one gray circle is the
+                    // correct, intended look and was never the problem --
+                    // the actual bug is that `PlaylistDetailView`'s "..."
+                    // (a `Menu`) renders an *extra*, unwanted gray layer
+                    // from iOS's own default `Menu` chrome, stacked on top
+                    // of a background matching this one, and Now Playing's
+                    // transport buttons have the same kind of unwanted
+                    // extra layer from default `Button` chrome. Both are
+                    // fixed at their own source now (`.menuStyle
+                    // (.borderlessButton)` / `.buttonStyle(.plain)`) rather
+                    // than by touching this correct one.
                     Image(systemName: "ellipsis")
                         .foregroundStyle(DesignTokens.Color.textSecondary)
-                        // Circular pill background added 2026-08-15 -- Andy
-                        // clarified this was always the actual ask, not just
-                        // spacing: "I wanted the 3 dots in the My Mixes list
-                        // to be styled the same as in the Playlist Detail
-                        // screen. It was not documented." That screen's
-                        // per-track "..." is a `Menu`, not a plain `Button`
-                        // like this one -- a `Menu` with a bare glyph label
-                        // gets a light circular chrome from iOS by default,
-                        // which is the "style" being referenced, not
-                        // anything explicitly coded there. Since this
-                        // button presents a `.sheet`, not an inline menu (a
-                        // deliberately different pattern -- My Mixes' overflow
-                        // is Favourite/Rename/Refresh/Delete, a heavier set of
-                        // actions than a per-track menu needs), converting it
-                        // to a `Menu` isn't the right fix -- matching the
-                        // *visual* chrome by hand is.
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(DesignTokens.Color.surfaceTint))
                         .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)

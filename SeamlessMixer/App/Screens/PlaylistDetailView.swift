@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import PlaylistCore
 
 /// The screen a generated seamless playlist lands on right after "Build
@@ -502,6 +503,8 @@ struct PlaylistDetailView: View {
                         .frame(width: numberColumnWidth, alignment: .trailing)
                 }
 
+                artworkTile(for: row)
+
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                     Text(row.title)
                         .font(.body)
@@ -534,23 +537,34 @@ struct PlaylistDetailView: View {
                     }
                     .disabled(true)
                 } label: {
-                    // Explicit circular chrome added 2026-08-18 -- matches
-                    // `MyMixesView`'s own ellipsis exactly (same 32pt circle,
-                    // `DesignTokens.Color.surfaceTint`). That earlier fix
-                    // (2026-08-15) assumed a `Menu` with a bare glyph label
-                    // gets this chrome automatically from iOS, and gave
-                    // `MyMixesView`'s plain `Button` hand-coded chrome to
-                    // match what this `Menu` was assumed to already look
-                    // like. Andy's real device showed that assumption was
-                    // wrong -- this "..." is visibly smaller/plainer than My
-                    // Mixes' -- so it now gets the exact same hand-coded
-                    // background instead of relying on `Menu`'s default.
+                    // **Real root cause found 2026-08-18, third attempt at
+                    // this exact control.** The first fix added explicit
+                    // circular chrome to match `MyMixesView`'s hand-coded
+                    // background; a second (wrong) fix removed it entirely,
+                    // misreading Andy's report as "no gray background
+                    // anywhere." Andy corrected this precisely: My Mixes'
+                    // single gray circle was always correct and was never
+                    // the problem -- this `Menu`'s "..." has an *extra*
+                    // gray layer *on top of* a circle matching that one,
+                    // because a `Menu` with no explicit `.menuStyle` gets
+                    // its own default interactive chrome from iOS
+                    // automatically (the same class of "unstyled control
+                    // picks up unwanted platform chrome" bug already fixed
+                    // for the A-Z index rail and, this same round, Now
+                    // Playing's transport buttons). `.buttonStyle(.plain)`
+                    // has no effect on a `Menu` (it isn't a `Button`) --
+                    // the correct suppressor is `.menuStyle
+                    // (.borderlessButton)`, applied to the `Menu` itself
+                    // below. With that in place, the explicit circle here
+                    // is the *only* background rendered, matching My
+                    // Mixes' exactly instead of stacking under it.
                     Image(systemName: "ellipsis")
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(DesignTokens.Color.surfaceTint))
                         .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
                 }
+                .menuStyle(.borderlessButton)
             }
             .padding(.vertical, DesignTokens.Spacing.xxs)
             .padding(.horizontal, isNowPlaying ? DesignTokens.Spacing.xs : 0)
@@ -563,6 +577,32 @@ struct PlaylistDetailView: View {
                 connector(isImminent: isImminent)
             }
         }
+    }
+
+    /// Real per-track thumbnail, added 2026-08-18 per Andy's confirmed
+    /// request (see the standing `project_album_artwork_rollout` note) —
+    /// same 36pt rounded-rect tile treatment `SongPickerView.artworkTile`
+    /// already uses, with the same flat-icon fallback when a track has no
+    /// artwork or isn't found in the library any more.
+    @ViewBuilder
+    private func artworkTile(for row: PlaylistDetailRow) -> some View {
+        Group {
+            if let artwork = row.artwork {
+                Image(uiImage: artwork)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
+                        .fill(DesignTokens.Color.surfaceTint)
+                    Image(systemName: "music.note")
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                }
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall))
     }
 
     /// Solid teal for the first transition (the one that's imminent when

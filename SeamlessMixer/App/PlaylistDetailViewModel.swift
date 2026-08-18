@@ -1,5 +1,6 @@
 import Foundation
 import PlaylistCore
+import UIKit
 
 /// One track row as displayed on Playlist Detail — position, title, artist,
 /// formatted duration. Flattened from `PlaylistCore`'s `PlaylistTrackDetail`
@@ -9,6 +10,12 @@ import PlaylistCore
 /// displayed, but needed to build a real `PlaybackEngine.QueuedTrack`: which
 /// file to resolve, when this track's blend into the next one should begin,
 /// how long that blend lasts, and how much leading silence to skip.
+///
+/// `artwork` added 2026-08-18 — real per-track thumbnails, per Andy's
+/// confirmed request (see `ArtworkResolver`'s own doc comment for how
+/// this is resolved reliably and cheaply). `nil` when the track has no
+/// artwork or isn't found in the library any more; the view falls back to
+/// a flat placeholder tile in that case, same as `SongPickerView`.
 struct PlaylistDetailRow: Identifiable {
     let id: Int64
     let position: Int
@@ -19,6 +26,7 @@ struct PlaylistDetailRow: Identifiable {
     let crossfadeStartOffsetSec: Double
     let crossfadeDurationSec: Double
     let playableStartSec: Double
+    let artwork: UIImage?
 }
 
 @MainActor
@@ -41,6 +49,13 @@ final class PlaylistDetailViewModel: ObservableObject {
         do {
             let detail = try db.loadPlaylistDetail(playlistID: playlistID)
 
+            // One batch artwork resolution for the whole playlist, not one
+            // per row -- see `ArtworkResolver`'s own doc comment.
+            let artworkByTrack = ArtworkResolver.loadArtwork(
+                forTrackPersistentIDs: detail.tracks.map(\.track.persistentID),
+                size: CGSize(width: 40, height: 40)
+            )
+
             rows = detail.tracks.map { entry in
                 PlaylistDetailRow(
                     id: entry.id,
@@ -51,7 +66,8 @@ final class PlaylistDetailViewModel: ObservableObject {
                     trackPersistentID: entry.track.persistentID,
                     crossfadeStartOffsetSec: entry.crossfadeStartOffsetSec,
                     crossfadeDurationSec: entry.crossfadeDurationSec,
-                    playableStartSec: entry.track.playableStartSec ?? 0
+                    playableStartSec: entry.track.playableStartSec ?? 0,
+                    artwork: artworkByTrack[entry.track.persistentID]
                 )
             }
 
@@ -111,7 +127,8 @@ final class PlaylistDetailViewModel: ObservableObject {
                 durationText: row.durationText, trackPersistentID: row.trackPersistentID,
                 crossfadeStartOffsetSec: row.crossfadeStartOffsetSec,
                 crossfadeDurationSec: row.crossfadeDurationSec,
-                playableStartSec: row.playableStartSec
+                playableStartSec: row.playableStartSec,
+                artwork: row.artwork
             )
         }
 
