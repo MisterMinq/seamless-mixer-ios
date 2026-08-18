@@ -127,6 +127,18 @@ public final class DatabaseManager {
             }
         }
 
+        // Added 2026-08-19, per Andy's direct request ("can the crossfade be
+        // extended... a time setting how long this can be") — see
+        // `Playlist.extraCrossfadeSec`'s own doc comment for the full
+        // reasoning. NOT NULL with a 0 default so every existing playlist
+        // keeps its exact current crossfade behavior until the user
+        // explicitly picks something else via a fresh Build Mix or Refresh.
+        migrator.registerMigration("v3_extra_crossfade_sec") { db in
+            try db.alter(table: "playlists") { t in
+                t.add(column: "extra_crossfade_sec", .double).notNull().defaults(to: 0)
+            }
+        }
+
         return migrator
     }
 }

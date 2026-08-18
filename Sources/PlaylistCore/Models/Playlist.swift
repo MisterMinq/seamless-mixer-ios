@@ -31,6 +31,14 @@ public struct Playlist: Codable, Equatable, Hashable, Identifiable {
     /// user-renamable afterward via the "..." menu's Rename action.
     public var name: String
     public var mode: PlaylistMode
+    /// **Added 2026-08-19** — extra seconds added on top of each
+    /// transition's own tempo-derived crossfade duration (see
+    /// `CrossfadeTiming.durationSec(forBPM:extraSec:)`), set once at Build
+    /// Mix time (a Hub control, alongside Mode, per Andy's explicit
+    /// request) and stored per-playlist so Refresh can reuse the same
+    /// choice without asking again — the same pattern `mode` already
+    /// established. Defaults to 0 (today's exact crossfade behavior).
+    public var extraCrossfadeSec: Double
     public var isFavorite: Bool
     public var createdAt: Date
     public var updatedAt: Date
@@ -39,6 +47,7 @@ public struct Playlist: Codable, Equatable, Hashable, Identifiable {
         id: Int64? = nil,
         name: String,
         mode: PlaylistMode,
+        extraCrossfadeSec: Double = 0,
         isFavorite: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -46,6 +55,7 @@ public struct Playlist: Codable, Equatable, Hashable, Identifiable {
         self.id = id
         self.name = name
         self.mode = mode
+        self.extraCrossfadeSec = extraCrossfadeSec
         self.isFavorite = isFavorite
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -59,6 +69,7 @@ extension Playlist: FetchableRecord, MutablePersistableRecord {
         case id
         case name
         case mode
+        case extraCrossfadeSec = "extra_crossfade_sec"
         case isFavorite = "is_favorite"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -68,6 +79,7 @@ extension Playlist: FetchableRecord, MutablePersistableRecord {
         id = row[Columns.id]
         name = row[Columns.name]
         mode = row[Columns.mode]
+        extraCrossfadeSec = row[Columns.extraCrossfadeSec]
         isFavorite = row[Columns.isFavorite]
         createdAt = row[Columns.createdAt]
         updatedAt = row[Columns.updatedAt]
@@ -77,6 +89,7 @@ extension Playlist: FetchableRecord, MutablePersistableRecord {
         container[Columns.id] = id
         container[Columns.name] = name
         container[Columns.mode] = mode
+        container[Columns.extraCrossfadeSec] = extraCrossfadeSec
         container[Columns.isFavorite] = isFavorite
         container[Columns.createdAt] = createdAt
         container[Columns.updatedAt] = updatedAt

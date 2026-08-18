@@ -618,7 +618,13 @@ struct PlaylistDetailView: View {
         Rectangle()
             .fill(isImminent ? DesignTokens.Color.primary : DesignTokens.Color.border)
             .frame(width: 2, height: DesignTokens.Spacing.md)
-            .padding(.leading, 26 + DesignTokens.Spacing.sm)
+            // **Fixed 2026-08-19** -- was a hardcoded `26`, a stale leftover
+            // from before `numberColumnWidth` became dynamic (see that
+            // property's own doc comment). Left unupdated at the time, this
+            // has been slightly misaligned for every playlist whose number
+            // column isn't exactly 26pt wide (i.e. almost all of them) --
+            // caught during an unrelated self-review pass, not reported.
+            .padding(.leading, numberColumnWidth + DesignTokens.Spacing.sm)
     }
 
     // MARK: - Footer

@@ -21,7 +21,16 @@ enum NowPlayingPalette {
     /// file can't import `DesignTokens` circularly in a useful way for a
     /// constant, so the hex is duplicated here once, deliberately, rather
     /// than routed through `Color` and back.
-    static let anchor = RGBColor(r: 0x23.0 / 0xFF, g: 0x94.0 / 0xFF, b: 0x8F.0 / 0xFF)
+    ///
+    /// **Fixed 2026-08-19** — a real build failure (SeamlessMixer App
+    /// Build), not a flaky one. The original `0x23.0 / 0xFF` form is
+    /// invalid Swift: writing a decimal point directly on a hex integer
+    /// literal makes it a *hexadecimal floating-point* literal, which
+    /// Swift requires to end with a `p`-exponent (e.g. `0x23.0p0`) — plain
+    /// `0x23.0` doesn't compile at all, on any Swift version. Fixed by
+    /// converting each hex *integer* to `Double` before dividing, which
+    /// was the actual intent (35/255, 148/255, 143/255).
+    static let anchor = RGBColor(r: Double(0x23) / 255, g: Double(0x94) / 255, b: Double(0x8F) / 255)
 
     struct Blend {
         /// Four mesh-gradient corner colors, in `[topLeft, topRight,

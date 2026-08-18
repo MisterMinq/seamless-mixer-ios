@@ -95,6 +95,19 @@ final class SourceSelectionViewModel: ObservableObject {
     /// he says otherwise, not just an available option.
     @Published var includeEverything: Bool = true
 
+    /// **Added 2026-08-19**, per Andy's direct request ("can the crossfade
+    /// be extended... a time setting how long this can be, regulatable")
+    /// — extra seconds added on top of each transition's own tempo-derived
+    /// crossfade length (see `CrossfadeTiming.durationSec(forBPM:extraSec:)`).
+    /// Andy specifically asked for this "in conjunction with Mode," i.e. a
+    /// Hub control living right alongside it, not a hidden global default —
+    /// see `SourceSelectionHubView.modePicker`. Defaults to 0 (today's
+    /// exact crossfade behavior, unchanged unless the user opts in) —
+    /// unlike `includeEverything`, Andy didn't ask for a non-zero default
+    /// here, so this follows the same "preserve existing behavior until
+    /// told otherwise" convention `targetMinutes` already uses.
+    @Published var extraCrossfadeSec: Double = 0
+
     /// True once "Use your whole library" is picked — per the confirmed
     /// design, this clears/disables the four category rows since combining
     /// it with anything else is redundant.

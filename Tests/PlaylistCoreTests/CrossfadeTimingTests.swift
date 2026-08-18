@@ -78,4 +78,36 @@ final class CrossfadeTimingTests: XCTestCase {
         XCTAssertEqual(timing.startOffsetSec, 0.0, accuracy: 0.001)
         XCTAssertEqual(timing.durationSec, 3.0, accuracy: 0.001)
     }
+
+    // MARK: - extraSec (added 2026-08-19, per Andy's request for a
+    // user-adjustable crossfade length)
+
+    func testDurationSecAddsExtraSecOnTopOfTempoDerivedBase() {
+        // 120bpm's own base is 3.0s (see testDurationSecAtOrdinaryTempo) --
+        // +2s on top should land at exactly 5.0s, not just clip back to the
+        // tempo-derived value.
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 120, extraSec: 2), 5.0, accuracy: 0.001)
+    }
+
+    func testDurationSecExtraSecAppliesAfterTheClampNotBeforeIt() {
+        // A slow track's base is already clipped to the 12s ceiling --
+        // extraSec must still add on top of that, not get absorbed by the
+        // clip (which would make the setting silently do nothing for any
+        // already-slow song).
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 20, extraSec: 3), 15.0, accuracy: 0.001)
+    }
+
+    func testDurationSecExtraSecDefaultsToZero() {
+        // Every existing call site (and every playlist built before this
+        // setting existed) must see exactly today's behavior when extraSec
+        // isn't passed at all.
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 120), CrossfadeTiming.durationSec(forBPM: 120, extraSec: 0), accuracy: 0.001)
+    }
+
+    func testTimingThreadsExtraSecIntoBothDurationAndStartOffset() {
+        let track = makeTrack(bpm: 120, playableDurationSec: 200)
+        let timing = CrossfadeTiming.timing(for: track, extraSec: 2)
+        XCTAssertEqual(timing.durationSec, 5.0, accuracy: 0.001) // 3.0 base + 2 extra
+        XCTAssertEqual(timing.startOffsetSec, 195.0, accuracy: 0.001) // 200 - 5.0
+    }
 }

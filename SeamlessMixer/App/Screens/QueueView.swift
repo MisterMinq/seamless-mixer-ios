@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The confirmed "Queue / Up next" screen (CLAUDE.md's "Queue / 'Up next'
 /// (confirmed layout, first pass)"), opened via Now Playing's queue icon —
@@ -31,6 +32,15 @@ import SwiftUI
 /// (only a lightweight `rows` snapshot, per its own doc comment, to keep
 /// its footprint small) — kept out of scope for this pass rather than
 /// widening that on the strength of this one screen.
+///
+/// **Real per-track artwork and matching "..." chrome, as of 2026-08-19** —
+/// per Andy's direct request to make thumbnails and the fixed "..." style
+/// consistent across every track-list screen (Playlist Detail, Now
+/// Playing, and this one) rather than leaving Queue as the one screen
+/// still showing flat placeholder icons and a plain, unstyled ellipsis.
+/// Both reuse the exact same helpers/patterns already proven on those
+/// other two screens — see `artworkTile(for:)` and the per-row `Menu`
+/// below.
 ///
 /// **Now-playing row pinned above a scrollable list, as of 2026-08-14** —
 /// the first version put every row (including now-playing) inside one
@@ -174,6 +184,14 @@ struct QueueView: View {
                     Spacer().frame(width: 20)
                 }
 
+                // Real per-track thumbnail, added 2026-08-19 for
+                // consistency with Playlist Detail and Now Playing (both
+                // already real) -- same 36pt tile treatment, same flat-icon
+                // fallback. `PlaylistDetailRow.artwork` is already resolved
+                // by `PlaylistDetailViewModel.load()` before `rows` ever
+                // reaches this screen, so no new query is needed here.
+                artworkTile(for: row)
+
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                     Text(row.title)
                         .font(.body)
@@ -195,6 +213,13 @@ struct QueueView: View {
                 // its own "..." menu -- real actions deferred, see this
                 // file's own doc comment.
                 if !isNowPlaying {
+                    // Circular chrome + `.menuStyle(.borderlessButton)`
+                    // added 2026-08-19, matching My Mixes' and Playlist
+                    // Detail's "..." exactly -- see PlaylistDetailView's own
+                    // note on why a bare `Menu` needs `.borderlessButton`
+                    // explicitly (its default chrome would otherwise stack
+                    // an extra, unwanted gray layer under this hand-coded
+                    // circle rather than being replaced by it).
                     Menu {
                         Button {} label: {
                             Label("Remove from this mix", systemImage: "minus.circle")
@@ -207,8 +232,11 @@ struct QueueView: View {
                     } label: {
                         Image(systemName: "ellipsis")
                             .foregroundStyle(DesignTokens.Color.textSecondary)
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(DesignTokens.Color.surfaceTint))
                             .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
                     }
+                    .menuStyle(.borderlessButton)
                 }
             }
             .padding(.vertical, DesignTokens.Spacing.xxs)
@@ -222,6 +250,30 @@ struct QueueView: View {
                 connector(isImminent: isImminent)
             }
         }
+    }
+
+    /// Real per-track thumbnail, added 2026-08-19 — same 36pt rounded-rect
+    /// tile treatment and flat-icon fallback `PlaylistDetailView.artworkTile`
+    /// already uses, for consistency across every track-list screen.
+    @ViewBuilder
+    private func artworkTile(for row: PlaylistDetailRow) -> some View {
+        Group {
+            if let artwork = row.artwork {
+                Image(uiImage: artwork)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
+                        .fill(DesignTokens.Color.surfaceTint)
+                    Image(systemName: "music.note")
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                }
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall))
     }
 
     /// Same teal/gray convention as Playlist Detail's own track-list

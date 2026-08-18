@@ -388,6 +388,32 @@ struct SourceSelectionHubView: View {
                 }
             }
             .pickerStyle(.segmented)
+
+            crossfadeLengthControl
+        }
+    }
+
+    /// **Added 2026-08-19**, per Andy's direct request — "at Build Mix in
+    /// conjunction with Mode setting." Lives immediately under the mode
+    /// picker rather than elsewhere on the Hub, per that instruction.
+    /// 0...5 extra seconds, by 1 -- added *on top of* each transition's own
+    /// tempo-derived crossfade length (`CrossfadeTiming`), not a
+    /// replacement for it, so a fast song and a slow song still don't get
+    /// an identical blend length. 0 (today's exact behavior) is the
+    /// default; nothing changes for a build unless this is actually moved.
+    private var crossfadeLengthControl: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+            Text("Crossfade length")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(DesignTokens.Color.textSecondary)
+            Stepper(value: $viewModel.extraCrossfadeSec, in: 0...5, step: 1) {
+                Text(
+                    viewModel.extraCrossfadeSec > 0
+                        ? "+\(Int(viewModel.extraCrossfadeSec))s longer blend between songs"
+                        : "Standard blend length"
+                )
+                .foregroundStyle(DesignTokens.Color.textPrimary)
+            }
         }
     }
 
@@ -477,6 +503,7 @@ struct SourceSelectionHubView: View {
                             mode: viewModel.mode,
                             targetSeconds: Double(viewModel.targetMinutes * 60),
                             keepAll: viewModel.includeEverything,
+                            extraCrossfadeSec: viewModel.extraCrossfadeSec,
                             store: store
                         )
                         if let playlist {

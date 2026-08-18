@@ -76,12 +76,19 @@ final class MixBuilder: ObservableObject {
     ///   supported this. Added 2026-08-14, the UI-level half of a gap real
     ///   feedback surfaced: a bounded source (a genre, an artist) had no way
     ///   to be included in full, only trimmed to a target length.
+    /// - Parameter extraCrossfadeSec: **added 2026-08-19**, per Andy's
+    ///   direct request ("can the crossfade be extended... a time setting
+    ///   how long this can be"). Added on top of each transition's own
+    ///   tempo-derived crossfade length (`CrossfadeTiming`), and stored on
+    ///   the resulting `Playlist` row itself so Refresh can reuse the same
+    ///   choice later without asking again. Defaults to 0 (today's exact
+    ///   behavior).
     /// - Returns: the newly-created `Playlist` on success (caller navigates
     ///   to Playlist Detail with it, per the confirmed Navigation Flow —
     ///   Build Mix lands on Playlist Detail, not back on My Mixes), or `nil`
     ///   on failure (`buildError` is set for the caller's alert).
     @discardableResult
-    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool = false, store: PlaylistStore) async -> Playlist? {
+    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool = false, extraCrossfadeSec: Double = 0, store: PlaylistStore) async -> Playlist? {
         guard !isBuilding else { return nil }
         isBuilding = true
         buildError = nil
@@ -89,7 +96,7 @@ final class MixBuilder: ObservableObject {
         defer { isBuilding = false; progressText = "" }
 
         do {
-            let playlist = try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, keepAll: keepAll, store: store)
+            let playlist = try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, keepAll: keepAll, extraCrossfadeSec: extraCrossfadeSec, store: store)
             store.refresh()
             return playlist
         } catch {
@@ -98,7 +105,7 @@ final class MixBuilder: ObservableObject {
         }
     }
 
-    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool, store: PlaylistStore) async throws -> Playlist {
+    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool, extraCrossfadeSec: Double, store: PlaylistStore) async throws -> Playlist {
         // All five confirmed source types (per ADR-7) are resolvable as of
         // 2026-08-16 — `.songs` (individual song picks) was the last
         // holdout, previously filtered out defensively since nothing ever
@@ -145,7 +152,7 @@ final class MixBuilder: ObservableObject {
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
         progressText = "Saving…"
-        return try persist(sequenced: sequenced, sources: selectedSources, mode: mode, db: db)
+        return try persist(sequenced: sequenced, sources: selectedSources, mode: mode, extraCrossfadeSec: extraCrossfadeSec, db: db)
     }
 
     /// Re-runs sequencing for an already-saved playlist against its own
@@ -222,7 +229,7 @@ final class MixBuilder: ObservableObject {
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
         progressText = "Saving…"
-        try replaceTracks(playlistID: playlistID, sequenced: sequenced, db: db)
+        try replaceTracks(playlistID: playlistID, sequenced: sequenced, extraCrossfadeSec: playlist.extraCrossfadeSec, db: db)
     }
 
     /// Deletes the playlist's existing `playlist_tracks` rows (raw SQL,
@@ -230,12 +237,18 @@ final class MixBuilder: ObservableObject {
     /// `PlaylistDetailLoader` already used) and inserts the newly sequenced
     /// ones — the playlist's own row (name/mode/sources/id) is untouched,
     /// only `updated_at` bumps.
-    private func replaceTracks(playlistID: Int64, sequenced: [Track], db: DatabaseManager) throws {
+    ///
+    /// - Parameter extraCrossfadeSec: the playlist's own already-stored
+    ///   `extraCrossfadeSec` (per `Playlist.extraCrossfadeSec`'s own doc
+    ///   comment) — Refresh reuses whatever was chosen at the original
+    ///   Build Mix, the same way it already reuses `mode`, rather than
+    ///   silently resetting to 0.
+    private func replaceTracks(playlistID: Int64, sequenced: [Track], extraCrossfadeSec: Double, db: DatabaseManager) throws {
         try db.dbQueue.write { conn in
             try conn.execute(sql: "DELETE FROM playlist_tracks WHERE playlist_id = ?", arguments: [playlistID])
 
             for (index, track) in sequenced.enumerated() {
-                let timing = CrossfadeTiming.timing(for: track)
+                let timing = CrossfadeTiming.timing(for: track, extraSec: extraCrossfadeSec)
                 var playlistTrack = PlaylistTrack(
                     playlistID: playlistID,
                     trackPersistentID: track.persistentID,
@@ -468,7 +481,7 @@ final class MixBuilder: ObservableObject {
     /// - Returns: the persisted `Playlist`, with a real `id` set from the
     ///   insert — Playlist Detail loads its sources/tracks by that id, so
     ///   the caller needs the row back, not just a success flag.
-    private func persist(sequenced: [Track], sources: [SelectedSource], mode: PlaylistMode, db: DatabaseManager) throws -> Playlist {
+    private func persist(sequenced: [Track], sources: [SelectedSource], mode: PlaylistMode, extraCrossfadeSec: Double, db: DatabaseManager) throws -> Playlist {
         // PlaylistNaming only reads `.sourceLabel` off each element, so a
         // playlistID of 0 here is fine -- these never get persisted, just
         // used to compute the auto-generated name before the real
@@ -479,7 +492,7 @@ final class MixBuilder: ObservableObject {
         let name = PlaylistNaming.title(for: namingSources)
 
         return try db.dbQueue.write { conn in
-            var playlist = Playlist(name: name, mode: mode)
+            var playlist = Playlist(name: name, mode: mode, extraCrossfadeSec: extraCrossfadeSec)
             try playlist.insert(conn)
             guard let playlistID = playlist.id else { return playlist }
 
@@ -501,7 +514,7 @@ final class MixBuilder: ObservableObject {
             }
 
             for (index, track) in sequenced.enumerated() {
-                let timing = CrossfadeTiming.timing(for: track)
+                let timing = CrossfadeTiming.timing(for: track, extraSec: extraCrossfadeSec)
                 var playlistTrack = PlaylistTrack(
                     playlistID: playlistID,
                     trackPersistentID: track.persistentID,
