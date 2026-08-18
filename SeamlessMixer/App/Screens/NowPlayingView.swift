@@ -54,12 +54,20 @@ import MediaPlayer
 /// `PlaybackEngine`'s route-change fix) was made harder to diagnose by this
 /// label never actually reflecting what was connected.
 ///
-/// **Deliberate, flagged simplifications still remaining** — each omission
-/// below is a real, separate follow-up, not an oversight:
-/// - **Static background, not the confirmed dynamic artwork-derived
-///   `MeshGradient`.** That needs Core Image dominant-color extraction from
-///   the now-real artwork plus adaptive light/dark text — a meaningfully
-///   bigger, separate piece of work than just displaying the artwork itself.
+/// **Dynamic, artwork-derived background built 2026-08-18** — real Core
+/// Image color extraction (`ArtworkPaletteExtractor`) feeding a
+/// `MeshGradient` (`Views/NowPlayingBackground.swift`), blended smoothly
+/// into the *next* track's palette exactly in step with the real audio
+/// crossfade (`PlaybackEngine.crossfadeProgress`), plus adaptive light/dark
+/// text and icon colors throughout this screen. See that file's own doc
+/// comment for the full design, including the deliberate teal brand-anchor
+/// that's the explicit differentiator from Apple Music's own version.
+/// Entirely unverified against a real device as of this writing — the
+/// first use of Core Image or `MeshGradient` anywhere in this codebase, so
+/// treat `ArtworkPaletteExtractor.swift` as the highest-risk file in this
+/// slice if colors look wrong or it doesn't compile.
+///
+/// **Deliberate, flagged simplification still remaining:**
 /// - **No favourite star / "..." overflow on this screen.** `PlaylistOverflowSheet`
 ///   is keyed off a real `Playlist`, which this screen was deliberately
 ///   *not* handed (only `rows`/`sourceCaption`, a lighter snapshot) to keep
@@ -80,6 +88,14 @@ struct NowPlayingView: View {
     @State private var dragValue: Double = 0
     @State private var artworkImage: UIImage?
     @State private var showQueue = false
+    /// The dynamic background's two source palettes — see
+    /// `Views/NowPlayingBackground.swift`'s own doc comment for the full
+    /// design. `currentPalette` is extracted alongside `artworkImage`
+    /// (same lifecycle); `nextPalette` is extracted separately since the
+    /// next track's artwork comes from `rows` (already resolved by
+    /// `PlaylistDetailViewModel`), not a fresh query.
+    @State private var currentPalette: (primary: RGBColor, secondary: RGBColor)?
+    @State private var nextPalette: (primary: RGBColor, secondary: RGBColor)?
 
     private var nowPlayingRow: PlaylistDetailRow? {
         rows.first { $0.trackPersistentID == playbackEngine.nowPlayingTrackID }
@@ -119,7 +135,7 @@ struct NowPlayingView: View {
                         // source descriptions (e.g. several combined
                         // sources), with no way to read the rest without
                         // leaving this screen.
-                        MarqueeText(text: sourceCaption)
+                        MarqueeText(text: sourceCaption, color: secondaryTextColor)
                             .padding(.horizontal, DesignTokens.Spacing.lg)
                     }
 
@@ -131,19 +147,19 @@ struct NowPlayingView: View {
                         VStack(spacing: DesignTokens.Spacing.xxs) {
                             Text(row.title)
                                 .font(.title2.weight(.semibold))
-                                .foregroundStyle(DesignTokens.Color.textPrimary)
+                                .foregroundStyle(primaryTextColor)
                                 .multilineTextAlignment(.center)
                                 .lineLimit(2)
                             Text(row.artist)
                                 .font(.body)
-                                .foregroundStyle(DesignTokens.Color.textSecondary)
+                                .foregroundStyle(secondaryTextColor)
                                 .lineLimit(1)
                         }
                         .padding(.horizontal, DesignTokens.Spacing.lg)
                     } else {
                         Text("Nothing playing")
                             .font(.title2.weight(.semibold))
-                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                            .foregroundStyle(secondaryTextColor)
                     }
 
                     progressBar
@@ -164,7 +180,7 @@ struct NowPlayingView: View {
                             nextTrackThumbnail(for: nextRow)
                             Text("Blending into \(nextRow.title)")
                                 .font(.footnote)
-                                .foregroundStyle(DesignTokens.Color.textSecondary)
+                                .foregroundStyle(secondaryTextColor)
                                 .lineLimit(1)
                         }
                     }
@@ -182,15 +198,16 @@ struct NowPlayingView: View {
                     HStack {
                         Label(playbackEngine.outputRouteName, systemImage: "hifispeaker")
                             .font(.caption)
-                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                            .foregroundStyle(secondaryTextColor)
                             .lineLimit(1)
                         Spacer()
                         Button {
                             showQueue = true
                         } label: {
                             Image(systemName: "list.bullet")
-                                .foregroundStyle(DesignTokens.Color.primaryText)
+                                .foregroundStyle(primaryTextColor)
                         }
+                        .buttonStyle(.plain)
                         .disabled(nowPlayingRow == nil)
                     }
                     .padding(.horizontal, DesignTokens.Spacing.lg)
@@ -200,7 +217,12 @@ struct NowPlayingView: View {
                 .frame(minHeight: geo.size.height)
             }
         }
-        .background(DesignTokens.Color.background)
+        .background {
+            // Real dynamic, artwork-derived background, added 2026-08-18 --
+            // replaces the static `DesignTokens.Color.background` fill.
+            // See `Views/NowPlayingBackground.swift`'s own doc comment.
+            NowPlayingBackground(blend: backgroundBlend)
+        }
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: playbackEngine.isPlaying) { _, isPlaying in
             // If playback stops entirely (queue ran out, or an error) while
@@ -217,8 +239,12 @@ struct NowPlayingView: View {
         .onChange(of: playbackEngine.nowPlayingTrackID) { _, trackID in
             loadArtwork(for: trackID)
         }
+        .onChange(of: playbackEngine.nextTrackPersistentID) { _, _ in
+            loadNextPalette()
+        }
         .onAppear {
             loadArtwork(for: playbackEngine.nowPlayingTrackID)
+            loadNextPalette()
         }
         .sheet(isPresented: $showQueue) {
             QueueView(rows: rows)
@@ -285,9 +311,46 @@ struct NowPlayingView: View {
     private func loadArtwork(for trackID: Int64?) {
         guard let trackID else {
             artworkImage = nil
+            currentPalette = nil
             return
         }
-        artworkImage = ArtworkResolver.loadArtwork(forTrackPersistentID: trackID, size: CGSize(width: 260, height: 260))
+        let image = ArtworkResolver.loadArtwork(forTrackPersistentID: trackID, size: CGSize(width: 260, height: 260))
+        artworkImage = image
+        currentPalette = image.flatMap(ArtworkPaletteExtractor.extractPalette(from:))
+    }
+
+    /// Separate from `loadArtwork` -- the next track's artwork comes from
+    /// `rows` (already resolved, thumbnail-sized, by
+    /// `PlaylistDetailViewModel`), not a fresh `ArtworkResolver` query, so
+    /// this only needs to re-run when *which* track is next changes.
+    private func loadNextPalette() {
+        guard let artwork = nextRow?.artwork else {
+            nextPalette = nil
+            return
+        }
+        nextPalette = ArtworkPaletteExtractor.extractPalette(from: artwork)
+    }
+
+    /// The dynamic background's current blend, and the adaptive text/icon
+    /// colors it implies -- see `NowPlayingPalette.blend`'s own doc
+    /// comment. Reads `playbackEngine.crossfadeProgress`/`.isCrossfading`
+    /// directly (both `@Published`), so this recomputes live in step with
+    /// the real audio crossfade, not on a separate approximated timer.
+    private var backgroundBlend: NowPlayingPalette.Blend {
+        NowPlayingPalette.blend(
+            current: currentPalette,
+            next: nextPalette,
+            crossfadeProgress: playbackEngine.crossfadeProgress,
+            isCrossfading: playbackEngine.isCrossfading
+        )
+    }
+
+    private var primaryTextColor: Color {
+        backgroundBlend.isDark ? .white : DesignTokens.Color.textPrimary
+    }
+
+    private var secondaryTextColor: Color {
+        backgroundBlend.isDark ? Color.white.opacity(0.75) : DesignTokens.Color.textSecondary
     }
 
     // MARK: - Progress
@@ -325,7 +388,7 @@ struct NowPlayingView: View {
                 ))
             }
             .font(.caption)
-            .foregroundStyle(DesignTokens.Color.textSecondary)
+            .foregroundStyle(secondaryTextColor)
         }
         .padding(.horizontal, DesignTokens.Spacing.lg)
     }
@@ -361,6 +424,14 @@ struct NowPlayingView: View {
     /// Let's get rid of them... in both screens." `.buttonStyle(.plain)`
     /// removes the chrome without changing tap targets, hit areas, or the
     /// disabled-state dimming these buttons already rely on.
+    /// **Icon colors made adaptive 2026-08-18** (were fixed
+    /// `DesignTokens.Color.primaryText`/`.primary`) — Andy asked directly
+    /// that the transport buttons' colors respond to the new dynamic
+    /// background too, matching the real Apple Music reference screenshots
+    /// he shared (uniformly white icons throughout, no single control kept
+    /// a distinct fixed tint). The teal brand identity lives in the
+    /// background itself now (`NowPlayingPalette`'s always-present anchor
+    /// point), not in singling out the play/pause button's own color.
     private var controls: some View {
         HStack(spacing: DesignTokens.Spacing.xl) {
             Button {
@@ -368,7 +439,7 @@ struct NowPlayingView: View {
             } label: {
                 Image(systemName: "backward.fill")
                     .font(.title2)
-                    .foregroundStyle(DesignTokens.Color.primaryText)
+                    .foregroundStyle(primaryTextColor)
             }
             .buttonStyle(.plain)
             .disabled(nowPlayingRow == nil)
@@ -382,7 +453,7 @@ struct NowPlayingView: View {
             } label: {
                 Image(systemName: playbackEngine.isPaused ? "play.circle.fill" : "pause.circle.fill")
                     .font(.system(size: 56))
-                    .foregroundStyle(DesignTokens.Color.primary)
+                    .foregroundStyle(primaryTextColor)
             }
             .buttonStyle(.plain)
             .disabled(nowPlayingRow == nil)
@@ -392,7 +463,7 @@ struct NowPlayingView: View {
             } label: {
                 Image(systemName: "forward.fill")
                     .font(.title2)
-                    .foregroundStyle(DesignTokens.Color.primaryText)
+                    .foregroundStyle(primaryTextColor)
             }
             .buttonStyle(.plain)
             .disabled(nextRow == nil)

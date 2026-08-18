@@ -228,8 +228,21 @@ final class PlaybackEngine: ObservableObject {
 
     /// A crossfade transition's progress, 0...1, only meaningful while
     /// `isCrossfading` is true.
-    private var isCrossfading = false
-    private var crossfadeProgress: Double = 0
+    ///
+    /// **Both published 2026-08-18** (were plain `private var`) — Now
+    /// Playing's dynamic background needs to blend the current/next
+    /// track's color palettes exactly in step with the real audio
+    /// crossfade, not on an approximate fixed-duration animation triggered
+    /// after the fact. `nowPlayingTrackID` only updates once
+    /// `completeCrossfade()` finishes (see that function's own comment on
+    /// why -- it deliberately still shows the *outgoing* track until a
+    /// blend fully completes), so it can't drive a background transition
+    /// that's supposed to track the blend *while it's happening*.
+    /// `crossfadeProgress` is the same 0...1 value `advanceCrossfade()`
+    /// already drives the volume curve from, so reusing it for the
+    /// background gets the two genuinely synced for free, not just close.
+    @Published private(set) var isCrossfading = false
+    @Published private(set) var crossfadeProgress: Double = 0
     /// Length of the *current* transition's blend window — set for real at
     /// `beginCrossfade()` time from that transition's own
     /// `QueuedTrack.crossfadeDurationSec` (tempo-derived, per the confirmed
