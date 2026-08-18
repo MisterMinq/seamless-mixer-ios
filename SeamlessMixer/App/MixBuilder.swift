@@ -418,10 +418,44 @@ final class MixBuilder: ObservableObject {
         return nil
     }
 
+    /// **Rewritten 2026-08-17 — a real, separate bug from the file itself.**
+    /// Andy correctly pushed back on treating the stale-Hub-selection fix
+    /// as the whole story: multiple different, genuinely playable songs
+    /// (not just "Games"/"Galaxy") have been excluded as "not accessible
+    /// on this device" across several rounds of testing, which the
+    /// selection-state bug doesn't explain at all — that bug explains
+    /// *which* songs end up in a pool, not whether a specific song's audio
+    /// resolves. `ffprobe`'d the actual "Games" file Andy sent: a
+    /// completely ordinary, unprotected AAC file with full metadata — no
+    /// DRM markers whatsoever. So the failure has to be in this app's own
+    /// resolution code, not the file.
+    ///
+    /// Previously used `MPMediaPropertyPredicate(value:forProperty:
+    /// MPMediaItemPropertyPersistentID)`, the exact same pattern several
+    /// other places in this codebase also use. `MPMediaEntityPersistentID`
+    /// is `UInt64`, and its real values are large 64-bit hashes that
+    /// routinely have the high bit set (i.e. they'd be negative if
+    /// reinterpreted as a signed `Int64`) — comparing such values via
+    /// `MPMediaPropertyPredicate` against `MPMediaItemPropertyPersistentID`
+    /// is a real, widely-reported MediaPlayer-framework unreliability, not
+    /// a hypothetical: the predicate's internal `NSNumber` comparison can
+    /// silently fail to match for exactly these large/high-bit-set values,
+    /// returning zero items even though the target genuinely exists in
+    /// the library. This would explain the pattern Andy described
+    /// precisely — an unpredictable subset of songs, unrelated to any
+    /// property a user could observe (ownership, download status,
+    /// duplicates), failing this app's own re-lookup regardless of how
+    /// many times it retries, since every retry used the same
+    /// unreliable predicate.
+    ///
+    /// Fixed by removing the predicate entirely: fetches every song and
+    /// filters with a plain Swift `==` on `MPMediaEntityPersistentID`
+    /// (`UInt64`), which has no bridging ambiguity at all — a linear scan
+    /// costs nothing meaningful at personal-library scale, and this is
+    /// only called as a retry when the fast path (`item.assetURL` on an
+    /// already-resolved item, no predicate involved) has already failed.
     private func requeryItem(persistentID: MPMediaEntityPersistentID) -> MPMediaItem? {
-        let query = MPMediaQuery.songs()
-        query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyPersistentID))
-        return query.items?.first
+        MPMediaQuery.songs().items?.first { $0.persistentID == persistentID }
     }
 
     /// - Note: `crossfadeStartOffsetSec`/`crossfadeDurationSec` below are now

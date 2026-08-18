@@ -152,6 +152,20 @@ struct SourceSelectionHubView: View {
     /// source the same way a category picker's checkbox does, so a song
     /// request can go straight from "search" to "selected" without a
     /// detour through a category screen.
+    ///
+    /// **`buildMixBar` attached here too, 2026-08-17 — a real bug, not a
+    /// missing nicety.** Andy: "you cannot add the songs to build a mix,
+    /// because the arrow at the top goes missing as soon as you start
+    /// typing in the search field... managed to get to the arrow by
+    /// cancelling the search." Root cause: `buildMixBar` was only ever
+    /// attached to `hubContent` (via its own `.safeAreaInset`) — while
+    /// `searchText` was non-empty, `content` showed this view *instead*,
+    /// which had no Build Mix affordance anywhere, not even after
+    /// dismissing the keyboard. Search results select correctly, but
+    /// there was never a way to actually build with them short of
+    /// clearing the search text first (losing the search context) to get
+    /// back to `hubContent`. Now the same sticky bar is reachable directly
+    /// from the search results list too.
     private var searchResultsList: some View {
         List {
             if viewModel.searchResults.isEmpty {
@@ -165,6 +179,7 @@ struct SourceSelectionHubView: View {
             }
         }
         .listStyle(.plain)
+        .safeAreaInset(edge: .bottom) { buildMixBar }
     }
 
     private func searchResultRow(_ result: SourceSelectionViewModel.SearchResult) -> some View {

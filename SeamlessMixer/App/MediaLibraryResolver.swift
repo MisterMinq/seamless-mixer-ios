@@ -56,10 +56,18 @@ enum MediaLibraryResolver {
                 add(matchingPlaylist?.items)
 
             case .songs:
+                // **Fixed 2026-08-17** — was `MPMediaPropertyPredicate
+                // (value:forProperty: MPMediaItemPropertyPersistentID)`,
+                // the same pattern `MixBuilder.requeryItem` had — see that
+                // function's own doc comment for the full reasoning: this
+                // predicate is a real, documented MediaPlayer-framework
+                // unreliability for the large, high-bit-set UInt64 values
+                // `MPMediaEntityPersistentID` actually holds, and it's a
+                // real, non-hypothetical suspect for individually-picked
+                // songs silently failing to resolve. Filtering locally
+                // with a plain Swift `==` has no such ambiguity.
                 guard let persistentID = source.persistentID else { continue }
-                let query = MPMediaQuery.songs()
-                query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyPersistentID))
-                add(query.items)
+                add(MPMediaQuery.songs().items?.filter { $0.persistentID == persistentID })
             }
         }
         return items

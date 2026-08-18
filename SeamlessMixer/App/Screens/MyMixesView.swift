@@ -71,8 +71,28 @@ struct MyMixesView: View {
     /// (`MixRow`'s row-tap push to Playlist Detail stays a plain, opaque
     /// `NavigationLink` — see its own doc comment — since nothing needs to
     /// coordinate around it).
+    ///
+    /// **`.hub` carries a `UUID`, added 2026-08-17 — a real bug, not
+    /// defensive styling.** Andy found that selections made in one "New
+    /// Seamless Mix" session (particularly ones picked via the Hub's
+    /// search results — see `SourceSelectionViewModel.performSearch`)
+    /// silently carried over into a *later, separate* Build Mix session he
+    /// never re-selected: "these songs were also used for the next build
+    /// without me knowing they were still selected." Root cause: `.hub`
+    /// previously had no associated value, so every push of it was
+    /// `Hashable`-equal to every other push. `NavigationStack`'s
+    /// path-based destination matching can treat two equal path values as
+    /// the *same* logical destination rather than a fresh one — a real,
+    /// documented SwiftUI behavior, not a hypothesis — which meant
+    /// `SourceSelectionHubView`'s `@StateObject`s (`viewModel`,
+    /// `mixBuilder`) were never guaranteed to reinitialize on a second
+    /// visit; the same `SourceSelectionViewModel.selectedSources` array
+    /// could persist across what looked, from the UI, like a completely
+    /// new session. A fresh `UUID` per push makes every `.hub` value
+    /// genuinely distinct, forcing a real, fresh destination — and a
+    /// fresh `@StateObject` — every time.
     private enum Destination: Hashable {
-        case hub
+        case hub(UUID)
         case playlist(Playlist)
     }
 
@@ -108,6 +128,10 @@ struct MyMixesView: View {
                     PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage)
                 }
             }
+            // `switch destination` above matches on the case alone (the
+            // associated UUID is irrelevant to which screen to show), so
+            // Swift lets the pattern `case .hub` bind without needing
+            // `case .hub(_):` explicitly.
             .toolbar {
                 // The toolbar "+" was removed 2026-08-14 -- real-device
                 // feedback pointed out it was genuinely redundant with the
@@ -163,7 +187,7 @@ struct MyMixesView: View {
                 .foregroundStyle(DesignTokens.Color.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, DesignTokens.Spacing.xl)
-            NavigationLink(value: Destination.hub) {
+            NavigationLink(value: Destination.hub(UUID())) {
                 Label("New mix", systemImage: "plus")
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                     .padding(.horizontal, DesignTokens.Spacing.lg)
@@ -239,7 +263,7 @@ struct MyMixesView: View {
     private var buildMixBar: some View {
         VStack(spacing: 0) {
             Divider()
-            NavigationLink(value: Destination.hub) {
+            NavigationLink(value: Destination.hub(UUID())) {
                 Label("Build Mix", systemImage: "plus")
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)

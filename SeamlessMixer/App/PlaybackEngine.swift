@@ -528,16 +528,23 @@ final class PlaybackEngine: ObservableObject {
     /// than throwing — surfaces as the same "couldn't find a playable file"
     /// error `playTrackAtCurrentIndex` already handles, not a crash.
     private func resolveFileURL(trackPersistentID: Int64) -> URL? {
-        let query = MPMediaQuery.songs()
+        // **Fixed 2026-08-17** — was `MPMediaPropertyPredicate(value:
+        // forProperty: MPMediaItemPropertyPersistentID)`, the same pattern
+        // `MixBuilder.requeryItem` had — see that function's own doc
+        // comment for the full reasoning: a real, documented MediaPlayer-
+        // framework unreliability for the large, high-bit-set UInt64
+        // values `MPMediaEntityPersistentID` actually holds. Filtering
+        // locally with a plain Swift `==` has no such ambiguity.
         let mediaID = UInt64(bitPattern: trackPersistentID)
-        query.addFilterPredicate(MPMediaPropertyPredicate(value: mediaID, forProperty: MPMediaItemPropertyPersistentID))
-        guard let item = query.items?.first else { return nil }
-        // `assetURL` comes back nil for Apple Music subscription-streamed
-        // (FairPlay-protected) tracks, per the DRM-Exclusion UX — the
-        // Sequencer already filters these out of any pool before a
-        // playlist is even built, so a nil URL here would mean the track's
-        // access status changed since the playlist was built (e.g. a
-        // download was removed), not a bug in this function.
+        guard let item = MPMediaQuery.songs().items?.first(where: { $0.persistentID == mediaID }) else { return nil }
+        // `assetURL` can come back nil here for a track the Sequencer
+        // already filtered out (unavailable when the playlist was built,
+        // or its access status changed since — e.g. a download was
+        // removed), not necessarily a bug in this function. See
+        // `MixBuilder.upsertAndAnalyzeIfNeeded`'s own doc comment for why
+        // this app no longer assumes a nil `assetURL` specifically means
+        // real DRM/subscription streaming — real-device testing found
+        // that assumption wrong for tracks Andy genuinely owns.
         return item.assetURL
     }
 
