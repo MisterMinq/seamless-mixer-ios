@@ -54,34 +54,38 @@ struct AlbumPickerView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .trailing) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
-                        ForEach(filteredSections) { section in
-                            Text(section.letter)
-                                .font(.headline)
-                                .foregroundStyle(DesignTokens.Color.textSecondary)
-                                .id(section.letter)
-                                .padding(.top, DesignTokens.Spacing.sm)
+        // Plain, embedded field, not `.searchable()` -- see
+        // `InlineSearchField`'s own doc comment for why.
+        VStack(spacing: 0) {
+            InlineSearchField(text: $searchText, prompt: "Search albums")
+            ScrollViewReader { proxy in
+                ZStack(alignment: .trailing) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
+                            ForEach(filteredSections) { section in
+                                Text(section.letter)
+                                    .font(.headline)
+                                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                                    .id(section.letter)
+                                    .padding(.top, DesignTokens.Spacing.sm)
 
-                            LazyVGrid(columns: columns, spacing: DesignTokens.Spacing.md) {
-                                ForEach(section.albums) { album in
-                                    cell(for: album)
+                                LazyVGrid(columns: columns, spacing: DesignTokens.Spacing.md) {
+                                    ForEach(section.albums) { album in
+                                        cell(for: album)
+                                    }
                                 }
                             }
                         }
+                        .padding(DesignTokens.Spacing.md)
                     }
-                    .padding(DesignTokens.Spacing.md)
-                }
 
-                if searchText.isEmpty, sections.count > 1 {
-                    indexRail(proxy: proxy)
+                    if searchText.isEmpty, sections.count > 1 {
+                        indexRail(proxy: proxy)
+                    }
                 }
             }
         }
         .background(DesignTokens.Color.background)
-        .searchable(text: $searchText, prompt: "Search albums")
         .navigationTitle("Albums")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadAlbums)

@@ -79,29 +79,33 @@ struct SongPickerView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .trailing) {
-                List {
-                    ForEach(filteredSections) { section in
-                        Section {
-                            ForEach(section.songs) { song in
-                                row(for: song)
+        // Plain, embedded field, not `.searchable()` -- see
+        // `InlineSearchField`'s own doc comment for why.
+        VStack(spacing: 0) {
+            InlineSearchField(text: $searchText, prompt: "Search songs")
+            ScrollViewReader { proxy in
+                ZStack(alignment: .trailing) {
+                    List {
+                        ForEach(filteredSections) { section in
+                            Section {
+                                ForEach(section.songs) { song in
+                                    row(for: song)
+                                }
+                            } header: {
+                                Text(section.letter)
+                                    .id(section.letter)
                             }
-                        } header: {
-                            Text(section.letter)
-                                .id(section.letter)
                         }
                     }
-                }
-                .listStyle(.plain)
+                    .listStyle(.plain)
 
-                if searchText.isEmpty, sections.count > 1 {
-                    indexRail(proxy: proxy)
+                    if searchText.isEmpty, sections.count > 1 {
+                        indexRail(proxy: proxy)
+                    }
                 }
             }
         }
         .background(DesignTokens.Color.background)
-        .searchable(text: $searchText, prompt: "Search songs")
         .navigationTitle("Songs")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadSongs)

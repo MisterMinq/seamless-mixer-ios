@@ -39,11 +39,17 @@ struct GenrePickerView: View {
     }
 
     var body: some View {
-        List(filteredGenres) { genre in
-            row(for: genre)
+        // Plain, embedded field, not `.searchable()` -- see
+        // `InlineSearchField`'s own doc comment for why: `.searchable()`
+        // hides this pushed screen's back button the moment search becomes
+        // active, a real, reported bug (2026-08-18).
+        VStack(spacing: 0) {
+            InlineSearchField(text: $searchText, prompt: "Search genres")
+            List(filteredGenres) { genre in
+                row(for: genre)
+            }
+            .listStyle(.plain)
         }
-        .listStyle(.plain)
-        .searchable(text: $searchText, prompt: "Search genres")
         .navigationTitle("Genres")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadGenres)

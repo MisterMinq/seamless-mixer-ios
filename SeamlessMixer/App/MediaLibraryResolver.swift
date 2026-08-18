@@ -33,9 +33,39 @@ enum MediaLibraryResolver {
                 add(query.items)
 
             case .artist:
-                guard let persistentID = source.persistentID else { continue }
+                // **Fixed 2026-08-18** -- was `MPMediaPropertyPredicate
+                // (value:forProperty: MPMediaItemPropertyArtistPersistentID)`.
+                // Real-device evidence: Andy's Artist picker showed real
+                // artists (Herbie Mann, Abbey Lincoln, Art Blakey & The
+                // Jazz Messengers -- all confirmed present in his library,
+                // one via a real Apple Music screenshot of a compilation
+                // album, "The No. 1 Jazz Album Ever!") as "0 songs," and
+                // selecting that same artist for a build resolved nothing,
+                // while selecting the *album* containing the exact same
+                // track resolved every song correctly, Herbie Mann's
+                // included. That rules out DRM (the album path proves the
+                // file itself is fine) and points at this predicate
+                // specifically -- the same class of large-UInt64-value
+                // comparison unreliability already fixed for direct
+                // persistentID song lookups (see `MixBuilder.requeryItem`'s
+                // own doc comment), now shown to affect
+                // `ArtistPersistentID` filtering too, not just plain
+                // `PersistentID`. Switched to matching by artist *name*
+                // instead -- exactly how `.genre` (below) already resolves,
+                // which has never had this problem, since a plain string
+                // `MPMediaPropertyPredicate` doesn't hit the same
+                // UInt64-comparison path. `.album` deliberately stays
+                // persistentID-based (unlike artist, it's confirmed
+                // working, and Andy separately confirmed his library has
+                // two distinct albums sharing one title -- matching by name
+                // there would wrongly merge them).
+                // `persistentID` itself is no longer used for resolution
+                // (see above) -- still required as a presence check, since
+                // it's what confirms this source came from a real picked
+                // row rather than a malformed one.
+                guard source.persistentID != nil else { continue }
                 let query = MPMediaQuery.songs()
-                query.addFilterPredicate(MPMediaPropertyPredicate(value: persistentID, forProperty: MPMediaItemPropertyArtistPersistentID))
+                query.addFilterPredicate(MPMediaPropertyPredicate(value: source.label, forProperty: MPMediaItemPropertyArtist))
                 add(query.items)
 
             case .album:

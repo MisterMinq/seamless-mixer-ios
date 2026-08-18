@@ -80,29 +80,33 @@ struct ArtistPickerView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .trailing) {
-                List {
-                    ForEach(filteredSections) { section in
-                        Section {
-                            ForEach(section.artists) { artist in
-                                row(for: artist)
+        // Plain, embedded field, not `.searchable()` -- see
+        // `InlineSearchField`'s own doc comment for why.
+        VStack(spacing: 0) {
+            InlineSearchField(text: $searchText, prompt: "Search artists")
+            ScrollViewReader { proxy in
+                ZStack(alignment: .trailing) {
+                    List {
+                        ForEach(filteredSections) { section in
+                            Section {
+                                ForEach(section.artists) { artist in
+                                    row(for: artist)
+                                }
+                            } header: {
+                                Text(section.letter)
+                                    .id(section.letter)
                             }
-                        } header: {
-                            Text(section.letter)
-                                .id(section.letter)
                         }
                     }
-                }
-                .listStyle(.plain)
+                    .listStyle(.plain)
 
-                if searchText.isEmpty, sections.count > 1 {
-                    indexRail(proxy: proxy)
+                    if searchText.isEmpty, sections.count > 1 {
+                        indexRail(proxy: proxy)
+                    }
                 }
             }
         }
         .background(DesignTokens.Color.background)
-        .searchable(text: $searchText, prompt: "Search artists")
         .navigationTitle("Artists")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadArtists)
@@ -243,15 +247,37 @@ struct ArtistPickerView: View {
         .clipShape(Circle())
     }
 
+    /// **`songCount` fixed 2026-08-18, real bug, not a display nicety.**
+    /// Was `collection.items.count` (the `.artists()` grouping's own
+    /// bundled item list) — Andy's real device showed multiple confirmed-
+    /// real artists (Herbie Mann, Abbey Lincoln, Art Blakey & The Jazz
+    /// Messengers) reading "0 songs" despite genuinely having songs in the
+    /// library (one, Herbie Mann, confirmed via a real Apple Music
+    /// screenshot of the exact compilation album his song is on). Whatever
+    /// the underlying cause on Apple's side, `collection.items` clearly
+    /// can't be trusted as the count here. Fixed the same way
+    /// `MediaLibraryResolver`'s `.artist` case was fixed the same
+    /// round: stop relying on the `.artists()` grouping's own bundled data
+    /// entirely, and independently recompute via one flat pass over
+    /// `MPMediaQuery.songs()` grouped by each song's own `artist` name —
+    /// the same "verify independently rather than trust a possibly-stale
+    /// index" pattern already used for the A-Z rail and single-song
+    /// lookups elsewhere this session. One query, one local grouping pass
+    /// (not one query per artist), so this stays cheap even at ~300+
+    /// artists.
     private func loadArtists() {
         let collections = MPMediaQuery.artists().collections ?? []
+        let allSongs = MPMediaQuery.songs().items ?? []
+        let countsByName = Dictionary(grouping: allSongs) { $0.artist ?? "" }
+            .mapValues(\.count)
+
         let rows: [ArtistRow] = collections.compactMap { collection in
             guard let item = collection.representativeItem,
                   let name = item.artist, !name.isEmpty else { return nil }
             return ArtistRow(
                 persistentID: item.artistPersistentID,
                 name: name,
-                songCount: collection.items.count,
+                songCount: countsByName[name] ?? 0,
                 artwork: item.artwork?.image(at: CGSize(width: 80, height: 80))
             )
         }

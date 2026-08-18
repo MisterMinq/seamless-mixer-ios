@@ -141,6 +141,22 @@ struct PlaylistDetailView: View {
         isThisPlaylistLoaded && !playbackEngine.isPaused
     }
 
+    /// **Fixed 2026-08-18, real bug, second attempt at this same column.**
+    /// The 2026-08-14 fix widened this from 20pt to a fixed 26pt
+    /// specifically to stop two-digit numbers ("25") wrapping onto two
+    /// lines — but a fixed constant just moves the same problem to the next
+    /// digit count. Andy's real screenshot showed a 131-track mix with
+    /// three-digit positions ("98," "99," "100"+) rendering as "1…" — the
+    /// same wrap/truncation bug, just one digit later, because 26pt was
+    /// sized for "up to 2 digits," not "however many this playlist actually
+    /// needs." Computed from `viewModel.rows.count` instead of a guessed
+    /// constant, so it's correct for any playlist size going forward
+    /// without needing a third guess at some new fixed number.
+    private var numberColumnWidth: CGFloat {
+        let maxDigits = String(max(viewModel.rows.count, 1)).count
+        return CGFloat(14 + maxDigits * 8)
+    }
+
     init(playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil) {
         self.playlist = playlist
         self.store = store
@@ -468,21 +484,22 @@ struct PlaylistDetailView: View {
                     // "speaker.wave.2.fill" glyph — same reasoning as the
                     // header Play button above.
                     NowPlayingBarsView(color: DesignTokens.Color.primaryText, barWidth: 2.5, maxHeight: 12)
-                        .frame(width: 26, alignment: .trailing)
+                        .frame(width: numberColumnWidth, alignment: .trailing)
                 } else {
                     // `.lineLimit(1)` added 2026-08-14 -- a real bug: with no
                     // line limit, a 20pt-wide frame wasn't always quite wide
                     // enough for two-digit numbers at this font, so SwiftUI
                     // wrapped some of them onto two lines instead of keeping
-                    // them on one ("25" rendering as "2" over "5"). Widened
-                    // this frame to 26pt to match -- both branches must stay
-                    // the same width, or the row content shifts sideways
-                    // depending on whether it's the now-playing row.
+                    // them on one ("25" rendering as "2" over "5"). Width is
+                    // now `numberColumnWidth` (see that property's own doc
+                    // comment) instead of a fixed guess -- both branches
+                    // must stay the same width, or the row content shifts
+                    // sideways depending on whether it's the now-playing row.
                     Text("\(row.position + 1)")
                         .font(.footnote)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .lineLimit(1)
-                        .frame(width: 26, alignment: .trailing)
+                        .frame(width: numberColumnWidth, alignment: .trailing)
                 }
 
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
@@ -517,8 +534,21 @@ struct PlaylistDetailView: View {
                     }
                     .disabled(true)
                 } label: {
+                    // Explicit circular chrome added 2026-08-18 -- matches
+                    // `MyMixesView`'s own ellipsis exactly (same 32pt circle,
+                    // `DesignTokens.Color.surfaceTint`). That earlier fix
+                    // (2026-08-15) assumed a `Menu` with a bare glyph label
+                    // gets this chrome automatically from iOS, and gave
+                    // `MyMixesView`'s plain `Button` hand-coded chrome to
+                    // match what this `Menu` was assumed to already look
+                    // like. Andy's real device showed that assumption was
+                    // wrong -- this "..." is visibly smaller/plainer than My
+                    // Mixes' -- so it now gets the exact same hand-coded
+                    // background instead of relying on `Menu`'s default.
                     Image(systemName: "ellipsis")
                         .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(DesignTokens.Color.surfaceTint))
                         .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
                 }
             }

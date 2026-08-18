@@ -43,16 +43,20 @@ struct PlaylistPickerView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: DesignTokens.Spacing.md) {
-                ForEach(filteredPlaylists) { playlist in
-                    cell(for: playlist)
+        // Plain, embedded field, not `.searchable()` -- see
+        // `InlineSearchField`'s own doc comment for why.
+        VStack(spacing: 0) {
+            InlineSearchField(text: $searchText, prompt: "Search playlists")
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: DesignTokens.Spacing.md) {
+                    ForEach(filteredPlaylists) { playlist in
+                        cell(for: playlist)
+                    }
                 }
+                .padding(DesignTokens.Spacing.md)
             }
-            .padding(DesignTokens.Spacing.md)
         }
         .background(DesignTokens.Color.background)
-        .searchable(text: $searchText, prompt: "Search playlists")
         .navigationTitle("Playlists")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadPlaylists)
