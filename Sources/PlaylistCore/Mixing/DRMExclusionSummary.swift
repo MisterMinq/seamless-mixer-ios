@@ -26,6 +26,24 @@ import Foundation
 /// triggering this exact bucket. The internal name (`drmCount`) is kept for
 /// continuity with that original reasoning, not because every track counted
 /// here is provably DRM-restricted.
+///
+/// **Real root cause found 2026-08-20, by Andy directly, not guessed at.**
+/// A track can appear in `MPMediaQuery`'s results and be fully playable in
+/// Apple's own Music app while genuinely not being present as a local file
+/// on the device at all — iCloud Music Library / Apple Music library sync
+/// can list and stream a song on demand without ever downloading it, and
+/// nothing distinguishes that state from a real subscription-DRM track in
+/// any API available to a third-party app (the same conclusion 0.25.14
+/// already reached trying `isCloudItem` — it can't tell "not downloaded"
+/// apart from "owned and downloaded" either, which is exactly why it was
+/// abandoned as a detection signal there). Andy confirmed this directly:
+/// two tracks ("Games" by Jazmin Ghent, "Galaxy" by Jeff Lorber Fusion)
+/// that were excluded and playable-but-not-downloaded were then
+/// successfully included in a build after he manually downloaded them from
+/// the Music app. This doesn't add a new detection signal (still none
+/// exists) — it changes what the message honestly tells the user to try,
+/// since "not downloaded yet" is now a confirmed, actionable, real-world
+/// cause worth surfacing explicitly, not just a vague "not accessible."
 public struct DRMExclusionSummary: Equatable {
     public let totalCount: Int
     public let includedCount: Int
@@ -64,12 +82,20 @@ public struct DRMExclusionSummary: Equatable {
         guard hasExclusions else { return nil }
         var reasons: [String] = []
         if drmCount > 0 {
-            reasons.append("\(drmCount) not accessible on this device")
+            reasons.append("\(drmCount) haven't been downloaded to this device")
         }
         if analysisFailedCount > 0 {
             reasons.append("\(analysisFailedCount) couldn't be analyzed")
         }
-        return "\(includedCount) of \(totalCount) songs included — \(excludedCount) aren't available for seamless mixing (\(reasons.joined(separator: ", ")))."
+        var text = "\(includedCount) of \(totalCount) songs included — \(excludedCount) aren't available for seamless mixing (\(reasons.joined(separator: ", ")))."
+        if drmCount > 0 {
+            // Actionable, per the 2026-08-20 finding above -- this is the
+            // one concrete thing a user can actually try, unlike the old
+            // "not accessible on this device" wording, which gave no next
+            // step at all.
+            text += " Downloading them in the Music app usually fixes this."
+        }
+        return text
     }
 
     public static func summarize(pool: [Track]) -> DRMExclusionSummary {

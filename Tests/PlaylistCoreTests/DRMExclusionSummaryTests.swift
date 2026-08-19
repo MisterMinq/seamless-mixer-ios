@@ -49,11 +49,13 @@ final class DRMExclusionSummaryTests: XCTestCase {
         XCTAssertNil(summary.message)
     }
 
-    /// **Wording changed 2026-08-17** — see `DRMExclusionSummary.message`'s
-    /// own doc comment: this bucket no longer names a subscription, since
-    /// real-device testing proved this app has no reliable way to confirm
-    /// that's actually the cause for a given track.
-    func testDRMOnlyExclusionMentionsNotAccessibleNotAnalysisFailure() throws {
+    /// **Wording changed 2026-08-20** — see `DRMExclusionSummary.message`'s
+    /// own doc comment: Andy found and confirmed the real, actionable cause
+    /// (a track can be listed/playable without being downloaded to the
+    /// device), so this bucket's message now says that directly, with a
+    /// concrete next step, instead of the vaguer "not accessible on this
+    /// device" wording from 2026-08-17.
+    func testDRMOnlyExclusionMentionsNotDownloadedNotAnalysisFailure() throws {
         var pool = (0..<4).map { _ in makeTrack(analyzed: true, hasRawAudioAccess: true) }
         pool.append(makeTrack(analyzed: false, hasRawAudioAccess: false)) // no raw audio access: never gets analyzed either
         let summary = DRMExclusionSummary.summarize(pool: pool)
@@ -61,12 +63,13 @@ final class DRMExclusionSummaryTests: XCTestCase {
         XCTAssertEqual(summary.drmCount, 1)
         XCTAssertEqual(summary.analysisFailedCount, 0)
         let message = try XCTUnwrap(summary.message)
-        XCTAssertTrue(message.contains("not accessible on this device"))
+        XCTAssertTrue(message.contains("haven't been downloaded to this device"))
+        XCTAssertTrue(message.contains("Downloading them in the Music app"))
         XCTAssertFalse(message.contains("Apple Music subscription"))
         XCTAssertFalse(message.contains("couldn't be analyzed"))
     }
 
-    func testAnalysisFailureOnlyExclusionMentionsAnalysisNotAccessDenial() throws {
+    func testAnalysisFailureOnlyExclusionMentionsAnalysisNotDownloadStatus() throws {
         var pool = (0..<4).map { _ in makeTrack(analyzed: true, hasRawAudioAccess: true) }
         pool.append(makeTrack(analyzed: false, hasRawAudioAccess: true)) // has audio access, but decode/analysis failed
         let summary = DRMExclusionSummary.summarize(pool: pool)
@@ -75,7 +78,8 @@ final class DRMExclusionSummaryTests: XCTestCase {
         XCTAssertEqual(summary.analysisFailedCount, 1)
         let message = try XCTUnwrap(summary.message)
         XCTAssertTrue(message.contains("couldn't be analyzed"))
-        XCTAssertFalse(message.contains("not accessible on this device"))
+        XCTAssertFalse(message.contains("haven't been downloaded"))
+        XCTAssertFalse(message.contains("Downloading them in the Music app"))
     }
 
     func testMixedExclusionReasonsAreBothReportedSeparately() throws {
@@ -88,7 +92,7 @@ final class DRMExclusionSummaryTests: XCTestCase {
         XCTAssertEqual(summary.drmCount, 1)
         XCTAssertEqual(summary.analysisFailedCount, 1)
         let message = try XCTUnwrap(summary.message)
-        XCTAssertTrue(message.contains("not accessible on this device"))
+        XCTAssertTrue(message.contains("haven't been downloaded to this device"))
         XCTAssertTrue(message.contains("couldn't be analyzed"))
         XCTAssertTrue(message.hasPrefix("1 of 3 songs included"))
     }
@@ -102,6 +106,9 @@ final class DRMExclusionSummaryTests: XCTestCase {
         // throws `.allExcluded` and never surfaces `message` in that case) --
         // still verify `message` itself stays well-formed rather than nil or
         // a "0 of 3" that reads like a bug.
-        XCTAssertEqual(summary.message, "0 of 3 songs included — 3 aren't available for seamless mixing (3 not accessible on this device).")
+        XCTAssertEqual(
+            summary.message,
+            "0 of 3 songs included — 3 aren't available for seamless mixing (3 haven't been downloaded to this device). Downloading them in the Music app usually fixes this."
+        )
     }
 }
