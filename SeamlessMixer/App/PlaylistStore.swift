@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import PlaylistCore
+import UIKit
 
 /// Thin, observable wrapper around `DatabaseManager` for SwiftUI views —
 /// the first real (non-test) caller of the data layer. Opens the app's
@@ -11,6 +12,18 @@ import PlaylistCore
 final class PlaylistStore: ObservableObject {
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var loadError: String?
+
+    /// **Added 2026-08-20** — up to 4 distinct-album collage images per
+    /// playlist (per Andy's direct request to reuse Playlist Detail's new
+    /// collage as My Mixes' own row thumbnails), keyed by `Playlist.id`.
+    /// Loaded in one batch across *every* playlist, not one query per row
+    /// — `ArtworkResolver.loadArtwork` does a full-library `MPMediaQuery`
+    /// scan internally, and doing that once per row on this, the app's
+    /// root screen, would scale badly with playlist count. Missing from
+    /// this dictionary (not yet loaded, or a playlist with no resolvable
+    /// artwork) is treated as "no collage" by callers, same as an empty
+    /// array.
+    @Published private(set) var collagesByPlaylistID: [Int64: [UIImage]] = [:]
 
     /// Internal (not private) so `MixBuilder` — the "Build Mix" pipeline —
     /// can read/write tracks and playlists directly rather than every
@@ -43,6 +56,48 @@ final class PlaylistStore: ObservableObject {
             }.sorted { $0.createdAt > $1.createdAt }
         } catch {
             loadError = "Couldn't load playlists: \(error.localizedDescription)"
+        }
+        loadCollages()
+    }
+
+    /// See `collagesByPlaylistID`'s own doc comment for why this batches
+    /// across every playlist in one pass. Best-effort: a failure here
+    /// leaves collages showing as the flat placeholder (via the empty-array
+    /// fallback already built into `CollageArtworkView`'s callers) rather
+    /// than surfacing a `loadError` — a missing thumbnail isn't worth
+    /// blocking the whole screen's data over, unlike a failure to load the
+    /// playlists themselves.
+    private func loadCollages() {
+        guard let db else { return }
+        do {
+            var trackIDsByPlaylist: [Int64: [Int64]] = [:]
+            var allTrackIDs: [Int64] = []
+            for playlist in playlists {
+                guard let id = playlist.id else { continue }
+                let detail = try db.loadPlaylistDetail(playlistID: id)
+                let ids = detail.tracks.map(\.track.persistentID)
+                trackIDsByPlaylist[id] = ids
+                allTrackIDs.append(contentsOf: ids)
+            }
+
+            // One combined resolution pass across every playlist's tracks
+            // -- not one `ArtworkResolver` call per playlist -- so this
+            // does a single full-library `MPMediaQuery` scan regardless of
+            // how many mixes exist.
+            let artworkByTrack = ArtworkResolver.loadArtwork(
+                forTrackPersistentIDs: allTrackIDs, size: CGSize(width: 110, height: 110)
+            )
+
+            var result: [Int64: [UIImage]] = [:]
+            for (playlistID, trackIDs) in trackIDsByPlaylist {
+                let artworkInOrder = trackIDs.map { artworkByTrack[$0] }
+                result[playlistID] = ArtworkResolver.distinctAlbumImages(from: artworkInOrder, limit: 4)
+            }
+            collagesByPlaylistID = result
+        } catch {
+            // Best-effort, per this function's own doc comment -- leave
+            // whatever collages were already loaded (or none) rather than
+            // clearing them out on a transient failure.
         }
     }
 

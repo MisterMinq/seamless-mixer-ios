@@ -136,6 +136,15 @@ final class SourceSelectionViewModel: ObservableObject {
     /// `refreshPreviewSongCount`) or while nothing is selected.
     @Published private(set) var previewSongCount: Int?
 
+    /// **Added 2026-08-20**, per Andy's direct request — "you are planning
+    /// an event for e.g. maybe 65 minutes and want to select an amount of
+    /// songs to fit that event in advance... a way of adding more value to
+    /// the SelectionHubView screen." Computed in the same pass as
+    /// `previewSongCount` (same resolved item list, no second query) by
+    /// summing each resolved item's own `playbackDuration`. `nil` under
+    /// the exact same conditions as `previewSongCount`.
+    @Published private(set) var previewTotalMinutes: Int?
+
     var hasSelection: Bool { useWholeLibrary || !selectedSources.isEmpty }
 
     func selectedCount(for type: SourceType) -> Int {
@@ -170,9 +179,13 @@ final class SourceSelectionViewModel: ObservableObject {
     private func refreshPreviewSongCount() {
         guard !useWholeLibrary, !selectedSources.isEmpty else {
             previewSongCount = nil
+            previewTotalMinutes = nil
             return
         }
-        previewSongCount = MediaLibraryResolver.resolveItems(for: selectedSources).count
+        let items = MediaLibraryResolver.resolveItems(for: selectedSources)
+        previewSongCount = items.count
+        let totalSeconds = items.reduce(0.0) { $0 + $1.playbackDuration }
+        previewTotalMinutes = Int((totalSeconds / 60).rounded())
     }
 
     func requestAccessAndLoadCounts() {

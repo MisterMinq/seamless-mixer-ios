@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import PlaylistCore
 
 /// The app's root screen — no tab bar, per CLAUDE.md's "Library / My Mixes"
@@ -227,7 +228,7 @@ struct MyMixesView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: DesignTokens.Spacing.sm) {
                             ForEach(favorites) { playlist in
-                                FavoriteCard(playlist: playlist)
+                                FavoriteCard(playlist: playlist, store: store)
                             }
                         }
                         .padding(.vertical, DesignTokens.Spacing.xxs)
@@ -344,24 +345,22 @@ private struct MixRow: View {
         playbackEngine.isPlaying && !playbackEngine.isPaused && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
     }
 
+    /// **Added 2026-08-20** — up to 4 distinct-album images for this row's
+    /// thumbnail, per Andy's request to reuse Playlist Detail's new
+    /// collage here too. Reads from `PlaylistStore`'s batch-loaded
+    /// dictionary (see its own doc comment for why this isn't a per-row
+    /// query) rather than resolving anything itself.
+    private var collageImages: [UIImage] {
+        guard let id = playlist.id else { return [] }
+        return store.collagesByPlaylistID[id] ?? []
+    }
+
     var body: some View {
         NavigationLink {
             PlaylistDetailView(playlist: playlist, store: store)
         } label: {
             HStack(spacing: DesignTokens.Spacing.sm) {
-                RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
-                    .fill(DesignTokens.Color.surfaceTint)
-                    .frame(width: 56, height: 56)
-                    .overlay(
-                        Group {
-                            if isPlaying {
-                                NowPlayingBarsView(color: DesignTokens.Color.primaryText, maxHeight: 18)
-                            } else {
-                                Image(systemName: "music.note.list")
-                                    .foregroundStyle(DesignTokens.Color.primaryText)
-                            }
-                        }
-                    )
+                artworkTile
 
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                     Text(playlist.name)
@@ -412,20 +411,73 @@ private struct MixRow: View {
             PlaylistOverflowSheet(playlist: playlist, store: store)
         }
     }
+
+    /// **Added 2026-08-20.** Andy asked for the collage to replace this
+    /// row's flat placeholder, but also flagged a real design question
+    /// directly: once a real thumbnail is there, how does "this mix is
+    /// playing" stay visible without just hiding the artwork behind the
+    /// bars indicator the way the flat-icon version did? His own two
+    /// suggestions were to swap the thumbnail out for the bars while
+    /// playing, or show the bars *on* the thumbnail in a visible color —
+    /// he explicitly left the final call to "whichever process is
+    /// best." This does the latter: the collage stays visible underneath
+    /// a darkening scrim (so the row keeps its identity at a glance even
+    /// while playing, unlike swapping it out), with the bars rendered in
+    /// white on top -- guaranteed visible regardless of the collage's own
+    /// colors, rather than risking `DesignTokens.Color.primaryText`
+    /// blending into a similarly-dark album cover.
+    private var artworkTile: some View {
+        ZStack {
+            if collageImages.isEmpty {
+                RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
+                    .fill(DesignTokens.Color.surfaceTint)
+                Image(systemName: "music.note.list")
+                    .foregroundStyle(DesignTokens.Color.primaryText)
+            } else {
+                CollageArtworkView(images: collageImages)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork))
+            }
+
+            if isPlaying {
+                RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
+                    .fill(Color.black.opacity(0.35))
+                NowPlayingBarsView(color: .white, maxHeight: 18)
+            }
+        }
+        .frame(width: 56, height: 56)
+    }
 }
 
 private struct FavoriteCard: View {
     let playlist: Playlist
+    let store: PlaylistStore
+
+    /// Same collage lookup `MixRow` uses -- see `PlaylistStore
+    /// .collagesByPlaylistID`'s own doc comment. No now-playing overlay
+    /// here (unlike `MixRow`) -- this card never tracked playback state to
+    /// begin with, and Andy's request was specifically about the main
+    /// list's thumbnails, not this row.
+    private var collageImages: [UIImage] {
+        guard let id = playlist.id else { return [] }
+        return store.collagesByPlaylistID[id] ?? []
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
-            RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
-                .fill(DesignTokens.Color.surfaceTint)
-                .frame(width: 120, height: 120)
-                .overlay(
-                    Image(systemName: "music.note.list")
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                )
+            Group {
+                if collageImages.isEmpty {
+                    RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
+                        .fill(DesignTokens.Color.surfaceTint)
+                        .overlay(
+                            Image(systemName: "music.note.list")
+                                .foregroundStyle(DesignTokens.Color.primaryText)
+                        )
+                } else {
+                    CollageArtworkView(images: collageImages)
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork))
+                }
+            }
+            .frame(width: 120, height: 120)
             Text(playlist.name)
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(DesignTokens.Color.textPrimary)

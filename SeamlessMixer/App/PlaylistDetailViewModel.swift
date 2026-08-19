@@ -36,6 +36,15 @@ final class PlaylistDetailViewModel: ObservableObject {
     @Published private(set) var footerText: String = ""
     @Published private(set) var isLoading = true
 
+    /// **Added 2026-08-20** — up to 4 distinct-album images for the
+    /// auto-generated collage header, per Andy's direct request. A
+    /// computed property, not separately loaded/cached state: `rows`
+    /// already carries each track's own resolved artwork, so this is just
+    /// a cheap re-scan of already-in-memory data, not a new query.
+    var collageImages: [UIImage] {
+        ArtworkResolver.distinctAlbumImages(from: rows.map(\.artwork), limit: 4)
+    }
+
     /// Local SQLite reads through GRDB are fast enough that this runs
     /// synchronously on the main actor, same pattern `PlaylistStore.refresh()`
     /// already uses — no need for a detached `Task` the way `MixBuilder`'s

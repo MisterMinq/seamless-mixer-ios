@@ -369,15 +369,30 @@ struct PlaylistDetailView: View {
     /// padding instead of inheriting it from a shared container.
     private var header: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
-            RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
-                .fill(DesignTokens.Color.surfaceTint)
-                .frame(maxWidth: .infinity)
-                .frame(height: 220)
-                .overlay(
-                    Image(systemName: "music.note.list")
-                        .font(.system(size: DesignTokens.Size.iconLarge))
-                        .foregroundStyle(DesignTokens.Color.primaryText)
-                )
+            // **Real collage artwork, added 2026-08-20** -- was a flat
+            // placeholder (a single "music.note.list" icon on a tinted
+            // square) the whole time; per Andy's direct request and the
+            // confirmed design's own "auto-generated collage artwork"
+            // note, up to 4 distinct albums from this mix's own tracks
+            // now tile a real 2x2 grid instead. Falls back to the same
+            // flat placeholder only if no track artwork resolved at all
+            // (e.g. an empty or not-yet-loaded playlist).
+            Group {
+                if viewModel.collageImages.isEmpty {
+                    RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork)
+                        .fill(DesignTokens.Color.surfaceTint)
+                        .overlay(
+                            Image(systemName: "music.note.list")
+                                .font(.system(size: DesignTokens.Size.iconLarge))
+                                .foregroundStyle(DesignTokens.Color.primaryText)
+                        )
+                } else {
+                    CollageArtworkView(images: viewModel.collageImages)
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusArtwork))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 220)
 
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                 Text(displayName)

@@ -110,21 +110,29 @@ struct SourceSelectionHubView: View {
         }
     }
 
+    /// **Fixed 2026-08-20 — was `.searchable()`, the exact same real bug
+    /// already found and fixed for the five category pickers (see
+    /// `InlineSearchField`'s own doc comment for the full mechanism):
+    /// `.searchable()` hands the nav bar to `UISearchController` the
+    /// moment the field becomes active, hiding the back button.** Andy hit
+    /// this here too: "Search field is still down below on the screen,
+    /// making it impossible to get back to previous screen like before.
+    /// Should be placed at the top for consistency." The category pickers
+    /// were fixed for this same reason back in Testing (38); the Hub's own
+    /// global search field was overlooked at the time since it's a
+    /// different call site. Replaced with the same `InlineSearchField`,
+    /// pinned above *both* `hubContent` and `searchResultsList` (not
+    /// duplicated inside each) so it stays visible and at the top
+    /// regardless of which one is showing below it.
     private var content: some View {
-        Group {
+        VStack(spacing: 0) {
+            InlineSearchField(text: $viewModel.searchText, prompt: "Search songs, artists, albums...")
             if viewModel.searchText.isEmpty {
                 hubContent
             } else {
                 searchResultsList
             }
         }
-        // Hub-level global search, per the confirmed design (see
-        // `SourceSelectionViewModel.performSearch`'s own doc comment) —
-        // built 2026-08-15, real-device feedback from an actual event
-        // ("someone had a song request... made it easier to find").
-        // Standard `.searchable()` keyboard already includes the system
-        // dictation mic for free -- no separate voice-search UI needed.
-        .searchable(text: $viewModel.searchText, prompt: "Search songs, artists, albums...")
         .onChange(of: viewModel.searchText) { _, _ in viewModel.performSearch() }
     }
 
@@ -493,6 +501,15 @@ struct SourceSelectionHubView: View {
                         Text("\(previewSongCount) song\(previewSongCount == 1 ? "" : "s") found")
                             .font(.caption2)
                             .foregroundStyle(DesignTokens.Color.textSecondary)
+                        // Total minutes, added 2026-08-20 per Andy's direct
+                        // request -- planning an event around a target
+                        // length (e.g. "65 minutes") needs a sense of scope
+                        // before Build Mix even runs, not just a song count.
+                        if let previewTotalMinutes = viewModel.previewTotalMinutes {
+                            Text("~\(previewTotalMinutes) min")
+                                .font(.caption2)
+                                .foregroundStyle(DesignTokens.Color.textSecondary)
+                        }
                     }
                 }
                 Spacer()
