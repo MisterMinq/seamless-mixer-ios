@@ -98,8 +98,35 @@ enum MediaLibraryResolver {
                 // with a plain Swift `==` has no such ambiguity.
                 guard let persistentID = source.persistentID else { continue }
                 add(MPMediaQuery.songs().items?.filter { $0.persistentID == persistentID })
+
+            case .wholeLibrary:
+                // A fresh Build Mix never constructs a `.wholeLibrary`-typed
+                // `SelectedSource` here -- the Hub keeps "whole library" as
+                // its own `useWholeLibrary` boolean and `MixBuilder
+                // .performBuild` calls `allSongs()` directly, with its own
+                // extra unanalyzed-count safety check (see that function's
+                // own doc comment). This case *is* reached for real,
+                // though: `MixBuilder.selectedSource(from:)` reconstructs a
+                // `.wholeLibrary` source from a saved `PlaylistSource` row
+                // when Refreshing an already-built whole-library playlist,
+                // and that path resolves through here.
+                add(allSongs())
             }
         }
         return items
+    }
+
+    /// **Added 2026-08-20** — every song in the library, with no filter at
+    /// all. Used by `LibraryScanner` (the first-run scan) and, once a scan
+    /// has run at least once, `MixBuilder`'s own "Use your whole library"
+    /// path — see both types' own doc comments. Deliberately its own
+    /// function rather than folded into `resolveItems(for:)`: "whole
+    /// library" was never modeled as a `SelectedSource` (per that
+    /// function's own doc comment, unchanged by this addition), and a raw
+    /// `MPMediaQuery.songs()` result is already unique per item, so none of
+    /// `resolveItems`'s de-duplication-across-multiple-sources machinery
+    /// applies here.
+    static func allSongs() -> [MPMediaItem] {
+        MPMediaQuery.songs().items ?? []
     }
 }

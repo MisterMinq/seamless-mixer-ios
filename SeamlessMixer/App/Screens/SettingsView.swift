@@ -21,13 +21,21 @@ import SwiftUI
 /// Displayed as "V{short version}.{build}" (e.g. "V1.0.27"), matching the
 /// exact format Andy used when asking for this.
 ///
-/// Everything else a real Settings screen would eventually hold (first-run
-/// scan status, DRM-exclusion overrides, background-scan progress — all
-/// still-deferred per CLAUDE.md) is out of scope for this slice on purpose;
-/// this exists to answer one specific, recurring question, not to become
-/// the full screen in one pass.
+/// **Extended 2026-08-20 with a "Library" section** — the real entry point
+/// for `LibraryScanView` (the first-run/whole-library scan, per the
+/// confirmed "First-Run Library Analysis — UX" design), reachable
+/// explicitly rather than triggered automatically on first launch, which
+/// stays separate, deferred work. Needed `store: PlaylistStore` threaded
+/// in for the first time — the version-only slice never touched the
+/// database, so this screen's `init` previously took no parameters at all.
+///
+/// Everything else a real Settings screen would eventually hold
+/// (DRM-exclusion overrides, a bug-fix changelog per version) is still out
+/// of scope for this slice on purpose.
 struct SettingsView: View {
+    @ObservedObject var store: PlaylistStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showLibraryScan = false
 
     private var versionString: String {
         let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -49,6 +57,24 @@ struct SettingsView: View {
                 } footer: {
                     Text("This is the exact build/version number shown in TestFlight — useful for confirming which build you're testing against.")
                 }
+
+                Section {
+                    Button {
+                        showLibraryScan = true
+                    } label: {
+                        HStack {
+                            Text(LibraryScanner.hasCompletedAnyScan ? "Re-scan your library" : "Scan your library")
+                                .foregroundStyle(DesignTokens.Color.textPrimary)
+                            Spacer()
+                            if LibraryScanner.hasCompletedAnyScan {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(DesignTokens.Color.success)
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Analyzes every song's tempo, key, and energy so a \"Use your whole library\" mix can be built without a long wait. Only needs to run once — you can leave and come back to finish later.")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -57,10 +83,13 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .sheet(isPresented: $showLibraryScan) {
+                LibraryScanView(store: store)
+            }
         }
     }
 }
 
 #Preview {
-    SettingsView()
+    SettingsView(store: PlaylistStore())
 }

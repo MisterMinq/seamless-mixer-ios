@@ -152,7 +152,7 @@ struct MyMixesView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView()
+                SettingsView(store: store)
             }
         }
     }

@@ -220,6 +220,12 @@ struct SourceSelectionHubView: View {
         case .artist: return "person.wave.2"
         case .album: return "square.stack"
         case .songs: return "music.note"
+        // Never actually shown here -- the Hub's global search only
+        // surfaces song/artist/album/genre/playlist matches (per the
+        // confirmed design, "Whole library" is a standalone pinned row,
+        // not a search-result type) -- but needed for this switch to stay
+        // exhaustive now that `.wholeLibrary` is a real `SourceType` case.
+        case .wholeLibrary: return "books.vertical"
         }
     }
 
@@ -230,6 +236,7 @@ struct SourceSelectionHubView: View {
         case .artist: return "Artist"
         case .album: return "Album"
         case .songs: return "Song"
+        case .wholeLibrary: return "Library"
         }
     }
 
@@ -521,6 +528,7 @@ struct SourceSelectionHubView: View {
                             targetSeconds: Double(viewModel.targetMinutes * 60),
                             keepAll: viewModel.includeEverything,
                             extraCrossfadeSec: viewModel.extraCrossfadeSec,
+                            useWholeLibrary: viewModel.useWholeLibrary,
                             store: store
                         )
                         if let playlist {

@@ -8,18 +8,32 @@ import PlaylistCore
 /// (for anything not already analyzed) -> `Sequencer` -> persistence via
 /// `DatabaseManager`.
 ///
-/// **Resolves all five per-source selection types now (genre, playlist,
-/// artist, album, songs) — still deliberately excludes "whole library."** Andy's
-/// real library likely runs to hundreds/thousands of tracks (the Source
-/// Selection design notes reference "hundreds of artists" alone).
-/// Inline-analyzing that much real audio synchronously the first time this
-/// code path ever runs would repeat the exact mistake this project already
-/// learned to avoid — Rule 6's sandbox RAM ceiling, and the
-/// deliberately-8-track-not-whole-library real-audio validation set. A
-/// single genre/artist/album/playlist is a naturally bounded pool the same
-/// way genre-only was, so extending resolution to all four carries the same
-/// risk profile that already shipped; "whole library" specifically still
-/// needs the proper background-scan UX (First-Run Library Analysis) first.
+/// **Resolves all five per-source selection types (genre, playlist, artist,
+/// album, songs), plus "whole library" as of 2026-08-20.** Andy's own
+/// insight, correctly pointing at real reuse (though "whole library" itself
+/// had never actually been wired up before this): the per-track "resolve,
+/// analyze if needed, save" loop below is the exact same mechanism
+/// `LibraryScanner` (the first-run scan) runs — see that type's own doc
+/// comment — just over a bounded source here instead of the whole library.
+///
+/// **Still has a real safety valve, though, not an unconditional green
+/// light.** Andy's real library likely runs to hundreds/thousands of tracks
+/// (the Source Selection design notes reference "hundreds of artists"
+/// alone) — inline-analyzing all of that synchronously the *first* time
+/// "whole library" is used, with nothing analyzed yet, would repeat the
+/// exact mistake this project already learned to avoid (Rule 6's sandbox
+/// RAM ceiling, the deliberately-8-track-not-whole-library real-audio
+/// validation set), and this slice has no true background continuation yet
+/// (`LibraryScanner` is foreground-only for now — see its own doc comment).
+/// So `performBuild` checks how many of the whole library's tracks are
+/// still unanalyzed before committing to an inline analyze loop; a small
+/// gap (the common case once `LibraryScanner` has run at least once) still
+/// analyzes inline exactly like any other source, but a large gap throws
+/// `BuildError.needsLibraryScanFirst` instead of silently grinding through
+/// a long, unstoppable foreground wait — directly implementing item 5 of
+/// the confirmed "First-Run Library Analysis — UX" design ("a large gap...
+/// should prompt to finish the bulk scan first rather than silently
+/// stalling on a huge inline wait").
 ///
 /// Entirely unverified against real data — this environment has no media
 /// library and Codemagic's Simulator build has none either, same category
@@ -32,11 +46,17 @@ final class MixBuilder: ObservableObject {
         case emptyPool
         case allExcluded
         case databaseUnavailable
+        /// **Added 2026-08-20**, alongside "whole library" finally getting
+        /// wired up — see `wholeLibraryInlineAnalyzeThreshold`'s own doc
+        /// comment for what "too many" means and why.
+        case needsLibraryScanFirst(unanalyzedCount: Int)
 
         var errorDescription: String? {
             switch self {
             case .noSupportedSources:
-                return "\"Use your whole library\" isn't wired up yet — pick one or more playlists, genres, artists, albums, or songs instead."
+                return "Pick one or more playlists, genres, artists, albums, or songs to build a mix from."
+            case .needsLibraryScanFirst(let unanalyzedCount):
+                return "Your whole library hasn't been analyzed yet — \(unanalyzedCount) songs still need it, which would take a while to do right now. Run \"Scan your library\" in Settings first, then try building a whole-library mix again."
             case .emptyPool:
                 return "None of the selected songs could be used for a seamless mix."
             case .allExcluded:
@@ -85,12 +105,18 @@ final class MixBuilder: ObservableObject {
     ///   the resulting `Playlist` row itself so Refresh can reuse the same
     ///   choice later without asking again. Defaults to 0 (today's exact
     ///   behavior).
+    /// - Parameter useWholeLibrary: **added 2026-08-20.** When true,
+    ///   `selectedSources` is ignored and the pool is every song in the
+    ///   library (`MediaLibraryResolver.allSongs()`) — see this file's own
+    ///   top-of-file doc comment for the safety valve that keeps this from
+    ///   turning into an unstoppable foreground wait on a never-scanned
+    ///   library.
     /// - Returns: the newly-created `Playlist` on success (caller navigates
     ///   to Playlist Detail with it, per the confirmed Navigation Flow —
     ///   Build Mix lands on Playlist Detail, not back on My Mixes), or `nil`
     ///   on failure (`buildError` is set for the caller's alert).
     @discardableResult
-    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool = false, extraCrossfadeSec: Double = 0, store: PlaylistStore) async -> Playlist? {
+    func build(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool = false, extraCrossfadeSec: Double = 0, useWholeLibrary: Bool = false, store: PlaylistStore) async -> Playlist? {
         guard !isBuilding else { return nil }
         isBuilding = true
         buildError = nil
@@ -98,7 +124,7 @@ final class MixBuilder: ObservableObject {
         defer { isBuilding = false; progressText = "" }
 
         do {
-            let playlist = try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, keepAll: keepAll, extraCrossfadeSec: extraCrossfadeSec, store: store)
+            let playlist = try await performBuild(selectedSources: selectedSources, mode: mode, targetSeconds: targetSeconds, keepAll: keepAll, extraCrossfadeSec: extraCrossfadeSec, useWholeLibrary: useWholeLibrary, store: store)
             store.refresh()
             return playlist
         } catch {
@@ -107,29 +133,46 @@ final class MixBuilder: ObservableObject {
         }
     }
 
-    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool, extraCrossfadeSec: Double, store: PlaylistStore) async throws -> Playlist {
+    /// A never-scanned library's whole-song pool is treated as "too many to
+    /// analyze inline" past this many still-unanalyzed tracks — chosen as a
+    /// round number comfortably inside what a single-genre/artist/album
+    /// Build Mix already does inline today without complaint, not tuned
+    /// against a real measurement. Revisit if it turns out to feel wrong in
+    /// either direction once Andy can actually test this against his real
+    /// library.
+    private let wholeLibraryInlineAnalyzeThreshold = 30
+
+    private func performBuild(selectedSources: [SelectedSource], mode: PlaylistMode, targetSeconds: Double, keepAll: Bool, extraCrossfadeSec: Double, useWholeLibrary: Bool, store: PlaylistStore) async throws -> Playlist {
         // All five confirmed source types (per ADR-7) are resolvable as of
         // 2026-08-16 — `.songs` (individual song picks) was the last
         // holdout, previously filtered out defensively since nothing ever
         // produced a `.songs`-typed `SelectedSource`. `SongPickerView` now
-        // does, so no filtering happens here anymore. "Whole library" itself
-        // is still the one genuinely unsupported case — it was never
-        // modeled as a `SelectedSource` at all (it's the separate
-        // `useWholeLibrary` toggle), so there's nothing to filter here for
-        // it; `hasSelection`/the Hub's own UI already keep Build Mix
-        // disabled or erroring for that case upstream of this function.
-        guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
+        // does, so no filtering happens here anymore. "Whole library" is
+        // handled entirely separately below, as of 2026-08-20 — it was
+        // never modeled as a `SelectedSource` (it's the separate
+        // `useWholeLibrary` toggle), so this guard only covers the
+        // per-source path.
+        guard !selectedSources.isEmpty || useWholeLibrary else { throw BuildError.noSupportedSources }
 
         guard let db = store.db else { throw BuildError.databaseUnavailable }
 
         progressText = "Finding songs…"
-        let items = MediaLibraryResolver.resolveItems(for: selectedSources)
+        let items: [MPMediaItem]
+        if useWholeLibrary {
+            items = MediaLibraryResolver.allSongs()
+            let unanalyzedCount = try await countUnanalyzed(items: items, db: db)
+            if unanalyzedCount > wholeLibraryInlineAnalyzeThreshold {
+                throw BuildError.needsLibraryScanFirst(unanalyzedCount: unanalyzedCount)
+            }
+        } else {
+            items = MediaLibraryResolver.resolveItems(for: selectedSources)
+        }
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
         var pool: [Track] = []
         for (index, item) in items.enumerated() {
             progressText = "Analyzing \(index + 1) of \(items.count)…"
-            let track = try await upsertAndAnalyzeIfNeeded(item: item, db: db)
+            let track = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
             pool.append(track)
         }
 
@@ -153,8 +196,20 @@ final class MixBuilder: ObservableObject {
         let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: sequencingMode(for: mode), keepAll: keepAll)
         guard !sequenced.isEmpty else { throw BuildError.emptyPool }
 
+        // A whole-library build has no per-source `SelectedSource`s to name
+        // itself from or persist for a later Refresh (per this file's own
+        // `useWholeLibrary` doc comment, it was never modeled as one) — so
+        // it gets exactly one synthetic source here, matching the "Whole
+        // Library" label `.wholeLibrary`'s own doc comment expects. This is
+        // what makes `PlaylistNaming.title(for:)` produce "Whole Library
+        // Seamless Mix" (its normal 1-source case) and what `Refresh` later
+        // reconstructs via `selectedSource(from:)`.
+        let effectiveSources = useWholeLibrary
+            ? [SelectedSource(id: "wholeLibrary", type: .wholeLibrary, label: "Whole Library")]
+            : selectedSources
+
         progressText = "Saving…"
-        return try persist(sequenced: sequenced, sources: selectedSources, mode: mode, extraCrossfadeSec: extraCrossfadeSec, db: db)
+        return try persist(sequenced: sequenced, sources: effectiveSources, mode: mode, extraCrossfadeSec: extraCrossfadeSec, db: db)
     }
 
     /// Re-runs sequencing for an already-saved playlist against its own
@@ -206,9 +261,12 @@ final class MixBuilder: ObservableObject {
 
         // See `selectedSource(from:)` for how each stored `PlaylistSource`
         // row gets turned back into a resolvable `SelectedSource` -- a
-        // playlist built (or last refreshed) before "whole library" existed
-        // as a concept has no `PlaylistSource` rows for it either way, so
-        // there's nothing special to exclude here.
+        // playlist built before "whole library" existed as a concept
+        // (2026-08-20) has no `.wholeLibrary` row to reconstruct, so this
+        // is naturally still just its real per-source picks. A playlist
+        // built *after* that has exactly one synthetic `.wholeLibrary`
+        // source (see `performBuild`'s own comment), which resolves back
+        // to the whole library here too, below.
         let selectedSources = detail.sources.compactMap(selectedSource(from:))
         guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
 
@@ -216,10 +274,22 @@ final class MixBuilder: ObservableObject {
         let items = MediaLibraryResolver.resolveItems(for: selectedSources)
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
+        // Same safety valve as `performBuild`'s whole-library path -- a
+        // Refresh reconstructs and re-resolves the exact same way a fresh
+        // build would, so it can hit the exact same "the library has grown
+        // by a lot since this was last built/refreshed" case, just less
+        // often in practice.
+        if selectedSources.contains(where: { $0.type == .wholeLibrary }) {
+            let unanalyzedCount = try await countUnanalyzed(items: items, db: db)
+            if unanalyzedCount > wholeLibraryInlineAnalyzeThreshold {
+                throw BuildError.needsLibraryScanFirst(unanalyzedCount: unanalyzedCount)
+            }
+        }
+
         var pool: [Track] = []
         for (index, item) in items.enumerated() {
             progressText = "Analyzing \(index + 1) of \(items.count)…"
-            let track = try await upsertAndAnalyzeIfNeeded(item: item, db: db)
+            let track = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
             pool.append(track)
         }
 
@@ -232,6 +302,24 @@ final class MixBuilder: ObservableObject {
 
         progressText = "Saving…"
         try replaceTracks(playlistID: playlistID, sequenced: sequenced, extraCrossfadeSec: playlist.extraCrossfadeSec, db: db)
+    }
+
+    /// **Added 2026-08-20**, alongside "whole library" — counts how many
+    /// of `items` don't already have an analyzed `tracks` row, without
+    /// running any analysis itself. `Track.fetchAll(_:keys:)` (a standard
+    /// GRDB multi-key convenience, the plural counterpart to `Track
+    /// .fetchOne(_:key:)` already used in `TrackAnalysisCoordinator`) reads
+    /// every matching row in one query rather than one lookup per item.
+    /// Items with no row at all (never seen before) count as unanalyzed
+    /// too, same as `TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded`'s
+    /// own `existing?.isAnalyzed` check.
+    private func countUnanalyzed(items: [MPMediaItem], db: DatabaseManager) async throws -> Int {
+        let ids = items.map { Int64(bitPattern: $0.persistentID) }
+        let existingByID: [Int64: Track] = try await db.dbQueue.read { conn in
+            let rows = try Track.fetchAll(conn, keys: ids)
+            return Dictionary(uniqueKeysWithValues: rows.map { ($0.persistentID, $0) })
+        }
+        return ids.filter { existingByID[$0]?.isAnalyzed != true }.count
     }
 
     /// Deletes the playlist's existing `playlist_tracks` rows (raw SQL,
@@ -320,157 +408,13 @@ final class MixBuilder: ObservableObject {
                 id: "\(playlistSource.sourceType.rawValue):\(persistentID)", type: playlistSource.sourceType,
                 label: playlistSource.sourceLabel, persistentID: persistentID
             )
+        case .wholeLibrary:
+            // Added 2026-08-20 alongside the case itself -- no persistentID
+            // to parse (there was never one to store, see `SourceType
+            // .wholeLibrary`'s own doc comment), so this just reconstructs
+            // the same synthetic source `performBuild` created originally.
+            return SelectedSource(id: "wholeLibrary", type: .wholeLibrary, label: playlistSource.sourceLabel)
         }
-    }
-
-    /// Reuses an already-analyzed `tracks` row if one exists; otherwise
-    /// inserts/updates one, running `TrackAnalyzer` for tracks with usable
-    /// raw audio access. The actual decode+analyze work is real CPU-bound
-    /// work (seconds per track, per `RealAudioValidationTests`' own timing)
-    /// so it runs off the main actor via `Task.detached`, keeping
-    /// `progressText` updates responsive between tracks.
-    private func upsertAndAnalyzeIfNeeded(item: MPMediaItem, db: DatabaseManager) async throws -> Track {
-        let persistentID = Int64(bitPattern: item.persistentID)
-
-        // GRDB resolves `dbQueue.read`/`.write` to their async overloads
-        // inside this `async` function (vs. the sync overloads `persist`
-        // uses below, since that function isn't `async`) -- both need an
-        // explicit `await`, not just `try`.
-        let existing: Track? = try await db.dbQueue.read { conn in
-            try Track.fetchOne(conn, key: persistentID)
-        }
-        if let existing, existing.isAnalyzed {
-            return existing
-        }
-
-        let resolvedURL = await resolveAudioAccess(for: item)
-        let hasAccess = resolvedURL != nil
-        var track = existing ?? Track(
-            persistentID: persistentID,
-            title: item.title ?? "Unknown",
-            artist: item.artist ?? "Unknown",
-            album: item.albumTitle ?? "Unknown",
-            genre: item.genre ?? "Unknown",
-            durationSec: item.playbackDuration,
-            hasRawAudioAccess: hasAccess
-        )
-        track.hasRawAudioAccess = hasAccess
-
-        if hasAccess, let url = resolvedURL {
-            do {
-                let features = try await Task.detached(priority: .userInitiated) {
-                    try TrackAnalyzer.analyze(fileAt: url)
-                }.value
-                track.bpm = features.bpm
-                track.musicalKey = features.camelotCode
-                track.energy = features.energy
-                track.brightness = features.brightness
-                track.playableStartSec = features.playableStartSec
-                track.playableDurationSec = features.playableDurationSec
-                track.analyzedAt = Date()
-            } catch {
-                // Leave unanalyzed -- Sequencer's own isAnalyzed filter
-                // silently excludes it later, the same "set aside, don't
-                // block" behavior as DRM-Exclusion UX, just triggered by a
-                // decode failure instead of a DRM check.
-            }
-        }
-
-        // `track` is captured as an immutable `let` copy here rather than
-        // the closure capturing the outer `var` directly -- GRDB's async
-        // `write` runs its closure in a concurrent context, and capturing a
-        // mutable var across that boundary is a Swift 6 language-mode
-        // error (already flagged as a warning under Swift 5), not just a
-        // style preference.
-        let finalTrack = track
-        try await db.dbQueue.write { conn in
-            try finalTrack.save(conn)
-        }
-        return finalTrack
-    }
-
-    /// **Added 2026-08-17, revised the same day.** Andy owns every track on
-    /// his phone outright (no Apple Music subscription at all, told
-    /// directly, more than once) — yet the DRM-exclusion message kept
-    /// telling him real songs were "streamed through your Apple Music
-    /// subscription" (10 of 11, then 12 of 16, then still the same message
-    /// on a fresh 16-song test after the first attempt at this fix). The
-    /// original code trusted a single, un-retried `item.assetURL != nil`
-    /// read as proof of real FairPlay DRM — genuinely unsafe, since
-    /// `assetURL` is documented as unreliable for a plain local, owned file
-    /// (e.g. a transient `nil` right when a bulk `MPMediaQuery` result is
-    /// read). The retries below fix that part.
-    ///
-    /// **The first attempt at this fix also tried to use `item.isCloudItem`
-    /// as a second signal** — the idea being that only a track iOS itself
-    /// flags as a "cloud item" would be treated as real DRM, with a
-    /// stubborn local nil reported as a harmless analysis failure instead.
-    /// Andy's own real-device evidence disproved that: the exclusion
-    /// message was still showing the identical "streamed through your
-    /// Apple Music subscription" wording after that fix shipped, meaning
-    /// `isCloudItem` is *also* true for tracks he genuinely owns and has
-    /// fully downloaded — a well-documented Apple quirk where a purchased
-    /// or catalog-matched track can carry that flag despite being real,
-    /// local, playable audio. There is no reliable API available to a
-    /// third-party app that can actually distinguish "real, FairPlay-locked
-    /// subscription stream" from "a local file iOS happens to flag this
-    /// way" — so this app no longer tries to guess. `hasRawAudioAccess`
-    /// is back to meaning exactly one thing: "did a real, playable URL
-    /// resolve, after retrying." The *reason* it didn't is no longer
-    /// claimed anywhere in the UI — see `DRMExclusionSummary.message`'s own
-    /// doc comment for the resulting copy change.
-    private func resolveAudioAccess(for item: MPMediaItem) async -> URL? {
-        if let url = item.assetURL {
-            return url
-        }
-        if let refetched = requeryItem(persistentID: item.persistentID), let url = refetched.assetURL {
-            return url
-        }
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        if let refetched = requeryItem(persistentID: item.persistentID), let url = refetched.assetURL {
-            return url
-        }
-        return nil
-    }
-
-    /// **Rewritten 2026-08-17 — a real, separate bug from the file itself.**
-    /// Andy correctly pushed back on treating the stale-Hub-selection fix
-    /// as the whole story: multiple different, genuinely playable songs
-    /// (not just "Games"/"Galaxy") have been excluded as "not accessible
-    /// on this device" across several rounds of testing, which the
-    /// selection-state bug doesn't explain at all — that bug explains
-    /// *which* songs end up in a pool, not whether a specific song's audio
-    /// resolves. `ffprobe`'d the actual "Games" file Andy sent: a
-    /// completely ordinary, unprotected AAC file with full metadata — no
-    /// DRM markers whatsoever. So the failure has to be in this app's own
-    /// resolution code, not the file.
-    ///
-    /// Previously used `MPMediaPropertyPredicate(value:forProperty:
-    /// MPMediaItemPropertyPersistentID)`, the exact same pattern several
-    /// other places in this codebase also use. `MPMediaEntityPersistentID`
-    /// is `UInt64`, and its real values are large 64-bit hashes that
-    /// routinely have the high bit set (i.e. they'd be negative if
-    /// reinterpreted as a signed `Int64`) — comparing such values via
-    /// `MPMediaPropertyPredicate` against `MPMediaItemPropertyPersistentID`
-    /// is a real, widely-reported MediaPlayer-framework unreliability, not
-    /// a hypothetical: the predicate's internal `NSNumber` comparison can
-    /// silently fail to match for exactly these large/high-bit-set values,
-    /// returning zero items even though the target genuinely exists in
-    /// the library. This would explain the pattern Andy described
-    /// precisely — an unpredictable subset of songs, unrelated to any
-    /// property a user could observe (ownership, download status,
-    /// duplicates), failing this app's own re-lookup regardless of how
-    /// many times it retries, since every retry used the same
-    /// unreliable predicate.
-    ///
-    /// Fixed by removing the predicate entirely: fetches every song and
-    /// filters with a plain Swift `==` on `MPMediaEntityPersistentID`
-    /// (`UInt64`), which has no bridging ambiguity at all — a linear scan
-    /// costs nothing meaningful at personal-library scale, and this is
-    /// only called as a retry when the fast path (`item.assetURL` on an
-    /// already-resolved item, no predicate involved) has already failed.
-    private func requeryItem(persistentID: MPMediaEntityPersistentID) -> MPMediaItem? {
-        MPMediaQuery.songs().items?.first { $0.persistentID == persistentID }
     }
 
     /// - Note: `crossfadeStartOffsetSec`/`crossfadeDurationSec` below are now

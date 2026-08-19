@@ -12,6 +12,20 @@ public enum SourceType: String, Codable, CaseIterable, Hashable, DatabaseValueCo
     case genre
     case artist
     case album
+    /// **Added 2026-08-20** — "Use your whole library," previously modeled
+    /// only as `SourceSelectionViewModel.useWholeLibrary`, a boolean never
+    /// persisted anywhere (per every other case's own doc comments, which
+    /// used to say "whole library... was never modeled as a `SelectedSource`
+    /// at all"). Getting a real `Playlist` built from it, and later
+    /// refreshed, needs a real stored source to reconstruct from — this is
+    /// that. `sourceValue` carries no persistentID (there's nothing to
+    /// look up; `MediaLibraryResolver.allSongs()` takes no filter), so it
+    /// just mirrors `sourceLabel` ("Whole Library"), same as `.genre`'s
+    /// name-is-the-key convention. Raw value deliberately `"library"`, not
+    /// `"wholeLibrary"` — `PlaylistNaming.subtitle`'s `.rawValue.capitalized`
+    /// only capitalizes the first letter, so a camelCase raw value would
+    /// have rendered as the awkward "Wholelibrary" in a real subtitle.
+    case wholeLibrary = "library"
 }
 
 public struct PlaylistSource: Codable, Equatable, Identifiable {
