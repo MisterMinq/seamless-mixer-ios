@@ -304,22 +304,40 @@ final class MixBuilder: ObservableObject {
         try replaceTracks(playlistID: playlistID, sequenced: sequenced, extraCrossfadeSec: playlist.extraCrossfadeSec, db: db)
     }
 
-    /// **Added 2026-08-20**, alongside "whole library" — counts how many
-    /// of `items` don't already have an analyzed `tracks` row, without
-    /// running any analysis itself. `Track.fetchAll(_:keys:)` (a standard
-    /// GRDB multi-key convenience, the plural counterpart to `Track
-    /// .fetchOne(_:key:)` already used in `TrackAnalysisCoordinator`) reads
-    /// every matching row in one query rather than one lookup per item.
-    /// Items with no row at all (never seen before) count as unanalyzed
-    /// too, same as `TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded`'s
-    /// own `existing?.isAnalyzed` check.
+    /// **Added 2026-08-20, fixed the same day — a real bug, not a tuning
+    /// issue.** Andy ran a full library scan (2,732 of 2,732 reported
+    /// analyzed, confirmed twice), then immediately hit `.needsLibraryScanFirst`
+    /// on a whole-library Build Mix anyway ("33 songs still need it").
+    /// Root cause: `Track.isAnalyzed` requires real analysis data (bpm/
+    /// key/energy/brightness/playable bounds), which a track with no raw
+    /// audio access (per `DRMExclusionSummary`'s own doc comment — not
+    /// downloaded to the device, or genuinely DRM-restricted) can *never*
+    /// get, no matter how many times a scan runs — `TrackAnalysisCoordinator
+    /// .upsertAndAnalyzeIfNeeded` skips analysis entirely when
+    /// `hasRawAudioAccess` is false. The original version of this function
+    /// counted such a track as "still needs scanning" exactly the same as
+    /// a track that just hadn't been reached yet -- so any library with
+    /// more than `wholeLibraryInlineAnalyzeThreshold` permanently-
+    /// unanalyzable tracks (not downloaded/DRM) would fail this check
+    /// forever, scan or no scan. Fixed: a track already known (has a
+    /// `tracks` row) to have no raw audio access no longer counts here at
+    /// all -- it's not "needs scanning," it's "will be silently excluded
+    /// from the pool," which `DRMExclusionSummary` already handles
+    /// correctly once the build actually runs. Only tracks genuinely never
+    /// seen before, or seen with real audio access but still missing
+    /// analysis data (e.g. a transient decode failure worth retrying),
+    /// count toward the threshold now.
     private func countUnanalyzed(items: [MPMediaItem], db: DatabaseManager) async throws -> Int {
         let ids = items.map { Int64(bitPattern: $0.persistentID) }
         let existingByID: [Int64: Track] = try await db.dbQueue.read { conn in
             let rows = try Track.fetchAll(conn, keys: ids)
             return Dictionary(uniqueKeysWithValues: rows.map { ($0.persistentID, $0) })
         }
-        return ids.filter { existingByID[$0]?.isAnalyzed != true }.count
+        return ids.filter { id in
+            guard let existing = existingByID[id] else { return true }
+            if existing.isAnalyzed { return false }
+            return existing.hasRawAudioAccess
+        }.count
     }
 
     /// Deletes the playlist's existing `playlist_tracks` rows (raw SQL,

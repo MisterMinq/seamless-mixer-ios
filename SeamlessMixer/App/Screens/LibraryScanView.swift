@@ -109,10 +109,17 @@ struct LibraryScanView: View {
                     .lineLimit(1)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
             }
-            // Per the DRM-Exclusion UX section's 2026-08-20 revision --
-            // the real, confirmed reason some songs get skipped here isn't
-            // subscription DRM, it's simply not being downloaded yet.
-            Text("Some songs in your library aren't downloaded to this device yet — these can't be processed for blending and will be skipped. Downloading them in the Music app usually fixes this.")
+            // **Reworded 2026-08-20** -- Andy correctly objected to the
+            // original wording ("Some songs in your library aren't
+            // downloaded...") stating this as an established fact about
+            // his library before the scan had even found anything —
+            // "How do you know that?" Right call: this should be
+            // preventive guidance shown regardless of outcome, not a claim
+            // the app can't back up yet. The actual, factual count (how
+            // many really weren't accessible) now shows on the completion
+            // screen instead, once it's genuinely known — see
+            // `completionView` below.
+            Text("For a complete scan, make sure the songs in your library are downloaded to this device first — a song only available through Apple Music streaming (not downloaded) can't be analyzed and will be skipped.")
                 .font(.caption)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -137,9 +144,23 @@ struct LibraryScanView: View {
             Text("Library ready")
                 .font(.title2.bold())
                 .foregroundStyle(DesignTokens.Color.textPrimary)
-            Text("\(scanner.analyzedCount) songs analyzed. You can now build a mix from your whole library.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(DesignTokens.Color.textSecondary)
+            // **Reworded 2026-08-20** -- the completion message previously
+            // just said "N songs analyzed," which folded in songs that
+            // were only *processed*, not successfully analyzed (see
+            // `LibraryScanner.notDownloadedCount`'s own doc comment). Now
+            // reports both numbers honestly, matching the DRM-Exclusion
+            // UX's "quiet, factual line" principle -- this is also the
+            // real, factual version of the during-scan reminder above,
+            // shown once it's actually known rather than assumed.
+            if scanner.notDownloadedCount > 0 {
+                Text("\(scanner.analyzedCount - scanner.notDownloadedCount) of \(scanner.analyzedCount) songs analyzed — \(scanner.notDownloadedCount) aren't downloaded to this device and were skipped. You can now build a mix from your whole library.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+            } else {
+                Text("\(scanner.analyzedCount) songs analyzed. You can now build a mix from your whole library.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+            }
             Spacer()
             Button {
                 dismiss()

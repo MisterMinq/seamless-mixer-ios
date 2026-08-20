@@ -35,10 +35,22 @@ import PlaylistCore
 @MainActor
 final class LibraryScanner: ObservableObject {
     @Published private(set) var isScanning = false
+    /// Count of songs *processed* so far (drives the progress bar), not
+    /// necessarily count *successfully analyzed* -- see `notDownloadedCount`.
     @Published private(set) var analyzedCount = 0
     @Published private(set) var totalCount = 0
     @Published private(set) var currentTrackTitle: String?
     @Published var scanError: String?
+    /// **Added 2026-08-20**, after Andy found a real, related bug (see
+    /// `MixBuilder.countUnanalyzed`'s own doc comment): a song without raw
+    /// audio access (not downloaded / DRM-restricted) can never actually be
+    /// analyzed, no matter how many times a scan runs. Before this,
+    /// `analyzedCount` alone claimed "N songs analyzed" on completion even
+    /// though some of those N were only ever *processed*, not truly
+    /// analyzed -- honest, but not the whole story. Tracked separately here
+    /// so `LibraryScanView`'s completion screen can report both numbers
+    /// instead of a single count that quietly included failures.
+    @Published private(set) var notDownloadedCount = 0
 
     /// Persisted across launches via `UserDefaults` — deliberately simple
     /// (a single date, not a real analytics/state system), since this
@@ -65,17 +77,22 @@ final class LibraryScanner: ObservableObject {
         let items = MediaLibraryResolver.allSongs()
         totalCount = items.count
         analyzedCount = 0
+        notDownloadedCount = 0
 
         for item in items {
             currentTrackTitle = item.title ?? item.albumTitle ?? "Unknown"
             do {
-                _ = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
+                let track = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
+                if !track.hasRawAudioAccess {
+                    notDownloadedCount += 1
+                }
             } catch {
-                // Either an analysis failure -- already handled silently
-                // inside `upsertAndAnalyzeIfNeeded`, which never throws for
-                // that case -- or a rarer database read/write failure. In
-                // both cases: leave this one and move on rather than
-                // aborting the whole scan over a single bad track.
+                // A rarer database read/write failure -- a plain analysis
+                // failure never throws here, it's handled silently inside
+                // `upsertAndAnalyzeIfNeeded` and reflected in the track's
+                // own `hasRawAudioAccess`/`isAnalyzed` state instead. Leave
+                // this one and move on rather than aborting the whole scan
+                // over a single bad track.
                 scanError = "Some songs couldn't be analyzed and were skipped. You can try again later."
             }
             analyzedCount += 1

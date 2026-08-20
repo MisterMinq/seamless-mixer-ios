@@ -61,7 +61,12 @@ struct SeamlessMixerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MyMixesView(store: store)
+            // **Changed 2026-08-20/21** — was `MyMixesView(store: store)`
+            // directly. Now routes through `RootView`, which shows the
+            // mandatory first-run scan (`WelcomeScanView`) on a fresh
+            // install and `MyMixesView` on every launch after — see
+            // `RootView`'s own doc comment.
+            RootView(store: store)
                 .environmentObject(playbackEngine)
                 .preferredColorScheme(.light)
         }
