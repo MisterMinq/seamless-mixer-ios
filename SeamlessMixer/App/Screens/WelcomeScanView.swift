@@ -38,7 +38,13 @@ struct WelcomeScanView: View {
         VStack(spacing: DesignTokens.Spacing.lg) {
             Spacer()
 
-            Text("Welcome to Seamless DJ. An App for creating seamless playlist mixes!")
+            // **Fixed 2026-08-21** -- the heading previously stayed
+            // "Welcome to Seamless DJ..." in the completion state too,
+            // which is exactly why the finished screen read as "another
+            // Welcome screen" rather than a distinct step -- a real,
+            // separate complaint from the auth bug that produced the
+            // confusing near-instant transition in the first place.
+            Text(didFinish ? "Library ready" : "Welcome to Seamless DJ. An App for creating seamless playlist mixes!")
                 .font(.title2.bold())
                 .multilineTextAlignment(.center)
                 .foregroundStyle(DesignTokens.Color.textPrimary)
@@ -46,7 +52,7 @@ struct WelcomeScanView: View {
             if didFinish {
                 completionBody
             } else {
-                Text("We have to scan you whole library to index all songs in order to build a fast mix. This scan only happens once and may take time. Please note that if some songs are not found, it could be they are Apple Music subscribed songs or songs not downloaded to this device.")
+                Text("We have to scan your whole library to index all songs in order to build a fast mix. This scan only happens once and may take time. Please note that if some songs are not found, it could be they are Apple Music subscribed songs or songs not downloaded to this device.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
 
@@ -59,6 +65,18 @@ struct WelcomeScanView: View {
                         .lineLimit(1)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                 }
+
+                // **Added 2026-08-21**, alongside the authorization fix --
+                // a genuine failure (access denied, or a rarer per-track
+                // issue) now shows here and the button resets to "Scan
+                // Library" for a retry, instead of silently proceeding to
+                // a false "0 songs analyzed, you're ready" completion.
+                if let scanError = scanner.scanError {
+                    Text(scanError)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(DesignTokens.Color.error)
+                }
             }
 
             Spacer()
@@ -68,7 +86,11 @@ struct WelcomeScanView: View {
                     didStart = true
                     Task {
                         await scanner.scan(store: store)
-                        didFinish = true
+                        if scanner.scanError == nil {
+                            didFinish = true
+                        } else {
+                            didStart = false
+                        }
                     }
                 } label: {
                     Text(scanButtonLabel)

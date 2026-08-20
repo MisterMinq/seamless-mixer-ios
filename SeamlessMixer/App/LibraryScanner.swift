@@ -68,11 +68,34 @@ final class LibraryScanner: ObservableObject {
     /// tracks are skipped near-instantly, so re-entering this after a
     /// partial/interrupted run (the app was backgrounded, the screen was
     /// left) just picks up the remainder.
+    ///
+    /// **Fixed 2026-08-21 — a real bug, found via a fresh delete/reinstall.**
+    /// This never explicitly requested `MPMediaLibrary` authorization —
+    /// `SourceSelectionViewModel.requestAccessAndLoadCounts()` was the only
+    /// place in the whole app that ever did, called from the Source
+    /// Selection Hub's own `.onAppear`. That was invisible until
+    /// `WelcomeScanView` made this scanner the very first thing to touch
+    /// `MediaPlayer` on a genuinely fresh install: on `.notDetermined`
+    /// authorization, `MPMediaQuery.songs().items` silently returns nothing
+    /// — no prompt, no error — so the scan "completed" having processed
+    /// zero songs, and (worse) still marked itself done via
+    /// `completedKey` below, permanently hiding the real gap until a
+    /// manual Settings re-scan (reached only after the Hub had already
+    /// requested and gotten real access) papered over it. Fixed by
+    /// explicitly requesting authorization first, same as the Hub already
+    /// does, and by not marking the scan complete at all if that fails —
+    /// `scanError` is set instead, so the caller can show a real retry
+    /// state rather than a false "0 songs analyzed, you're ready" success.
     func scan(store: PlaylistStore) async {
         guard !isScanning, let db = store.db else { return }
         isScanning = true
         scanError = nil
         defer { isScanning = false; currentTrackTitle = nil }
+
+        guard await ensureAuthorized() else {
+            scanError = "Seamless DJ needs access to your music library. Grant access in Settings > Privacy & Security > Media & Apple Music, then try again."
+            return
+        }
 
         let items = MediaLibraryResolver.allSongs()
         totalCount = items.count
@@ -99,5 +122,26 @@ final class LibraryScanner: ObservableObject {
         }
 
         UserDefaults.standard.set(Date(), forKey: Self.completedKey)
+    }
+
+    /// Bridges `MPMediaLibrary`'s completion-handler-based
+    /// `requestAuthorization` into `async`/`await`, matching this
+    /// codebase's structured-concurrency style elsewhere. `.authorized`
+    /// returns immediately; `.notDetermined` triggers iOS's real system
+    /// permission dialog and waits for the answer; `.denied`/`.restricted`
+    /// fail immediately with no dialog (nothing to wait for).
+    private func ensureAuthorized() async -> Bool {
+        switch MPMediaLibrary.authorizationStatus() {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                MPMediaLibrary.requestAuthorization { status in
+                    continuation.resume(returning: status == .authorized)
+                }
+            }
+        default:
+            return false
+        }
     }
 }

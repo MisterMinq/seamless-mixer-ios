@@ -76,12 +76,26 @@ struct LibraryScanView: View {
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(DesignTokens.Color.textSecondary)
+            // **Added 2026-08-21**, alongside `LibraryScanner`'s
+            // authorization fix -- a genuine failure (access denied) now
+            // shows here rather than the flow silently proceeding to
+            // `completionView`'s "N songs analyzed" with N stuck at 0.
+            if let scanError = scanner.scanError {
+                Text(scanError)
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(DesignTokens.Color.error)
+            }
             Spacer()
             Button {
                 didStart = true
                 Task {
                     await scanner.scan(store: store)
-                    didFinish = true
+                    if scanner.scanError == nil {
+                        didFinish = true
+                    } else {
+                        didStart = false
+                    }
                 }
             } label: {
                 Text("Start analyzing")
