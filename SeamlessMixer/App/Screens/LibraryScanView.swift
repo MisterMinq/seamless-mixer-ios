@@ -2,30 +2,35 @@ import SwiftUI
 
 /// First real screen for the confirmed "First-Run Library Analysis" UX
 /// (CLAUDE.md) — reached from `SettingsView`'s new "Scan your library" row,
-/// not automatically on first launch (that trigger is separate, deferred
-/// follow-up work, same as true background continuation — see
-/// `LibraryScanner`'s own doc comment for the full slice-1 scope).
+/// not automatically on first launch (that trigger is `RootView`'s job on
+/// a fresh install, via `WelcomeScanView` instead).
 ///
 /// Three states, matching the confirmed design almost exactly: an
 /// explanation screen with one "Start analyzing" button, a progress screen
 /// ("N of M analyzed" + bar + current track), and a low-key completion
-/// banner. **One deliberate departure from the confirmed copy**: the
-/// progress screen doesn't say "you can close the app or lock your phone —
-/// this keeps going in the background," since that's true background
-/// continuation (`BGContinuedProcessingTask`/`BGProcessingTask`), which
-/// this slice doesn't implement — saying so anyway would repeat the exact
-/// "don't pretend it works" mistake Rule 3 exists to prevent. Says the
-/// honest version instead: stay on this screen while it runs.
+/// banner. **Copy note, still accurate as of 2026-08-21**: the progress
+/// screen still doesn't literally say "you can close the app or lock your
+/// phone" — real background continuation exists now (`scanner.startScan(store:)`,
+/// see `LibraryScanner`'s own doc comment), but it's genuinely conditional
+/// (iOS 26+ gets it reliably; below that, `BGProcessingTask` finishes
+/// unattended on the system's own opportunistic schedule, not guaranteed
+/// to be either immediate or continuous). "Stay on this screen while it
+/// runs" remains the honest baseline claim regardless of which tier
+/// actually applies on a given device.
 struct LibraryScanView: View {
     // `PlaylistStore` is passed explicitly everywhere else in this app
     // (`PlaylistDetailView`, `SourceSelectionHubView`, etc.) rather than
-    // via `.environmentObject` -- only `PlaybackEngine` is app-wide that
-    // way, per `SeamlessMixerApp`'s own doc comment. Matching that
-    // convention here rather than introducing a second, inconsistent way
-    // to reach the store.
+    // via `.environmentObject` -- only `PlaybackEngine`/`LibraryScanner`
+    // are app-wide that way, per `SeamlessMixerApp`'s own doc comment.
+    // Matching that convention here rather than introducing a second,
+    // inconsistent way to reach the store.
     @ObservedObject var store: PlaylistStore
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var scanner = LibraryScanner()
+    /// **Changed 2026-08-21** — was `@StateObject private var scanner =
+    /// LibraryScanner()`. Now shared app-wide — see `LibraryScanner`'s own
+    /// top-of-file doc comment for why a fresh instance per screen became
+    /// unsafe once real background-task registration was added.
+    @EnvironmentObject private var scanner: LibraryScanner
 
     @State private var didStart = false
     @State private var didFinish = false
@@ -90,7 +95,11 @@ struct LibraryScanView: View {
             Button {
                 didStart = true
                 Task {
-                    await scanner.scan(store: store)
+                    // **Changed 2026-08-21** — was `scanner.scan(store:
+                    // store)`. `startScan` layers real background
+                    // continuation on top of the exact same scan loop —
+                    // see `LibraryScanner`'s own doc comment.
+                    await scanner.startScan(store: store)
                     if scanner.scanError == nil {
                         didFinish = true
                     } else {
@@ -191,4 +200,5 @@ struct LibraryScanView: View {
 
 #Preview {
     LibraryScanView(store: PlaylistStore())
+        .environmentObject(LibraryScanner())
 }

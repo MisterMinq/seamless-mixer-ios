@@ -140,8 +140,24 @@ targets:
         # Background audio session, per the confirmed mixing-engine design
         # ("Background playback" in CLAUDE.md) — required from day one so
         # later AVAudioEngine work doesn't need a separate Info.plist change.
+        # `processing` added 2026-08-21 alongside real background library-
+        # scan continuation (see `LibraryScanner`/`BackgroundScanRegistrar`)
+        # — required for `BGProcessingTask` (the pre-iOS-26 fallback tier)
+        # to run at all; `BGContinuedProcessingTask` (iOS 26+) doesn't need
+        # its own separate background mode entry.
         UIBackgroundModes:
           - audio
+          - processing
+        # Added 2026-08-21, alongside the same background-scan work — every
+        # identifier a `BGTaskRequest` gets submitted under must be listed
+        # here or `BGTaskScheduler.submit(_:)` throws at runtime. Two
+        # separate identifiers for the two tiers (`LibraryScanner`'s own
+        # continued-processing one, `BackgroundScanRegistrar`'s plain-
+        # processing one) since they need genuinely different scheduling/
+        # handling logic, not one shared handler branching on task type.
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.misterminq.SeamlessMixer.libraryscan
+          - com.misterminq.SeamlessMixer.libraryscan.continued
         # MediaPlayer/MPMediaQuery access for source selection (ADR-7) —
         # not used by this first screen yet, declared now so the prompt
         # text is decided deliberately rather than bolted on later.

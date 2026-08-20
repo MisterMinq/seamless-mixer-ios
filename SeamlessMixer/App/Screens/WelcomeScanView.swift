@@ -30,7 +30,12 @@ struct WelcomeScanView: View {
     @ObservedObject var store: PlaylistStore
     let onCompleted: () -> Void
 
-    @StateObject private var scanner = LibraryScanner()
+    /// **Changed 2026-08-21** — was `@StateObject private var scanner =
+    /// LibraryScanner()`. Now shared app-wide (`SeamlessMixerApp`), same
+    /// reasoning as `PlaybackEngine` — see `LibraryScanner`'s own
+    /// top-of-file doc comment for why a fresh instance per screen became
+    /// unsafe once real background-task registration was added.
+    @EnvironmentObject private var scanner: LibraryScanner
     @State private var didStart = false
     @State private var didFinish = false
 
@@ -85,7 +90,11 @@ struct WelcomeScanView: View {
                 Button {
                     didStart = true
                     Task {
-                        await scanner.scan(store: store)
+                        // **Changed 2026-08-21** — was `scanner.scan(store:
+                        // store)`. `startScan` layers real background
+                        // continuation on top of the exact same scan loop —
+                        // see `LibraryScanner`'s own doc comment.
+                        await scanner.startScan(store: store)
                         if scanner.scanError == nil {
                             didFinish = true
                         } else {
@@ -143,4 +152,5 @@ struct WelcomeScanView: View {
 
 #Preview {
     WelcomeScanView(store: PlaylistStore(), onCompleted: {})
+        .environmentObject(LibraryScanner())
 }

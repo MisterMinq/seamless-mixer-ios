@@ -58,6 +58,33 @@ struct SeamlessMixerApp: App {
     /// the app's entire lifetime, and every `body` re-evaluation passes the
     /// same instance rather than constructing a new one.
     @StateObject private var store = PlaylistStore()
+    /// **Added 2026-08-21, promoted app-wide for the same reason
+    /// `playbackEngine` above is** — `BGTaskScheduler` only allows one
+    /// registration per task identifier per process, so `LibraryScanner`
+    /// can no longer be a fresh `@StateObject` on each of `WelcomeScanView`/
+    /// `LibraryScanView` (slice 1's design) without risking a double-
+    /// registration crash or split, inconsistent progress state between
+    /// screens. See `LibraryScanner`'s own top-of-file doc comment for the
+    /// full reasoning.
+    @StateObject private var libraryScanner = LibraryScanner()
+
+    /// **Added 2026-08-21** — registers the `BGProcessingTask` fallback
+    /// tier as early as this pure-SwiftUI-lifecycle app (no `AppDelegate`)
+    /// can manage. `init()` running exactly once per process, before any
+    /// scene appears, is the standard substitute developers rely on for
+    /// `UIApplicationDelegate.application(_:didFinishLaunchingWithOptions:)`
+    /// timing when there's no explicit delegate — see
+    /// `BackgroundScanRegistrar`'s own doc comment for why this tier
+    /// specifically needs registration this early, unlike the iOS 26+
+    /// continued-processing tier (registered lazily instead, on
+    /// `LibraryScanner` itself). Adding this custom `init()` doesn't
+    /// disturb `store`/`playbackEngine`/`libraryScanner`'s own default-value
+    /// initialization above — Swift still applies each property's default
+    /// expression automatically in any initializer that doesn't otherwise
+    /// assign it.
+    init() {
+        BackgroundScanRegistrar.registerHandler()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -68,6 +95,7 @@ struct SeamlessMixerApp: App {
             // `RootView`'s own doc comment.
             RootView(store: store)
                 .environmentObject(playbackEngine)
+                .environmentObject(libraryScanner)
                 .preferredColorScheme(.light)
         }
     }

@@ -1,27 +1,37 @@
 import Foundation
 import MediaPlayer
 import PlaylistCore
+import BackgroundTasks
 
 /// Drives the confirmed "First-Run Library Analysis" UX (CLAUDE.md) for
-/// real, for the first time.
+/// real.
 ///
-/// **This is slice 1 — foreground-only, not the full confirmed design.**
-/// The full design calls for `BGContinuedProcessingTask` (iOS 26+) with a
-/// `BGProcessingTask` background fallback, so a scan survives the app
-/// backgrounding or the phone locking. That's real, separate follow-up
-/// work — `ios/SeamlessMixer/project.yml`'s deployment target is iOS 18.0,
-/// not 26, so `BGContinuedProcessingTask` specifically would need an
-/// `if #available` gate rather than being usable outright, on top of the
-/// background-mode Info.plist entry and task-identifier registration
-/// neither of which exist yet. This slice only runs while `LibraryScanView`
-/// is on screen and the app is in the foreground — leaving the screen or
-/// backgrounding the app stops the scan, and the UI says so honestly
-/// rather than claiming the "close the app, keep going" capability the
-/// confirmed design describes. Resuming this screen later picks up where
-/// it left off for free: every track already analyzed is skipped near-
-/// instantly (see `TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded`'s own
-/// `existing.isAnalyzed` short-circuit), so nothing already done is
-/// re-done.
+/// **Real background continuation, added 2026-08-21** — per Andy's direct
+/// complaint after testing slice 1: "no one would expect me to keep an app
+/// open... till the end... if I come back to the screen to check and
+/// realise no progress in analysis, that is a real damp in UX." Researched
+/// against Apple's own WWDC25 session and header diffs (not guessed at,
+/// given this is the least-verifiable API surface in the whole project —
+/// no compiler here, and a genuinely new iOS 26 API) before building.
+/// `startScan(store:)` is the real entry point now, replacing plain
+/// `scan(store:)` at both call sites (`WelcomeScanView`, `LibraryScanView`):
+/// - **iOS 26+**: `BGContinuedProcessingTask` — the API actually built for
+///   this exact case (a user-initiated, foreground-started task that keeps
+///   running with real system-level progress — Dynamic Island/Lock Screen —
+///   when backgrounded). See `startWithContinuedProcessing(store:)`.
+/// - **Below iOS 26**: `BGProcessingTask`, submitted alongside a plain
+///   foreground scan — see `BackgroundScanRegistrar.swift` for the honest
+///   trade-off (the system decides *when* it runs, not "immediately and
+///   continuously").
+///
+/// `LibraryScanner` is now an app-wide `@StateObject` (`SeamlessMixerApp`),
+/// injected via `.environmentObject` — the same promotion `PlaybackEngine`
+/// already went through, and for the same underlying reason: `BGTaskScheduler`
+/// only allows *one* registration per task identifier per process, so two
+/// screens each owning their own `LibraryScanner` (the original slice-1
+/// design) would either crash on double-registration or silently leave one
+/// screen's progress state stale. One shared instance means one
+/// registration, consistent progress no matter which screen is watching.
 ///
 /// Reuses `TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded` — the exact
 /// same per-track "analyze if not already analyzed" logic `MixBuilder`
@@ -51,6 +61,18 @@ final class LibraryScanner: ObservableObject {
     /// so `LibraryScanView`'s completion screen can report both numbers
     /// instead of a single count that quietly included failures.
     @Published private(set) var notDownloadedCount = 0
+
+    /// **Added 2026-08-21** — the iOS 26+ continued-processing task
+    /// identifier. Must also be listed in `project.yml`'s
+    /// `BGTaskSchedulerPermittedIdentifiers`, alongside
+    /// `BackgroundScanRegistrar`'s own separate identifier for the
+    /// `BGProcessingTask` fallback tier — two distinct identifiers since
+    /// the two tiers genuinely need separate scheduling/handling logic.
+    private static let continuedTaskIdentifier = "com.misterminq.SeamlessMixer.libraryscan.continued"
+    /// See `registerContinuedTaskIfNeeded`'s own doc comment for why this
+    /// is a plain instance flag, safe only because `LibraryScanner` is now
+    /// a single, app-wide shared instance (not one per screen).
+    private var hasRegisteredContinuedTask = false
 
     /// Persisted across launches via `UserDefaults` — deliberately simple
     /// (a single date, not a real analytics/state system), since this
@@ -103,6 +125,15 @@ final class LibraryScanner: ObservableObject {
         notDownloadedCount = 0
 
         for item in items {
+            // **Added 2026-08-21**, alongside background continuation --
+            // lets an enclosing `Task` (the BGProcessingTask/
+            // BGContinuedProcessingTask expiration handlers, or a plain
+            // manual cancel) stop this loop cleanly between tracks rather
+            // than running to completion regardless. Returning here instead
+            // of breaking means `completedKey` below is never reached on
+            // this path -- an interrupted scan should never claim to be
+            // fully done.
+            if Task.isCancelled { return }
             currentTrackTitle = item.title ?? item.albumTitle ?? "Unknown"
             do {
                 let track = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
@@ -122,6 +153,146 @@ final class LibraryScanner: ObservableObject {
         }
 
         UserDefaults.standard.set(Date(), forKey: Self.completedKey)
+    }
+
+    /// **Added 2026-08-21** — the real entry point `WelcomeScanView`/
+    /// `LibraryScanView`'s "Scan Library" button now calls, in place of
+    /// plain `scan(store:)` directly. Layers real background continuation
+    /// on top of the exact same scan loop above — see this file's own
+    /// top-of-file doc comment for the two-tier design and why.
+    func startScan(store: PlaylistStore) async {
+        if #available(iOS 26.0, *) {
+            await startWithContinuedProcessing(store: store)
+        } else {
+            BackgroundScanRegistrar.scheduleProcessingTaskIfNeeded()
+            await scan(store: store)
+        }
+    }
+
+    /// **iOS 26+ only.** Registers (lazily, on first use — see
+    /// `hasRegisteredContinuedTask`'s own doc comment for why that's safe
+    /// here specifically, unlike the `BGProcessingTask` fallback tier) and
+    /// submits a `BGContinuedProcessingTaskRequest`, then waits for the
+    /// registered handler (`registerContinuedTaskIfNeeded`) to actually run
+    /// `scan(store:)` on `self`. Because it's the *same* `self` this
+    /// screen is already observing via `@EnvironmentObject`, progress keeps
+    /// updating live in the UI exactly as it did before this feature
+    /// existed — background continuation is additive, not a separate,
+    /// silent code path the visible screen can't see.
+    ///
+    /// `.strategy = .fail` (not the default `.queue`) deliberately, per
+    /// Apple's own WWDC25 sample: this is a direct response to a user
+    /// tapping a button right now, so if the system genuinely can't grant a
+    /// continued-processing session at this exact moment, failing
+    /// immediately and falling back to a plain foreground scan is more
+    /// honest than silently queuing something the user has no way to know
+    /// is pending.
+    @available(iOS 26.0, *)
+    private func startWithContinuedProcessing(store: PlaylistStore) async {
+        registerContinuedTaskIfNeeded(store: store)
+        let request = BGContinuedProcessingTaskRequest(
+            identifier: Self.continuedTaskIdentifier,
+            title: "Analyzing your library",
+            subtitle: "Learning each song's tempo, key, and energy"
+        )
+        request.strategy = .fail
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            await scan(store: store)
+            return
+        }
+
+        // **Real bug caught before shipping, not guessed at**: the first
+        // draft of this returned right here, right after submission --
+        // but the actual scan runs inside the registered handler
+        // (`runContinuedTask`), invoked *asynchronously* by the system in
+        // response to the submitted request, not synchronously as part of
+        // this call stack. Returning immediately after `submit` would have
+        // made the caller's own "did it finish?" check run almost
+        // instantly, while the scan had barely started -- the exact same
+        // false-completion bug already fixed once for the authorization
+        // gap (see `scan(store:)`'s own 2026-08-21 doc comment). Fixed:
+        // wait for `isScanning` (the same `@Published` state `scan(store:)`
+        // itself sets) to reflect the handler actually starting, then wait
+        // for it to finish -- matching `scan(store:)`'s own contract of
+        // only returning once the real work is done. Bounded on the first
+        // wait: a `.fail`-strategy, user-initiated request that submits
+        // successfully should hand off to the handler almost immediately
+        // in practice: if it somehow doesn't within ~5 seconds, fall back
+        // to a direct foreground scan rather than hanging forever.
+        var waited = 0
+        while !isScanning, waited < 50 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 1
+        }
+        guard isScanning else {
+            await scan(store: store)
+            return
+        }
+        while isScanning {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    /// `BGTaskScheduler` documents registering the same identifier twice
+    /// within one process as a hard error -- but per Apple's own WWDC25
+    /// guidance, a continued-processing handler is explicitly fine to
+    /// register dynamically, right before its first real use, unlike
+    /// `BGProcessingTask`'s classic "must register before the app finishes
+    /// launching" requirement (see `BackgroundScanRegistrar.registerHandler`
+    /// for that tier's own early, `init()`-time registration). Registering
+    /// here, lazily, on `LibraryScanner`'s one shared app-wide instance
+    /// (not per-screen — see this file's top-of-file doc comment) avoids
+    /// both the double-registration crash and the timing risk of touching
+    /// `BGTaskScheduler` before the app is fully live.
+    @available(iOS 26.0, *)
+    private func registerContinuedTaskIfNeeded(store: PlaylistStore) {
+        guard !hasRegisteredContinuedTask else { return }
+        hasRegisteredContinuedTask = true
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.continuedTaskIdentifier, using: nil) { [weak self] task in
+            guard let self, let continuedTask = task as? BGContinuedProcessingTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Task { @MainActor in
+                await self.runContinuedTask(continuedTask, store: store)
+            }
+        }
+    }
+
+    /// Runs the real scan inside the system-granted continued-processing
+    /// session, mirroring this object's own live `analyzedCount`/
+    /// `totalCount` into `task.progress` every half second -- coarse
+    /// enough to be cheap, fine enough relative to how long a single
+    /// track's decode+analyze pass actually takes (seconds, per
+    /// `RealAudioValidationTests`' own timing) that the system-level
+    /// progress indicator (Dynamic Island/Lock Screen) reads as genuinely
+    /// live, not stalled. Single call site for `setTaskCompleted`,
+    /// deliberately -- same reasoning as `BackgroundScanRegistrar.handle`'s
+    /// own doc comment: `expirationHandler` only cancels, it never
+    /// completes the task itself, avoiding a race between two closures
+    /// both trying to call `setTaskCompleted` on the same task.
+    @available(iOS 26.0, *)
+    private func runContinuedTask(_ task: BGContinuedProcessingTask, store: PlaylistStore) async {
+        let scanTask = Task { await self.scan(store: store) }
+        task.expirationHandler = {
+            scanTask.cancel()
+        }
+        let progressTask = Task { @MainActor [weak self] in
+            while let self, !scanTask.isCancelled {
+                let isDone = self.totalCount > 0 && self.analyzedCount >= self.totalCount
+                task.progress.totalUnitCount = Int64(max(self.totalCount, 1))
+                task.progress.completedUnitCount = Int64(self.analyzedCount)
+                if isDone { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        await scanTask.value
+        progressTask.cancel()
+        task.progress.totalUnitCount = Int64(max(totalCount, 1))
+        task.progress.completedUnitCount = Int64(analyzedCount)
+        task.setTaskCompleted(success: !scanTask.isCancelled)
     }
 
     /// Bridges `MPMediaLibrary`'s completion-handler-based
