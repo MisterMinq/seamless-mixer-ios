@@ -49,6 +49,16 @@ public struct DRMExclusionSummary: Equatable {
     public let includedCount: Int
     public let drmCount: Int
     public let analysisFailedCount: Int
+    /// **Added 2026-08-21**, per Andy's direct request: "giving me a list
+    /// of songs not included helps to investigate the reasoning... I could
+    /// send you audio data to analyse which would create better certainty."
+    /// The aggregate counts above were never enough to actually verify a
+    /// specific claim -- every prior round of this investigation (isCloudItem,
+    /// assetURL retries, the not-downloaded finding itself) only got settled
+    /// once Andy checked *specific* tracks. This is what lets a caller show
+    /// the real titles instead of just a number, so the same kind of
+    /// spot-check can happen without guessing which songs to look at.
+    public let excludedTracks: [Track]
 
     public var excludedCount: Int { totalCount - includedCount }
     public var hasExclusions: Bool { excludedCount > 0 }
@@ -106,7 +116,8 @@ public struct DRMExclusionSummary: Equatable {
             totalCount: pool.count,
             includedCount: pool.count - unavailable.count,
             drmCount: drmCount,
-            analysisFailedCount: analysisFailedCount
+            analysisFailedCount: analysisFailedCount,
+            excludedTracks: unavailable
         )
     }
 }

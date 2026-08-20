@@ -91,6 +91,11 @@ struct PlaylistDetailView: View {
     /// if any — see `showExclusionAlert`'s doc comment on `init` for why
     /// this screen owns presenting it rather than `MyMixesView`.
     private let initialExclusionMessage: String?
+    /// **Added 2026-08-21**, per Andy's direct request — the actual
+    /// excluded tracks, not just the summary count/message, so he can spot-
+    /// check specific songs (the same way "Games"/"Galaxy" got settled
+    /// back in 0.25.13) instead of only seeing an aggregate number.
+    private let initialExcludedTracks: [Track]
     /// Seeded straight from `initialExclusionMessage` at `init` time (not
     /// toggled by an `.onAppear`) so the alert is already primed to show
     /// the moment this screen actually mounts — added 2026-08-14, moved
@@ -100,6 +105,11 @@ struct PlaylistDetailView: View {
     /// dismissed. See `MyMixesView.handleBuilt`'s doc comment for the full
     /// diagnosis.
     @State private var showExclusionAlert: Bool
+    /// **Added 2026-08-21** — presents `ExcludedSongsView` when the user
+    /// taps "View List" on the exclusion alert. Kept as a separate sheet
+    /// rather than folded into the alert itself since `Alert` can't hold a
+    /// scrollable list.
+    @State private var showExcludedSongsList = false
     // Seeded from `playlist.isFavorite` at init so the star renders correctly
     // immediately, then updated optimistically on tap — `playlist` itself is
     // a `let` snapshot from navigation, not observed, so it wouldn't reflect
@@ -158,10 +168,11 @@ struct PlaylistDetailView: View {
         return CGFloat(14 + maxDigits * 8)
     }
 
-    init(playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil) {
+    init(playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil, initialExcludedTracks: [Track] = []) {
         self.playlist = playlist
         self.store = store
         self.initialExclusionMessage = initialExclusionMessage
+        self.initialExcludedTracks = initialExcludedTracks
         _isFavorite = State(initialValue: playlist.isFavorite)
         _displayName = State(initialValue: playlist.name)
         _showExclusionAlert = State(initialValue: initialExclusionMessage != nil)
@@ -285,9 +296,19 @@ struct PlaylistDetailView: View {
         // own doc comment for why presenting this alongside a navigation
         // push (on the pushing screen) caused a real blank-white-screen bug.
         .alert("Some songs couldn't be included", isPresented: $showExclusionAlert) {
+            // **"View List" added 2026-08-21**, per Andy's direct request —
+            // only shown when there's actually a list to view (an alert with
+            // a dead-end button reading "View List" for an empty array would
+            // be worse than not offering it).
+            if !initialExcludedTracks.isEmpty {
+                Button("View List") { showExcludedSongsList = true }
+            }
             Button("OK", role: .cancel) {}
         } message: {
             Text(initialExclusionMessage ?? "")
+        }
+        .sheet(isPresented: $showExcludedSongsList) {
+            ExcludedSongsView(tracks: initialExcludedTracks)
         }
     }
 

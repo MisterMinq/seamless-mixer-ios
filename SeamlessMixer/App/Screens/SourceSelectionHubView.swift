@@ -48,11 +48,12 @@ import PlaylistCore
 /// comment for the full diagnosis.
 struct SourceSelectionHubView: View {
     let store: PlaylistStore
-    /// Called once, right after a successful build, with the new playlist
-    /// and any DRM-exclusion message — see this file's own doc comment for
-    /// why navigation moved up to the caller (`MyMixesView`) instead of
-    /// happening here.
-    let onBuilt: (Playlist, String?) -> Void
+    /// Called once, right after a successful build, with the new playlist,
+    /// any DRM-exclusion message, and (**added 2026-08-21**, per Andy's
+    /// direct request) the actual excluded tracks themselves, not just a
+    /// count — see this file's own doc comment for why navigation moved up
+    /// to the caller (`MyMixesView`) instead of happening here.
+    let onBuilt: (Playlist, String?, [Track]) -> Void
 
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
@@ -537,7 +538,7 @@ struct SourceSelectionHubView: View {
                             // Hub and pushing Playlist Detail together) --
                             // see this file's own doc comment on why this no
                             // longer also calls `dismiss()` itself here.
-                            onBuilt(playlist, mixBuilder.lastBuildExclusionMessage)
+                            onBuilt(playlist, mixBuilder.lastBuildExclusionMessage, mixBuilder.lastExcludedTracks)
                         }
                     }
                 } label: {
@@ -586,7 +587,7 @@ struct SourceSelectionHubView: View {
     // an `@EnvironmentObject`. `onBuilt` is a no-op here since the preview
     // has no parent `MyMixesView` to hand the result up to.
     NavigationStack {
-        SourceSelectionHubView(store: PlaylistStore(), onBuilt: { _, _ in })
+        SourceSelectionHubView(store: PlaylistStore(), onBuilt: { _, _, _ in })
     }
     .environmentObject(PlaybackEngine())
 }

@@ -83,9 +83,10 @@ final class DRMExclusionSummaryTests: XCTestCase {
     }
 
     func testMixedExclusionReasonsAreBothReportedSeparately() throws {
-        var pool = [makeTrack(analyzed: true, hasRawAudioAccess: true)]
-        pool.append(makeTrack(analyzed: false, hasRawAudioAccess: false)) // no raw audio access
-        pool.append(makeTrack(analyzed: false, hasRawAudioAccess: true))  // analysis failure
+        let included = makeTrack(analyzed: true, hasRawAudioAccess: true)
+        let notDownloaded = makeTrack(analyzed: false, hasRawAudioAccess: false)
+        let failedAnalysis = makeTrack(analyzed: false, hasRawAudioAccess: true)
+        let pool = [included, notDownloaded, failedAnalysis]
         let summary = DRMExclusionSummary.summarize(pool: pool)
         XCTAssertEqual(summary.totalCount, 3)
         XCTAssertEqual(summary.includedCount, 1)
@@ -95,6 +96,21 @@ final class DRMExclusionSummaryTests: XCTestCase {
         XCTAssertTrue(message.contains("haven't been downloaded to this device"))
         XCTAssertTrue(message.contains("couldn't be analyzed"))
         XCTAssertTrue(message.hasPrefix("1 of 3 songs included"))
+    }
+
+    /// **Added 2026-08-21**, per Andy's direct request to see the actual
+    /// excluded songs, not just a count — see `excludedTracks`'s own doc
+    /// comment for why.
+    func testExcludedTracksListsExactlyTheUnavailableOnes() {
+        let included = makeTrack(analyzed: true, hasRawAudioAccess: true)
+        let notDownloaded = makeTrack(analyzed: false, hasRawAudioAccess: false)
+        let failedAnalysis = makeTrack(analyzed: false, hasRawAudioAccess: true)
+        let pool = [included, notDownloaded, failedAnalysis]
+        let summary = DRMExclusionSummary.summarize(pool: pool)
+        XCTAssertEqual(summary.excludedTracks.count, 2)
+        XCTAssertFalse(summary.excludedTracks.contains(included))
+        XCTAssertTrue(summary.excludedTracks.contains(notDownloaded))
+        XCTAssertTrue(summary.excludedTracks.contains(failedAnalysis))
     }
 
     func testAllExcludedIsFlaggedDistinctlyFromPartialExclusion() {

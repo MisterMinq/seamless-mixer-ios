@@ -90,6 +90,13 @@ final class MixBuilder: ObservableObject {
     /// expected). `nil` when nothing was excluded, so a caller can treat
     /// "show this message" and "don't" with a single optional check.
     @Published private(set) var lastBuildExclusionMessage: String?
+    /// **Added 2026-08-21**, alongside `DRMExclusionSummary.excludedTracks` —
+    /// Andy's own direct request, after several rounds of the DRM-exclusion
+    /// investigation only actually getting settled once he checked specific
+    /// songs: "giving me a list of songs not included helps to investigate
+    /// the reasoning." The aggregate count/message alone never let him do
+    /// that without guessing which songs to look at.
+    @Published private(set) var lastExcludedTracks: [Track] = []
 
     /// - Parameter keepAll: when true, includes every analyzed/DRM-accessible
     ///   track in the pool and ignores `targetSeconds` entirely — the iOS
@@ -121,6 +128,7 @@ final class MixBuilder: ObservableObject {
         isBuilding = true
         buildError = nil
         lastBuildExclusionMessage = nil
+        lastExcludedTracks = []
         defer { isBuilding = false; progressText = "" }
 
         do {
@@ -191,6 +199,7 @@ final class MixBuilder: ObservableObject {
             throw BuildError.allExcluded
         }
         lastBuildExclusionMessage = exclusionSummary.message
+        lastExcludedTracks = exclusionSummary.excludedTracks
 
         progressText = "Sequencing…"
         let sequenced = Sequencer.sequence(tracks: pool, targetSeconds: targetSeconds, mode: sequencingMode(for: mode), keepAll: keepAll)
@@ -236,12 +245,13 @@ final class MixBuilder: ObservableObject {
         guard !isBuilding else { return false }
         isBuilding = true
         buildError = nil
-        // `lastBuildExclusionMessage` is reset but not recomputed here --
-        // Refresh doesn't currently surface it (kept out of scope for this
-        // pass, same "smallest safe slice" reasoning as everywhere else in
-        // this file); resetting it at least avoids showing a stale message
-        // left over from an earlier Build Mix.
+        // `lastBuildExclusionMessage`/`lastExcludedTracks` are reset but not
+        // recomputed here -- Refresh doesn't currently surface either (kept
+        // out of scope for this pass, same "smallest safe slice" reasoning
+        // as everywhere else in this file); resetting them at least avoids
+        // showing a stale message/list left over from an earlier Build Mix.
         lastBuildExclusionMessage = nil
+        lastExcludedTracks = []
         defer { isBuilding = false; progressText = "" }
 
         do {
