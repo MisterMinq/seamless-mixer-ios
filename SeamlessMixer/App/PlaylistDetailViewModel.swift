@@ -27,6 +27,11 @@ struct PlaylistDetailRow: Identifiable {
     let crossfadeDurationSec: Double
     let playableStartSec: Double
     let artwork: UIImage?
+    /// Added 2026-08-21 to drive `PlaybackEngine`'s real tempo nudge (see
+    /// `TempoNudge`) — not displayed anywhere on this screen, same
+    /// "carried for `QueuedTrack`, not shown" treatment as the other
+    /// playback-timing fields above.
+    let bpm: Double?
 }
 
 @MainActor
@@ -76,7 +81,8 @@ final class PlaylistDetailViewModel: ObservableObject {
                     crossfadeStartOffsetSec: entry.crossfadeStartOffsetSec,
                     crossfadeDurationSec: entry.crossfadeDurationSec,
                     playableStartSec: entry.track.playableStartSec ?? 0,
-                    artwork: artworkByTrack[entry.track.persistentID]
+                    artwork: artworkByTrack[entry.track.persistentID],
+                    bpm: entry.track.bpm
                 )
             }
 
@@ -137,7 +143,8 @@ final class PlaylistDetailViewModel: ObservableObject {
                 crossfadeStartOffsetSec: row.crossfadeStartOffsetSec,
                 crossfadeDurationSec: row.crossfadeDurationSec,
                 playableStartSec: row.playableStartSec,
-                artwork: row.artwork
+                artwork: row.artwork,
+                bpm: row.bpm
             )
         }
 

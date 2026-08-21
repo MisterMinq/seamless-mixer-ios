@@ -441,7 +441,8 @@ struct PlaylistDetailView: View {
                                     trackPersistentID: $0.trackPersistentID,
                                     crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec,
                                     crossfadeDurationSec: $0.crossfadeDurationSec,
-                                    playableStartSec: $0.playableStartSec
+                                    playableStartSec: $0.playableStartSec,
+                                    bpm: $0.bpm
                                 )
                             },
                             playlistID: playlist.id

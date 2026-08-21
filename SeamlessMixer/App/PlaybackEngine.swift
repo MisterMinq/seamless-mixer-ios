@@ -1,5 +1,6 @@
 import AVFoundation
 import MediaPlayer
+import PlaylistCore
 
 /// The AVAudioEngine mixing engine, per CLAUDE.md's "Mixing Engine —
 /// AVAudioEngine Design" (first-pass design, confirmed back when Phase 2
@@ -28,9 +29,19 @@ import MediaPlayer
 /// Phase 1 (`fade_out = sqrt(1 - t)`, `fade_in = sqrt(t)`) — carried over
 /// deliberately per Rule 4, not reinvented. Once the ramp completes, the
 /// chains swap roles and the old active chain is freed for the *next*
-/// transition. No tempo nudge yet (`AVAudioUnitTimePitch` is wired into
-/// both chains but not driven) — matching the confirmed design's "≤6%
-/// tempo nudge" is a separate, not-yet-scoped follow-up.
+/// transition.
+///
+/// **Tempo nudge driven for real, 2026-08-21** — the last remaining piece
+/// of the confirmed mixing engine design (`AVAudioUnitTimePitch` was wired
+/// into both chains since 0.17.0 but never driven). See `TempoNudge`
+/// (`PlaylistCore`) for the ported-from-Python math. `beginCrossfade` sets
+/// the incoming chain's `timePitch.rate` once, before scheduling; it stays
+/// set for the rest of that track's playback (matching how Phase 1's
+/// offline stretch applied to the whole incoming track, not just the blend
+/// window). `playTrackAtCurrentIndex` resets a chain's rate back to `1.0`
+/// whenever it starts a fresh track with no crossfade partner to nudge
+/// toward (the first track of a session, or any hard-cut skip) — matching
+/// Python's own baseline, where only an actual blend ever nudges tempo.
 ///
 /// **Stale-completion guard, extended from 0.17.1's generation counter:**
 /// every time a chain gets a *new* file scheduled onto it — whether the
@@ -130,6 +141,12 @@ final class PlaybackEngine: ObservableObject {
         /// Sequencer selected, since `Track.isAnalyzed` requires it, but a
         /// safe no-op default regardless).
         let playableStartSec: Double
+        /// This track's own analyzed tempo — `nil` falls back to no nudge
+        /// at all (`TempoNudge.rate` returns `1.0`), matching Python's own
+        /// `from_bpm <= 0`/`to_bpm <= 0` early-out. Added 2026-08-21 to
+        /// drive the tempo nudge; every earlier `QueuedTrack` construction
+        /// site predates this field.
+        let bpm: Double?
     }
 
     @Published private(set) var isPlaying = false
@@ -618,7 +635,7 @@ final class PlaybackEngine: ObservableObject {
     func play(trackPersistentID: Int64) {
         play(queue: [QueuedTrack(
             trackPersistentID: trackPersistentID, crossfadeStartOffsetSec: .infinity,
-            crossfadeDurationSec: 4.0, playableStartSec: 0
+            crossfadeDurationSec: 4.0, playableStartSec: 0, bpm: nil
         )])
     }
 
@@ -730,6 +747,11 @@ final class PlaybackEngine: ObservableObject {
 
             let chain = activeChain
             chain.player.volume = 1
+            // No crossfade partner to nudge toward here (a fresh session
+            // start or a hard-cut skip) -- see this class's own doc comment
+            // for why this always resets to native tempo, matching Python's
+            // baseline where only an actual blend ever nudges.
+            chain.timePitch.rate = 1.0
             currentTrackDurationSec = playableDuration(file: file, fromSec: queuedTrack.playableStartSec)
             elapsedBaseSec = 0
             schedule(file: file, on: chain, playableStartSec: queuedTrack.playableStartSec, generation: generation)
@@ -836,6 +858,14 @@ final class PlaybackEngine: ObservableObject {
 
             let chain = standbyChain
             chain.player.volume = 0
+            // Real tempo nudge, per this class's own doc comment and
+            // `TempoNudge`'s: nudges the incoming track's tempo ≤6% toward
+            // the still-playing outgoing track's tempo, using each track's
+            // own analyzed bpm. Set once, before scheduling -- it stays on
+            // this chain for the rest of this track's playback, matching
+            // how Phase 1's offline stretch applied to the whole incoming
+            // track, not just the blend window.
+            chain.timePitch.rate = Float(TempoNudge.rate(incomingBPM: next.bpm, outgoingBPM: outgoing.bpm))
             pendingIncomingDurationSec = playableDuration(file: file, fromSec: next.playableStartSec)
             schedule(file: file, on: chain, playableStartSec: next.playableStartSec, generation: generation)
 
