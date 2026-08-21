@@ -129,7 +129,10 @@ struct WelcomeScanView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(DesignTokens.Color.success)
             if scanner.notDownloadedCount > 0 {
-                Text("\(scanner.analyzedCount - scanner.notDownloadedCount) of \(scanner.analyzedCount) songs analyzed — \(scanner.notDownloadedCount) aren't downloaded to this device and were skipped.")
+                // **Reworded 2026-08-21** -- see the matching change in
+                // LibraryScanView.swift for why "couldn't be included"
+                // replaces "aren't downloaded" here too.
+                Text("\(scanner.analyzedCount - scanner.notDownloadedCount) of \(scanner.analyzedCount) songs analyzed — \(scanner.notDownloadedCount) couldn't be included (not downloaded, or protected).")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
             } else {

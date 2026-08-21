@@ -60,15 +60,17 @@ final class MixBuilder: ObservableObject {
             case .emptyPool:
                 return "None of the selected songs could be used for a seamless mix."
             case .allExcluded:
-                // **Reworded 2026-08-17, refined 2026-08-20** — see
-                // `DRMExclusionSummary.message`'s own doc comment: the
-                // 2026-08-17 wording avoided blaming a subscription since
-                // this app has no reliable way to confirm that's the cause.
-                // Andy's 2026-08-20 finding gives a real, actionable next
-                // step instead — a track can be listed and playable without
-                // being downloaded to the device — so this copy now
-                // suggests that directly rather than just "check back later."
-                return "None of the songs in this selection can be used for seamless mixing right now — they may not be downloaded to this device yet. Try downloading them in the Music app, or pick a different source."
+                // **Reworded 2026-08-17, refined 2026-08-20, refined again
+                // 2026-08-21** — see `DRMExclusionSummary.message`'s own
+                // doc comment for the full history. Andy directly ffprobe'd
+                // real excluded files and found `drms`-tagged (genuinely
+                // FairPlay-protected) AAC — old purchases downloading can
+                // never fix, alongside the "Games"/"Galaxy" case that
+                // downloading really did fix. Both are real; this app
+                // still can't tell which applies to a given song, so the
+                // copy no longer overclaims downloading as a near-certain
+                // fix.
+                return "None of the songs in this selection can be used for seamless mixing right now. Downloading them in the Music app can help, but some older purchases are permanently protected and won't ever work — try a different source instead."
             case .databaseUnavailable:
                 return "Couldn't open the library database."
             }

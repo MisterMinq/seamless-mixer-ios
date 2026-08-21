@@ -132,17 +132,24 @@ struct LibraryScanView: View {
                     .lineLimit(1)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
             }
-            // **Reworded 2026-08-20** -- Andy correctly objected to the
-            // original wording ("Some songs in your library aren't
-            // downloaded...") stating this as an established fact about
-            // his library before the scan had even found anything —
-            // "How do you know that?" Right call: this should be
-            // preventive guidance shown regardless of outcome, not a claim
-            // the app can't back up yet. The actual, factual count (how
-            // many really weren't accessible) now shows on the completion
-            // screen instead, once it's genuinely known — see
+            // **Reworded 2026-08-20, extended 2026-08-21** -- Andy
+            // correctly objected to the original wording ("Some songs in
+            // your library aren't downloaded...") stating this as an
+            // established fact about his library before the scan had even
+            // found anything — "How do you know that?" Right call: this
+            // should be preventive guidance shown regardless of outcome,
+            // not a claim the app can't back up yet. **2026-08-21**: Andy
+            // then directly ffprobe'd real excluded files and found some
+            // are genuinely, permanently DRM-protected (old-format
+            // purchases, not a download-status issue at all) — see
+            // `DRMExclusionSummary.message`'s own doc comment in
+            // PlaylistCore for the full evidence. Mentioning that
+            // possibility here too, so the reminder doesn't overclaim
+            // downloading as a guaranteed fix. The actual, factual count
+            // (how many really weren't accessible) still shows on the
+            // completion screen, once it's genuinely known — see
             // `completionView` below.
-            Text("For a complete scan, make sure the songs in your library are downloaded to this device first — a song only available through Apple Music streaming (not downloaded) can't be analyzed and will be skipped.")
+            Text("For a complete scan, make sure the songs in your library are downloaded to this device first. Some songs may still be skipped even so — older purchases can be permanently protected by Apple's copy protection, which no download can fix.")
                 .font(.caption)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -176,7 +183,12 @@ struct LibraryScanView: View {
             // real, factual version of the during-scan reminder above,
             // shown once it's actually known rather than assumed.
             if scanner.notDownloadedCount > 0 {
-                Text("\(scanner.analyzedCount - scanner.notDownloadedCount) of \(scanner.analyzedCount) songs analyzed — \(scanner.notDownloadedCount) aren't downloaded to this device and were skipped. You can now build a mix from your whole library.")
+                // **Reworded 2026-08-21** -- "aren't downloaded" is only
+                // one of two real, confirmed causes (see
+                // DRMExclusionSummary.message's own doc comment for the
+                // ffprobe evidence of the other, genuinely-DRM-protected
+                // one) -- "couldn't be included" stays accurate either way.
+                Text("\(scanner.analyzedCount - scanner.notDownloadedCount) of \(scanner.analyzedCount) songs analyzed — \(scanner.notDownloadedCount) couldn't be included (not downloaded, or protected). You can now build a mix from your whole library.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
             } else {

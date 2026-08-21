@@ -124,7 +124,7 @@ final class DRMExclusionSummaryTests: XCTestCase {
         // a "0 of 3" that reads like a bug.
         XCTAssertEqual(
             summary.message,
-            "0 of 3 songs included — 3 aren't available for seamless mixing (3 haven't been downloaded to this device). Downloading them in the Music app usually fixes this."
+            "0 of 3 songs included — 3 aren't available for seamless mixing (3 haven't been downloaded to this device). Downloading them in the Music app can help — older purchases still under Apple's copy protection can't be included no matter what."
         )
     }
 }

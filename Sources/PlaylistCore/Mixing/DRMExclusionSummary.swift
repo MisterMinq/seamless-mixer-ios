@@ -88,6 +88,26 @@ public struct DRMExclusionSummary: Equatable {
     /// longer claims to know which one it is. It still tells the user
     /// something real and useful (these songs didn't make it in, here's
     /// roughly why), just without a specific, unverifiable accusation.
+    ///
+    /// **2026-08-21 — the trailing "usually fixes this" claim itself
+    /// proven wrong for a real subset, with hard evidence, not a guess.**
+    /// Andy exported the actual files for two whole albums from the
+    /// excluded-songs list (built the same round, see `excludedTracks`'s
+    /// own doc comment) and shared them directly. `ffprobe`'d them:
+    /// every one carries the `drms` codec tag — Apple's real, documented
+    /// marker for FairPlay-protected AAC — compared side-by-side against
+    /// a confirmed-working library file, which shows `mp4a` instead. These
+    /// are old-format protected purchases (pre-dating Apple's ~2009 move
+    /// to DRM-free purchased music), genuinely downloaded and present on
+    /// the device, that no third-party app can ever decode no matter how
+    /// many times they're re-downloaded — a completely different, real
+    /// cause from the "Games"/"Galaxy" case this message's wording was
+    /// originally built around, which really was fixed by downloading.
+    /// Both causes are real and both produce the identical `hasRawAudioAccess
+    /// == false` signal with no way to tell them apart (same conclusion
+    /// `isCloudItem` already reached above) — so the message now says
+    /// "can" instead of "usually," honest about the case where downloading
+    /// genuinely won't help.
     public var message: String? {
         guard hasExclusions else { return nil }
         var reasons: [String] = []
@@ -99,11 +119,13 @@ public struct DRMExclusionSummary: Equatable {
         }
         var text = "\(includedCount) of \(totalCount) songs included — \(excludedCount) aren't available for seamless mixing (\(reasons.joined(separator: ", ")))."
         if drmCount > 0 {
-            // Actionable, per the 2026-08-20 finding above -- this is the
-            // one concrete thing a user can actually try, unlike the old
-            // "not accessible on this device" wording, which gave no next
-            // step at all.
-            text += " Downloading them in the Music app usually fixes this."
+            // Reworded 2026-08-21 -- "usually" was disproven with real
+            // evidence (see this property's own doc comment): some of
+            // these are old, permanently protected purchases no download
+            // will ever fix. Still worth suggesting, since it's the one
+            // concrete thing that helps in the other, more common case --
+            // just no longer overclaiming it always works.
+            text += " Downloading them in the Music app can help — older purchases still under Apple's copy protection can't be included no matter what."
         }
         return text
     }
