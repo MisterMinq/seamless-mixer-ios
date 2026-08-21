@@ -238,6 +238,25 @@ struct NowPlayingView: View {
         }
         .onChange(of: playbackEngine.nowPlayingTrackID) { _, trackID in
             loadArtwork(for: trackID)
+            // **Added 2026-08-21** — Testing (51): Andy reported the
+            // progress bar "stayed at the full time for the next songs
+            // even when the song was starting" after seeking near a
+            // track's end a few times (to preview crossfades) and then
+            // tapping the FF button twice in a row. `progressBar`'s Slider
+            // reads `dragValue` instead of the live `playbackEngine
+            // .elapsedSeconds` whenever `isDragging` is true -- if a drag
+            // gesture's `onEditingChanged(false)` doesn't cleanly fire for
+            // any reason (e.g. a gesture cut short by a track changing
+            // underneath it), `isDragging` can be left stuck `true`, and
+            // the slider keeps showing whatever `dragValue` was left at
+            // (near the *end* of the previous track, from the crossfade-
+            // preview seeks) instead of the new track's real position.
+            // Regardless of the exact mechanism that leaves it stuck,
+            // a track actually changing should always mean "stop trusting
+            // any in-progress drag and show the real, live position" --
+            // this forces exactly that every time the now-playing track ID
+            // changes, whether via a crossfade completing or a manual skip.
+            isDragging = false
         }
         .onChange(of: playbackEngine.nextTrackPersistentID) { _, _ in
             loadNextPalette()
@@ -360,7 +379,19 @@ struct NowPlayingView: View {
             Slider(
                 value: Binding(
                     get: { isDragging ? dragValue : playbackEngine.elapsedSeconds },
-                    set: { dragValue = $0 }
+                    // **Guarded 2026-08-21** — Testing (51): this used to
+                    // write `dragValue` unconditionally on every call, even
+                    // outside an actual drag gesture. SwiftUI can invoke a
+                    // Slider's setter for reasons beyond a user drag (e.g.
+                    // reconciling the bound value against a just-changed
+                    // `in:` range, which happens here every time the track
+                    // changes and `currentTrackDurationSec` shrinks/grows).
+                    // An unguarded write could silently leave `dragValue`
+                    // holding a stale position that only matters the next
+                    // time `isDragging` goes true -- guarding it means a
+                    // stray, non-drag write can no longer corrupt what the
+                    // next real drag starts from.
+                    set: { if isDragging { dragValue = $0 } }
                 ),
                 in: 0...max(playbackEngine.currentTrackDurationSec, 1),
                 onEditingChanged: { editing in

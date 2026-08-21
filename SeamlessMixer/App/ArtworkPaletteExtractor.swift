@@ -38,6 +38,34 @@ struct RGBColor: Equatable {
     func darkened(by amount: Double) -> RGBColor {
         RGBColor.lerp(self, RGBColor(r: 0, g: 0, b: 0), t: amount)
     }
+
+    /// Raises saturation to at least `minimum` (0...1), leaving hue and
+    /// brightness untouched — added 2026-08-21, Testing (51): Andy reported
+    /// the dynamic background looking like "the same old colour scheme"
+    /// across five very different real album covers (a vivid red Boney
+    /// James cover, a pastel orange/teal Kenny Pore cover, a bold red
+    /// Michael Jackson cover, all producing near-identical muted teal-to-
+    /// brown results). Root cause: `CIAreaAverage` averages every pixel in
+    /// half the image into one flat value, and averaging many different
+    /// real-photo colors together reliably regresses toward a muddy
+    /// brown/gray, regardless of how vivid the source art actually is --
+    /// this is why real apps that extract a "dominant color" this way
+    /// always re-saturate afterward rather than using the raw average.
+    /// Routes through `UIColor`'s own HSB conversion rather than
+    /// hand-rolling the RGB<->HSB math, since that's a well-tested,
+    /// standard API already available (`ArtworkPaletteExtractor` already
+    /// imports UIKit).
+    func saturationBoosted(to minimum: CGFloat = 0.55) -> RGBColor {
+        let uiColor = UIColor(red: r, green: g, blue: b, alpha: 1)
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        uiColor.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        guard saturation < minimum else { return self }
+
+        let boosted = UIColor(hue: hue, saturation: minimum, brightness: brightness, alpha: 1)
+        var newR: CGFloat = 0, newG: CGFloat = 0, newB: CGFloat = 0, newA: CGFloat = 0
+        boosted.getRed(&newR, green: &newG, blue: &newB, alpha: &newA)
+        return RGBColor(r: Double(newR), g: Double(newG), b: Double(newB))
+    }
 }
 
 /// Extracts two representative colors from a track's album artwork, for
@@ -71,10 +99,16 @@ enum ArtworkPaletteExtractor {
         guard let primary = averageColor(of: ciImage, in: leftHalf),
               let secondary = averageColor(of: ciImage, in: rightHalf) else { return nil }
 
-        // Darkened for legibility -- see `RGBColor.darkened(by:)`'s own
-        // doc comment for why this matches the real reference rather than
-        // using the raw extracted tone as-is.
-        return (primary.darkened(by: 0.45), secondary.darkened(by: 0.45))
+        // Saturation-boosted, then darkened for legibility -- see
+        // `RGBColor.saturationBoosted(to:)`/`.darkened(by:)`'s own doc
+        // comments. Boosting first, then darkening, keeps the real hue
+        // vivid before it's pushed toward black -- darkening a muddy,
+        // under-saturated average first would have nothing worth
+        // preserving by the time it's dark enough to sit behind text.
+        return (
+            primary.saturationBoosted().darkened(by: 0.45),
+            secondary.saturationBoosted().darkened(by: 0.45)
+        )
     }
 
     private static func averageColor(of image: CIImage, in rect: CGRect) -> RGBColor? {

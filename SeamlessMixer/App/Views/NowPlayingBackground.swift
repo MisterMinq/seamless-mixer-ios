@@ -48,9 +48,27 @@ enum NowPlayingPalette {
     static let anchor = RGBColor(r: Double(0x23) / 255, g: Double(0x94) / 255, b: Double(0x8F) / 255).darkened(by: 0.45)
 
     struct Blend {
-        /// Four mesh-gradient corner colors, in `[topLeft, topRight,
-        /// bottomLeft, bottomRight]` order matching `MeshGradient`'s own
-        /// `points:` array below.
+        /// 9 mesh-gradient colors, in row-major order (top row left-to-
+        /// right, then middle row, then bottom row) matching
+        /// `MeshGradient(width: 3, height: 3, ...)`'s own point ordering
+        /// below.
+        ///
+        /// **Widened from 4 to 9, 2026-08-21** — Testing (51): Andy
+        /// reported the idle drift (added the same testing round prior)
+        /// "happens only on the side/borders of the screen. That looks
+        /// real weird." Real artifact of a 2x2 mesh: `MeshGradient`
+        /// interpolates smoothly toward the center, so a single corner's
+        /// motion is strongest right at that corner and fades to almost
+        /// nothing by the middle — there's nothing *to* move in the middle
+        /// of a 4-point mesh, it's just an interpolated average of the 4
+        /// corners. A 3x3 grid gives 5 more points (the 4 edge midpoints
+        /// plus the true center) to actually animate, spreading real
+        /// motion across the whole screen instead of concentrating it at
+        /// the 4 corners. The 5 new points are built by bilinearly
+        /// interpolating the same 4 base colors this always computed
+        /// (`anchor`/`active.primary`/`active.secondary`/`midpoint`) — the
+        /// underlying 4-corner "story" is unchanged, this just samples it
+        /// more finely.
         let colors: [Color]
         /// True when the blended background is dark enough for light/
         /// white text and icons to read clearly against it — the
@@ -84,11 +102,25 @@ enum NowPlayingPalette {
             active = base
         }
 
-        let midpoint = RGBColor.lerp(active.primary, active.secondary, t: 0.5)
-        let corners = [anchor, active.primary, active.secondary, midpoint]
-        let averageLuminance = corners.map(\.luminance).reduce(0, +) / Double(corners.count)
+        let topLeft = anchor
+        let topRight = active.primary
+        let bottomLeft = active.secondary
+        let bottomRight = RGBColor.lerp(active.primary, active.secondary, t: 0.5)
 
-        return Blend(colors: corners.map(\.color), isDark: averageLuminance < 0.5)
+        // Bilinearly interpolate the 4 base corners into a 3x3 grid --
+        // see `colors`'s own doc comment for why. Row-major, matching
+        // MeshGradient's point ordering.
+        var grid: [RGBColor] = []
+        for v in [0.0, 0.5, 1.0] {
+            let left = RGBColor.lerp(topLeft, bottomLeft, t: v)
+            let right = RGBColor.lerp(topRight, bottomRight, t: v)
+            for u in [0.0, 0.5, 1.0] {
+                grid.append(RGBColor.lerp(left, right, t: u))
+            }
+        }
+
+        let averageLuminance = grid.map(\.luminance).reduce(0, +) / Double(grid.count)
+        return Blend(colors: grid.map(\.color), isDark: averageLuminance < 0.5)
     }
 }
 
@@ -116,13 +148,20 @@ enum NowPlayingPalette {
 /// (previously this view only redrew on a color change) -- acceptable for
 /// a screen the user is actively looking at, not evaluated against
 /// battery drain over a long multi-hour playback session.
+///
+/// **Widened from a 2x2 to a 3x3 mesh, 2026-08-21** — Testing (51): see
+/// `NowPlayingPalette.Blend.colors`'s own doc comment for the full "motion
+/// only at the edges" root cause. `driftedPoints` now animates 9 points
+/// (the 4 original corners, the 4 edge midpoints, and the true center)
+/// instead of 4, each on its own sine phase, so the sway is visible across
+/// the whole screen rather than concentrated at the 4 corners.
 struct NowPlayingBackground: View {
     let blend: NowPlayingPalette.Blend
 
     var body: some View {
         TimelineView(.animation) { context in
             MeshGradient(
-                width: 2, height: 2,
+                width: 3, height: 3,
                 points: driftedPoints(at: context.date),
                 colors: blend.colors
             )
@@ -131,6 +170,8 @@ struct NowPlayingBackground: View {
         .ignoresSafeArea()
     }
 
+    /// Row-major, matching `NowPlayingPalette.Blend.colors`'s own ordering:
+    /// top row left-to-right, then middle row, then bottom row.
     private func driftedPoints(at date: Date) -> [SIMD2<Float>] {
         let t = date.timeIntervalSinceReferenceDate
 
@@ -145,11 +186,18 @@ struct NowPlayingBackground: View {
             )
         }
 
-        return [
-            drift(SIMD2(0, 0), period: 14, phase: 0.00),
-            drift(SIMD2(1, 0), period: 17, phase: 0.25),
-            drift(SIMD2(0, 1), period: 19, phase: 0.50),
-            drift(SIMD2(1, 1), period: 16, phase: 0.75)
+        // 9 base positions (u, v) each in {0, 0.5, 1}, each drifting on its
+        // own period/phase so the 9 points never move in lockstep.
+        let basePositions: [SIMD2<Float>] = [
+            SIMD2(0, 0), SIMD2(0.5, 0), SIMD2(1, 0),
+            SIMD2(0, 0.5), SIMD2(0.5, 0.5), SIMD2(1, 0.5),
+            SIMD2(0, 1), SIMD2(0.5, 1), SIMD2(1, 1)
         ]
+        let periods: [Double] = [14, 18, 16, 21, 25, 19, 15, 17, 20]
+        let phases: [Double] = [0.00, 0.15, 0.30, 0.45, 0.60, 0.75, 0.90, 0.10, 0.55]
+
+        return zip(basePositions, zip(periods, phases)).map { base, periodPhase in
+            drift(base, period: periodPhase.0, phase: periodPhase.1)
+        }
     }
 }
