@@ -93,19 +93,63 @@ enum NowPlayingPalette {
 }
 
 /// Renders one `NowPlayingPalette.Blend` as a full-screen mesh gradient.
-/// `.animation(_:value:)` on the mesh itself smooths over the ~10Hz steps
+/// `.animation(_:value:)` on the *colors* smooths over the ~10Hz steps
 /// `PlaybackEngine`'s crossfade timer produces into a continuous blend,
 /// rather than visibly stepping between samples.
+///
+/// **Idle drift added 2026-08-21** — Testing (50): Andy's honest reaction
+/// after actually seeing this on a real device was "nothing dynamic about
+/// it... I thought it would be floating like clouds or waves." He was
+/// right that it wasn't -- until this change, the mesh's 4 corner *points*
+/// were a hardcoded constant (`[[0,0],[1,0],[0,1],[1,1]]`); only the
+/// *colors* at those fixed positions ever changed, and only at a track or
+/// crossfade boundary. Nothing moved, ever, while a track just played --
+/// there was no ambient motion to fail at reading as "floating" in the
+/// first place. This adds real, continuous motion: each of the 4 points
+/// drifts on its own slow sine path (different period/phase per corner so
+/// they don't move in lockstep), independent of `blend.colors` entirely --
+/// the cloud/wave-like sway keeps going even mid-track, not just at
+/// transitions. Amplitude is kept small (0.05, out of the 0...1 mesh
+/// coordinate space) so it reads as a gentle sway, not a distortion.
+/// **Known, flagged trade-off**: `TimelineView(.animation)` redraws every
+/// frame for as long as this screen is visible, a real, continuous cost
+/// (previously this view only redrew on a color change) -- acceptable for
+/// a screen the user is actively looking at, not evaluated against
+/// battery drain over a long multi-hour playback session.
 struct NowPlayingBackground: View {
     let blend: NowPlayingPalette.Blend
 
     var body: some View {
-        MeshGradient(
-            width: 2, height: 2,
-            points: [[0, 0], [1, 0], [0, 1], [1, 1]],
-            colors: blend.colors
-        )
+        TimelineView(.animation) { context in
+            MeshGradient(
+                width: 2, height: 2,
+                points: driftedPoints(at: context.date),
+                colors: blend.colors
+            )
+            .animation(.linear(duration: 0.15), value: blend.colors)
+        }
         .ignoresSafeArea()
-        .animation(.linear(duration: 0.15), value: blend.colors)
+    }
+
+    private func driftedPoints(at date: Date) -> [SIMD2<Float>] {
+        let t = date.timeIntervalSinceReferenceDate
+
+        func drift(_ base: SIMD2<Float>, period: Double, phase: Double) -> SIMD2<Float> {
+            let amplitude: Float = 0.05
+            let angle = (t / period + phase) * 2 * .pi
+            let dx = Float(sin(angle)) * amplitude
+            let dy = Float(cos(angle * 0.7)) * amplitude
+            return SIMD2(
+                min(1, max(0, base.x + dx)),
+                min(1, max(0, base.y + dy))
+            )
+        }
+
+        return [
+            drift(SIMD2(0, 0), period: 14, phase: 0.00),
+            drift(SIMD2(1, 0), period: 17, phase: 0.25),
+            drift(SIMD2(0, 1), period: 19, phase: 0.50),
+            drift(SIMD2(1, 1), period: 16, phase: 0.75)
+        ]
     }
 }
