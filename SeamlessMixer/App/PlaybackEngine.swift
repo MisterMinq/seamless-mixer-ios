@@ -891,7 +891,25 @@ final class PlaybackEngine: ObservableObject {
         // beginning (0), not a seeked position -- `elapsedSeconds` will
         // naturally read as the real seconds elapsed since `beginCrossfade`
         // scheduled it, via the render clock `tick()` already reads.
+        //
+        // **`elapsedSeconds = 0` added 2026-08-21** — a real, confirmed bug
+        // found investigating Testing (49)'s lock-screen drift report.
+        // `elapsedBaseSec` was reset here, but the *published* `elapsedSeconds`
+        // wasn't -- unlike `playTrackAtCurrentIndex()`, which resets both
+        // before its own `refreshNowPlayingMetadata()` call. That asymmetry
+        // meant `refreshNowPlayingMetadata()` below published the *outgoing*
+        // track's near-finished elapsed time (whatever `tick()` last computed)
+        // paired with the *incoming* track's title/artist/duration, right at
+        // the exact moment of a crossfade completing. The lock screen only
+        // gets a fresh snapshot at discrete events like this one -- not every
+        // tick -- so that wrong pairing would sit there, visibly wrong against
+        // the new track's real duration, until the next pause/resume/seek.
+        // The in-app Now Playing screen never showed this, since it reads
+        // `elapsedSeconds` reactively off the very next timer tick, which
+        // does self-correct locally -- that correction just was never
+        // re-published to `MPNowPlayingInfoCenter`.
         elapsedBaseSec = 0
+        elapsedSeconds = 0
         updateNextTrackID()
         isCrossfading = false
         crossfadeProgress = 0

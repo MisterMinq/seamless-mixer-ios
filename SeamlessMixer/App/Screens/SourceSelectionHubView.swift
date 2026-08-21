@@ -417,6 +417,18 @@ struct SourceSelectionHubView: View {
     /// replacement for it, so a fast song and a slow song still don't get
     /// an identical blend length. 0 (today's exact behavior) is the
     /// default; nothing changes for a build unless this is actually moved.
+    ///
+    /// **Label reworded 2026-08-21** — Testing (49): Andy assumed "Standard
+    /// blend length" meant a flat 2s, since the label never showed a real
+    /// number, and asked to change the Stepper to a fixed "7s ± 3s" range.
+    /// There is no flat standard to fix a number to -- the base is
+    /// `clip(60/bpm × 6 beats, 2s, 12s)`, genuinely different per transition
+    /// on purpose (a flat length would make a slow ballad's blend feel
+    /// rushed or a fast track's feel sluggish -- validated back in Phase 1,
+    /// carried over deliberately). Rather than silently replace that
+    /// tempo-aware formula with a flat number, the label now says the real
+    /// range outright, so the screen answers the question instead of the
+    /// user having to guess or ask.
     private var crossfadeLengthControl: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
             Text("Crossfade length")
@@ -425,8 +437,8 @@ struct SourceSelectionHubView: View {
             Stepper(value: $viewModel.extraCrossfadeSec, in: 0...5, step: 1) {
                 Text(
                     viewModel.extraCrossfadeSec > 0
-                        ? "+\(Int(viewModel.extraCrossfadeSec))s longer blend between songs"
-                        : "Standard blend length"
+                        ? "+\(Int(viewModel.extraCrossfadeSec))s on top — blends run about \(2 + Int(viewModel.extraCrossfadeSec))–\(12 + Int(viewModel.extraCrossfadeSec))s, tempo-based"
+                        : "Standard — blends run 2–12s, based on each song's tempo"
                 )
                 .foregroundStyle(DesignTokens.Color.textPrimary)
             }

@@ -30,7 +30,22 @@ enum NowPlayingPalette {
     /// `0x23.0` doesn't compile at all, on any Swift version. Fixed by
     /// converting each hex *integer* to `Double` before dividing, which
     /// was the actual intent (35/255, 148/255, 143/255).
-    static let anchor = RGBColor(r: Double(0x23) / 255, g: Double(0x94) / 255, b: Double(0x8F) / 255)
+    ///
+    /// **Darkened 2026-08-21** — Testing (49) real-device report, screenshots
+    /// across 5 different albums (very different real cover art: red/black,
+    /// blue/white, warm brown, red/yellow/brown) all showed the same "blue
+    /// diagonal" in the upper-left, with only the opposite side changing.
+    /// Root cause: this corner was the raw, undarkened brand teal, while the
+    /// other three corners are all `.darkened(by: 0.45)` (see
+    /// `ArtworkPaletteExtractor.extractPalette`) — a `MeshGradient`
+    /// interpolates continuously between its 4 points, so one corner sitting
+    /// noticeably brighter/more saturated than the rest doesn't stay
+    /// confined to its own quadrant, it visually dominates a large share of
+    /// the screen regardless of what's actually playing. Matching the same
+    /// darkening here keeps the teal brand anchor (hue unchanged) without
+    /// letting its raw brightness drown out the genuine per-track variation
+    /// in the other three corners.
+    static let anchor = RGBColor(r: Double(0x23) / 255, g: Double(0x94) / 255, b: Double(0x8F) / 255).darkened(by: 0.45)
 
     struct Blend {
         /// Four mesh-gradient corner colors, in `[topLeft, topRight,
