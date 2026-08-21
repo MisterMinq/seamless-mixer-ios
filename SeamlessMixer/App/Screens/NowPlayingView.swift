@@ -55,17 +55,17 @@ import MediaPlayer
 /// label never actually reflecting what was connected.
 ///
 /// **Dynamic, artwork-derived background built 2026-08-18** — real Core
-/// Image color extraction (`ArtworkPaletteExtractor`) feeding a
-/// `MeshGradient` (`Views/NowPlayingBackground.swift`), blended smoothly
-/// into the *next* track's palette exactly in step with the real audio
-/// crossfade (`PlaybackEngine.crossfadeProgress`), plus adaptive light/dark
-/// text and icon colors throughout this screen. See that file's own doc
-/// comment for the full design, including the deliberate teal brand-anchor
-/// that's the explicit differentiator from Apple Music's own version.
-/// Entirely unverified against a real device as of this writing — the
-/// first use of Core Image or `MeshGradient` anywhere in this codebase, so
-/// treat `ArtworkPaletteExtractor.swift` as the highest-risk file in this
-/// slice if colors look wrong or it doesn't compile.
+/// Image color extraction (`ArtworkPaletteExtractor`) feeding a plain
+/// straight-line `LinearGradient` (`Views/NowPlayingBackground.swift`),
+/// blended smoothly into the *next* track's palette exactly in step with
+/// the real audio crossfade (`PlaybackEngine.crossfadeProgress`), plus
+/// adaptive light/dark text and icon colors throughout this screen. See
+/// that file's own doc comment for the full design, including the
+/// deliberate teal brand-anchor that's the explicit differentiator from
+/// Apple Music's own version, and why `MeshGradient` (this screen's
+/// original approach) was dropped in favor of a plain linear gradient —
+/// its organic, curved color blending kept reading as "wavy" on a real
+/// device even with all animation removed.
 ///
 /// **Deliberate, flagged simplification still remaining:**
 /// - **No favourite star / "..." overflow on this screen.** `PlaylistOverflowSheet`
@@ -126,7 +126,28 @@ struct NowPlayingView: View {
         // whole content column (title, transport row, everything) could end
         // up wider than the actual screen with no explicit width to stop it.
         // Fixed by pinning both dimensions explicitly instead of just one.
-        GeometryReader { geo in
+        ZStack {
+            // **Restructured 2026-08-21** — Testing (53): Andy reported
+            // white gaps opening at the screen's edges, shifting
+            // continuously while a track played ("borders moving in a
+            // wavy way... keeps going on whilst the song keeps playing").
+            // Real, different bug from the mesh-curvature issue fixed the
+            // same round -- this background used to be attached via
+            // `.background { NowPlayingBackground(...) }` on the
+            // `GeometryReader`/`ScrollView` below, and `.background()`'s
+            // sizing can follow its *content* view's own reported size
+            // rather than staying pinned to the full screen -- exactly the
+            // kind of drift a screen with continuously re-rendering
+            // content (the progress bar updating ~10Hz, `MarqueeText`
+            // scrolling continuously) could produce. Pulling the
+            // background out as its own explicit `ZStack` layer, given no
+            // frame information from the foreground at all, means it can
+            // never track anything else's size -- it always fills exactly
+            // what the `ZStack` itself is given, permanently.
+            NowPlayingBackground(blend: backgroundBlend)
+                .ignoresSafeArea()
+
+            GeometryReader { geo in
             ScrollView {
                 VStack(spacing: DesignTokens.Spacing.lg) {
                     if !sourceCaption.isEmpty {
@@ -216,12 +237,7 @@ struct NowPlayingView: View {
                 .frame(width: geo.size.width)
                 .frame(minHeight: geo.size.height)
             }
-        }
-        .background {
-            // Real dynamic, artwork-derived background, added 2026-08-18 --
-            // replaces the static `DesignTokens.Color.background` fill.
-            // See `Views/NowPlayingBackground.swift`'s own doc comment.
-            NowPlayingBackground(blend: backgroundBlend)
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: playbackEngine.isPlaying) { _, isPlaying in
