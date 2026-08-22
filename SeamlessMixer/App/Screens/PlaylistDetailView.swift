@@ -460,14 +460,25 @@ struct PlaylistDetailView: View {
                         // off `isThisPlaylistAudiblyPlaying`, not just
                         // "loaded," so a paused session doesn't visually
                         // claim to be playing (2026-08-14 fix).
+                        //
+                        // **Fixed 2026-08-22, real bug, Testing (54)** —
+                        // the loaded-but-paused case showed "pause.fill",
+                        // the icon that means "tap to pause" (i.e. "this is
+                        // currently playing") -- backwards for a session
+                        // that's actually paused, which should show
+                        // "play.fill" ("tap to resume"), matching the exact
+                        // convention this app's own Now Playing screen
+                        // already uses correctly for its own transport
+                        // button. Andy: "the Playlist Detail screen still
+                        // shows the symbol on Play [i.e. the icon that
+                        // implies playing] on the Now Playing button" after
+                        // pausing from Now Playing.
                         if isThisPlaylistAudiblyPlaying {
                             NowPlayingBarsView(color: DesignTokens.Color.onPrimary, maxHeight: 16)
-                        } else if isThisPlaylistLoaded {
-                            Image(systemName: "pause.fill")
                         } else {
                             Image(systemName: "play.fill")
                         }
-                        Text(isThisPlaylistLoaded ? "Now Playing" : "Play")
+                        Text(isThisPlaylistLoaded ? (isThisPlaylistAudiblyPlaying ? "Now Playing" : "Paused") : "Play")
                     }
                     .frame(maxWidth: .infinity)
                     .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
@@ -484,7 +495,14 @@ struct PlaylistDetailView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity)
                 } else if isThisPlaylistLoaded {
-                    Text("Already playing — tap to return to Now Playing.")
+                    // **Fixed 2026-08-22, same round as the icon fix
+                    // above** — this always said "Already playing" even
+                    // when the session was actually paused, the same
+                    // "isThisPlaylistLoaded alone doesn't distinguish
+                    // paused from audible" gap the icon had.
+                    Text(isThisPlaylistAudiblyPlaying
+                        ? "Already playing — tap to return to Now Playing."
+                        : "Paused — tap to resume.")
                         .font(.caption)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .multilineTextAlignment(.center)
