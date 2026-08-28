@@ -1535,19 +1535,49 @@ final class PlaybackEngine: ObservableObject {
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
 
+        // **Republish added to all three 2026-08-22, Testing (54)/(55)** —
+        // Andy found the lock screen's transport icon could get stuck
+        // showing "playing" (pause-bars) after a genuine pause, and stay
+        // stuck indefinitely (confirmed by checking again minutes later,
+        // not just a brief propagation lag). Root cause: `pause()`/`resume()`
+        // each have their own internal guard that makes them a silent no-op
+        // when the requested action doesn't match the real current state
+        // (e.g. `pause()` while already paused) -- but these handlers
+        // returned `.success` to iOS regardless, and a no-op call never
+        // republishes anything. If the lock screen's own displayed icon
+        // ever drifts out of sync with reality (root cause of the *first*
+        // drift still unconfirmed -- possibly system-side render staleness
+        // on the very first publish), tapping it invokes whichever command
+        // matches that stale icon, no-ops, and nothing ever tells iOS the
+        // real state -- exactly matching what Andy observed: the first tap
+        // did nothing (still paused, icon unchanged), only the *second* tap
+        // (which happened to invoke the other command) actually resumed.
+        // Explicitly republishing after every command -- even a no-op one --
+        // means any tap, matching or not, forces iOS to receive the real
+        // current state and gives it a chance to self-correct its icon,
+        // rather than only ever hearing from us when something changes.
         center.playCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            MainActor.assumeIsolated { self.resume() }
+            MainActor.assumeIsolated {
+                self.resume()
+                self.publishNowPlayingPlaybackState()
+            }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            MainActor.assumeIsolated { self.pause() }
+            MainActor.assumeIsolated {
+                self.pause()
+                self.publishNowPlayingPlaybackState()
+            }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            MainActor.assumeIsolated { self.isPaused ? self.resume() : self.pause() }
+            MainActor.assumeIsolated {
+                self.isPaused ? self.resume() : self.pause()
+                self.publishNowPlayingPlaybackState()
+            }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
