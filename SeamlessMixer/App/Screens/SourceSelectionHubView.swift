@@ -57,6 +57,26 @@ struct SourceSelectionHubView: View {
 
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
+    @Environment(\.dismiss) private var dismiss
+
+    /// **Added 2026-08-22**, per Andy's direct report: "If a mix is being
+    /// built and some songs, artists, albums etc have been selected
+    /// already and I click on the arrow < to go to the previous screen,
+    /// there should be a warning window... There are many a time I have
+    /// made a choice only to lose it because I clicked on that arrow."
+    /// Guards the back navigation behind a confirmation only when there's
+    /// actually something to lose (`viewModel.hasSelection`) -- backing out
+    /// of an empty Hub still needs no confirmation at all.
+    ///
+    /// **Known gap, flagged not silently missing**: this only covers a tap
+    /// on the custom back chevron below. iOS's own edge-swipe-to-go-back
+    /// gesture isn't intercepted by this — `.navigationBarBackButtonHidden`
+    /// hides the button but doesn't disable that gesture, and reliably
+    /// blocking/confirming it needs a lower-level UIKit hook
+    /// (`UINavigationControllerDelegate`) that's meaningfully riskier to
+    /// get right blind than this button-only fix. Revisit if swiping past
+    /// a real selection turns out to be a real, felt gap in practice.
+    @State private var showDiscardConfirmation = false
 
     /// Caps a single chip's label width in `chipRow`, below — see that
     /// property's own doc comment for the real screen-misalignment bug this
@@ -78,6 +98,29 @@ struct SourceSelectionHubView: View {
         .background(DesignTokens.Color.background)
         .navigationTitle("New Seamless Mix")
         .navigationBarTitleDisplayMode(.inline)
+        // **Custom back button, added 2026-08-22** -- the default system
+        // back button can't be intercepted with a confirmation, so it's
+        // replaced with one that checks `viewModel.hasSelection` first.
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button {
+                    if viewModel.hasSelection {
+                        showDiscardConfirmation = true
+                    } else {
+                        dismiss()
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
+        }
+        .alert("Discard this mix?", isPresented: $showDiscardConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("OK", role: .destructive) { dismiss() }
+        } message: {
+            Text("Going back will lose everything selected for this mix so far.")
+        }
         .onAppear { viewModel.requestAccessAndLoadCounts() }
         .overlay {
             if mixBuilder.isBuilding {

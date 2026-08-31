@@ -101,12 +101,33 @@ final class SourceSelectionViewModel: ObservableObject {
     /// crossfade length (see `CrossfadeTiming.durationSec(forBPM:extraSec:)`).
     /// Andy specifically asked for this "in conjunction with Mode," i.e. a
     /// Hub control living right alongside it, not a hidden global default —
-    /// see `SourceSelectionHubView.modePicker`. Defaults to 0 (today's
-    /// exact crossfade behavior, unchanged unless the user opts in) —
-    /// unlike `includeEverything`, Andy didn't ask for a non-zero default
-    /// here, so this follows the same "preserve existing behavior until
-    /// told otherwise" convention `targetMinutes` already uses.
-    @Published var extraCrossfadeSec: Double = 0
+    /// see `SourceSelectionHubView.modePicker`.
+    ///
+    /// **Persisted across builds, 2026-08-22** — this used to reset to 0
+    /// every time this screen loaded, per Andy's own direct report: "it
+    /// gets tiresome if you have to always tap the buttons to 5s every
+    /// time you go a build and forget to set them." Now initialized from
+    /// (and saved to) `UserDefaults` on every change, so whatever value was
+    /// last used is what a fresh Build Mix starts from -- a genuinely new
+    /// install still starts at 0 (today's exact behavior, since nothing's
+    /// been saved yet), matching the "preserve existing behavior until the
+    /// user actually opts in" convention this project already uses
+    /// elsewhere. **Mode does NOT get this same treatment** -- despite
+    /// Andy's framing ("permanent just like the mode"), `mode` above
+    /// actually resets to `.energyWave` every time too; flagged to him
+    /// directly rather than assumed, since fixing this one alone doesn't
+    /// actually match his stated mental model of how Mode behaves.
+    @Published var extraCrossfadeSec: Double = SourceSelectionViewModel.loadPersistedExtraCrossfadeSec() {
+        didSet {
+            UserDefaults.standard.set(extraCrossfadeSec, forKey: Self.extraCrossfadeSecDefaultsKey)
+        }
+    }
+
+    private static let extraCrossfadeSecDefaultsKey = "sourceSelection.extraCrossfadeSec"
+
+    private static func loadPersistedExtraCrossfadeSec() -> Double {
+        UserDefaults.standard.object(forKey: extraCrossfadeSecDefaultsKey) as? Double ?? 0
+    }
 
     /// True once "Use your whole library" is picked — per the confirmed
     /// design, this clears/disables the four category rows since combining

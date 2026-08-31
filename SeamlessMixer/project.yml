@@ -117,7 +117,11 @@ targets:
         # App Store Connect directly if/when the name is finalized). A full
         # rename across all of these is real, separate work — flagged here,
         # not done piecemeal.
-        CFBundleDisplayName: SeamlessDJ
+        # Spaced 2026-08-22, per Andy's direct request ("the label of the
+        # app on the home screen should be Seamless DJ - with a spacing
+        # between the two words") -- home-screen label only, same narrow
+        # scope as the note above; nothing else renamed.
+        CFBundleDisplayName: "Seamless DJ"
         # Builds 8-11 all uploaded with "Version code: 1" no matter what —
         # neither project.yml's CURRENT_PROJECT_VERSION: $(BUILD_NUMBER)
         # (0.18.11) nor codemagic.yaml's --archive-xcargs override (0.18.12)
