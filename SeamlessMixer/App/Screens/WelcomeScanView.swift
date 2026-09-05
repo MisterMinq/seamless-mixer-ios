@@ -61,6 +61,27 @@ struct WelcomeScanView: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
 
+                // **Added 2026-09-05, real bug found via Andy's own repeated
+                // testing** — the count was only ever shown inside the
+                // "Scan Library" button's own label (see `scanButtonLabel`
+                // below), never as a standalone, clearly-readable progress
+                // line. Andy: "I only see [the] progress bar... and the
+                // song titles flashing underneath. Nothing more... I
+                // assumed [there was no number] because you did not know
+                // the number of songs." The number was there the whole
+                // time, just never noticed across many real testing
+                // rounds — a button's own label doesn't read as a progress
+                // indicator the way a bold headline does. This is what
+                // actually lets him tell "background scanning genuinely
+                // stalled" apart from "still working, just slow" — the
+                // whole point of the background-continuation investigation
+                // he's now asking to pursue "in earnest."
+                if didStart {
+                    Text("\(scanner.analyzedCount) of \(scanner.totalCount) songs analyzed")
+                        .font(.title3.bold())
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                }
+
                 ProgressView(value: Double(scanner.analyzedCount), total: Double(max(scanner.totalCount, 1)))
                     .tint(DesignTokens.Color.primary)
 
