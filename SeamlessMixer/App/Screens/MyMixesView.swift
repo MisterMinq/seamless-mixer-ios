@@ -107,6 +107,10 @@ struct MyMixesView: View {
     /// actual excluded tracks, not just the summary message, per Andy's
     /// direct request to be able to inspect specific songs.
     @State private var pendingExcludedTracks: [Track] = []
+    /// **Added 2026-09-05**, alongside the duplicate-song dedup fix — see
+    /// `DuplicateFilter`'s own doc comment. Same "hand it to Playlist Detail
+    /// at push time" treatment as the exclusion fields above.
+    @State private var pendingDuplicateGroups: [[Track]] = []
     /// **Added 2026-08-15** — the gear icon was a no-op button since this
     /// screen was first built; now opens `SettingsView`'s first real slice
     /// (just the version/build number, per Andy's direct request).
@@ -130,7 +134,7 @@ struct MyMixesView: View {
                 case .hub:
                     SourceSelectionHubView(store: store, onBuilt: handleBuilt)
                 case .playlist(let playlist):
-                    PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage, initialExcludedTracks: pendingExcludedTracks)
+                    PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage, initialExcludedTracks: pendingExcludedTracks, initialDuplicateGroups: pendingDuplicateGroups)
                 }
             }
             // `switch destination` above matches on the case alone (the
@@ -174,9 +178,10 @@ struct MyMixesView: View {
     /// destination from the same state update). `pendingExclusionMessage`
     /// is still set here since `PlaylistDetailView` needs the value, just
     /// not presented here.
-    private func handleBuilt(playlist: Playlist, exclusionMessage: String?, excludedTracks: [Track]) {
+    private func handleBuilt(playlist: Playlist, exclusionMessage: String?, excludedTracks: [Track], duplicateGroups: [[Track]]) {
         pendingExclusionMessage = exclusionMessage
         pendingExcludedTracks = excludedTracks
+        pendingDuplicateGroups = duplicateGroups
         path = [.playlist(playlist)]
     }
 

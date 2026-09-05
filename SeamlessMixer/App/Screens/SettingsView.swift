@@ -36,6 +36,13 @@ struct SettingsView: View {
     @ObservedObject var store: PlaylistStore
     @Environment(\.dismiss) private var dismiss
     @State private var showLibraryScan = false
+    /// **Added 2026-09-05** — seeded from `AppSettings.includeDuplicateTracks`
+    /// at init (a plain `UserDefaults`-backed value, not `@Published`, so a
+    /// local `@State` mirror is what actually drives the `Toggle`), written
+    /// back on every change. See `DuplicateFilter`'s own doc comment for why
+    /// this exists — real duplicate library entries were clustering
+    /// back-to-back in whole-library mixes.
+    @State private var includeDuplicateTracks = AppSettings.includeDuplicateTracks
 
     private var versionString: String {
         let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -74,6 +81,19 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("Analyzes every song's tempo, key, and energy so a \"Use your whole library\" mix can be built without a long wait. Only needs to run once — you can leave and come back to finish later.")
+                }
+
+                Section {
+                    Toggle(isOn: $includeDuplicateTracks) {
+                        Text("Include duplicate copies")
+                            .foregroundStyle(DesignTokens.Color.textPrimary)
+                    }
+                    .tint(DesignTokens.Color.primary)
+                    .onChange(of: includeDuplicateTracks) { _, newValue in
+                        AppSettings.includeDuplicateTracks = newValue
+                    }
+                } footer: {
+                    Text("Off by default: when the same song appears more than once in your library (title, artist, and length all matching), only one copy is used per mix, so it doesn't end up playing back-to-back. Turn this on to include every copy instead.")
                 }
             }
             .navigationTitle("Settings")

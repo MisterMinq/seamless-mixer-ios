@@ -99,6 +99,13 @@ final class MixBuilder: ObservableObject {
     /// the reasoning." The aggregate count/message alone never let him do
     /// that without guessing which songs to look at.
     @Published private(set) var lastExcludedTracks: [Track] = []
+    /// **Added 2026-09-05**, per a real Testing report: the same song
+    /// playing 4 times in a row in a whole-library mix. See
+    /// `DuplicateFilter`'s own doc comment for the root cause and match
+    /// criteria. Each inner array is one group of tracks considered
+    /// duplicates of each other; empty when none were found, or when
+    /// `AppSettings.includeDuplicateTracks` is on.
+    @Published private(set) var lastDuplicateGroups: [[Track]] = []
 
     /// - Parameter keepAll: when true, includes every analyzed/DRM-accessible
     ///   track in the pool and ignores `targetSeconds` entirely — the iOS
@@ -131,6 +138,7 @@ final class MixBuilder: ObservableObject {
         buildError = nil
         lastBuildExclusionMessage = nil
         lastExcludedTracks = []
+        lastDuplicateGroups = []
         defer { isBuilding = false; progressText = "" }
 
         do {
@@ -184,6 +192,23 @@ final class MixBuilder: ObservableObject {
             progressText = "Analyzing \(index + 1) of \(items.count)…"
             let track = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
             pool.append(track)
+        }
+
+        // **Duplicate-song dedup, added 2026-09-05** — see `DuplicateFilter`'s
+        // own doc comment for why real duplicate library entries cluster
+        // back-to-back in the finished mix rather than just occasionally
+        // repeating. Runs before the DRM-exclusion summary below, so that
+        // summary's own total reflects the deduped pool, not double-counting
+        // a redundant copy as if it were a genuine DRM/analysis exclusion —
+        // these are two separate, separately-reported reasons a track isn't
+        // in the final count. `AppSettings.includeDuplicateTracks` is the
+        // escape hatch for the rare case someone wants every copy included
+        // regardless; defaults to `false` (dedup on), since nobody actually
+        // wants the same song playing 4 times in a row.
+        if !AppSettings.includeDuplicateTracks {
+            let duplicateSummary = DuplicateFilter.summarize(pool: pool)
+            lastDuplicateGroups = duplicateSummary.duplicateGroups
+            pool = duplicateSummary.uniqueTracks
         }
 
         // DRM-Exclusion UX transparency message, computed here (not inside

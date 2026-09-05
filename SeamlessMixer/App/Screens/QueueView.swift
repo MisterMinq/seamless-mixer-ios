@@ -245,11 +245,51 @@ struct QueueView: View {
                 RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
                     .fill(isNowPlaying ? DesignTokens.Color.surfaceTint : Color.clear)
             )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // **Added 2026-09-05**, matching Playlist Detail's own
+                // tap-to-play-from-here -- see that file's `trackRow` doc
+                // comment for the real report behind it (a route-change
+                // glitch that broke playback with no way to pick back up
+                // except restarting from track 1). `rows` is this
+                // playlist's *full* track list (`upcoming`/`remaining` are
+                // just derived slices of it), so the tapped row's real
+                // index has to be looked up by identity rather than reused
+                // from `remaining`'s own local index.
+                if let index = rows.firstIndex(where: { $0.id == row.id }) {
+                    play(startIndex: index)
+                }
+            }
 
             if !isLast {
                 connector(isImminent: isImminent)
             }
         }
+    }
+
+    /// Starts a fresh playback session on this playlist's own track list
+    /// (`rows`, not just the `upcoming`/`remaining` slices this screen
+    /// derives from it), at `startIndex` -- see `rowView`'s tap gesture.
+    /// `playbackEngine.currentPlaylistID` is reused as-is rather than
+    /// taking a fresh parameter: this screen is only ever reachable while
+    /// that exact playlist is already loaded (Now Playing's queue icon),
+    /// so it's always the right ID.
+    private func play(startIndex: Int) {
+        guard !rows.isEmpty else { return }
+        playbackEngine.play(
+            queue: rows.map {
+                PlaybackEngine.QueuedTrack(
+                    trackPersistentID: $0.trackPersistentID,
+                    crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec,
+                    crossfadeDurationSec: $0.crossfadeDurationSec,
+                    playableStartSec: $0.playableStartSec,
+                    bpm: $0.bpm
+                )
+            },
+            startIndex: startIndex,
+            playlistID: playbackEngine.currentPlaylistID
+        )
+        dismiss()
     }
 
     /// Real per-track thumbnail, added 2026-08-19 — same 36pt rounded-rect

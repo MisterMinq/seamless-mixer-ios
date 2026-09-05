@@ -110,6 +110,15 @@ struct PlaylistDetailView: View {
     /// rather than folded into the alert itself since `Alert` can't hold a
     /// scrollable list.
     @State private var showExcludedSongsList = false
+    /// **Added 2026-09-05**, alongside the duplicate-song dedup fix — see
+    /// `DuplicateFilter`'s own doc comment. Same "own, separate alert" and
+    /// "View List" treatment as the exclusion fields above — deliberately
+    /// not folded into the same alert, since duplicates and DRM exclusions
+    /// are two entirely separate reasons a track isn't in the final mix,
+    /// each with their own explanation.
+    private let initialDuplicateGroups: [[Track]]
+    @State private var showDuplicatesAlert: Bool
+    @State private var showDuplicatesList = false
     // Seeded from `playlist.isFavorite` at init so the star renders correctly
     // immediately, then updated optimistically on tap — `playlist` itself is
     // a `let` snapshot from navigation, not observed, so it wouldn't reflect
@@ -168,14 +177,19 @@ struct PlaylistDetailView: View {
         return CGFloat(14 + maxDigits * 8)
     }
 
-    init(playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil, initialExcludedTracks: [Track] = []) {
+    init(playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil, initialExcludedTracks: [Track] = [], initialDuplicateGroups: [[Track]] = []) {
         self.playlist = playlist
         self.store = store
         self.initialExclusionMessage = initialExclusionMessage
         self.initialExcludedTracks = initialExcludedTracks
+        self.initialDuplicateGroups = initialDuplicateGroups
         _isFavorite = State(initialValue: playlist.isFavorite)
         _displayName = State(initialValue: playlist.name)
         _showExclusionAlert = State(initialValue: initialExclusionMessage != nil)
+        // Only seeded true here when there's no exclusion alert to chain
+        // after (see `presentDuplicatesAlertIfNeeded`) -- showing both at
+        // once isn't reliable in SwiftUI.
+        _showDuplicatesAlert = State(initialValue: initialExclusionMessage == nil && !initialDuplicateGroups.isEmpty)
     }
 
     var body: some View {
@@ -295,6 +309,15 @@ struct PlaylistDetailView: View {
         // Moved here from `MyMixesView` 2026-08-14 -- see `showExclusionAlert`'s
         // own doc comment for why presenting this alongside a navigation
         // push (on the pushing screen) caused a real blank-white-screen bug.
+        //
+        // **Chained into the duplicates alert below, 2026-09-05** — SwiftUI
+        // doesn't reliably present two `.alert()`s from the same view at
+        // once (a known limitation, not something worth risking blind given
+        // a build can genuinely have both DRM exclusions and duplicates at
+        // the same time). Both of this alert's dismissal paths — "OK"
+        // directly, or closing the "View List" sheet — hand off to
+        // `presentDuplicatesAlertIfNeeded()`, so the duplicates alert only
+        // ever tries to show once this one is fully out of the way.
         .alert("Some songs couldn't be included", isPresented: $showExclusionAlert) {
             // **"View List" added 2026-08-21**, per Andy's direct request —
             // only shown when there's actually a list to view (an alert with
@@ -303,13 +326,48 @@ struct PlaylistDetailView: View {
             if !initialExcludedTracks.isEmpty {
                 Button("View List") { showExcludedSongsList = true }
             }
-            Button("OK", role: .cancel) {}
+            Button("OK", role: .cancel) { presentDuplicatesAlertIfNeeded() }
         } message: {
             Text(initialExclusionMessage ?? "")
         }
-        .sheet(isPresented: $showExcludedSongsList) {
+        .sheet(isPresented: $showExcludedSongsList, onDismiss: presentDuplicatesAlertIfNeeded) {
             ExcludedSongsView(tracks: initialExcludedTracks)
         }
+        // **Added 2026-09-05** — see `DuplicateFilter`'s own doc comment.
+        // Deliberately factual, no "you should delete these" framing, per
+        // Andy's own explicit correction: "showing that there are
+        // duplicates found... is a good step" but a suggestion to delete
+        // them wasn't wanted — he already does that himself once he knows.
+        .alert("Duplicate songs found", isPresented: $showDuplicatesAlert) {
+            if !initialDuplicateGroups.isEmpty {
+                Button("View List") { showDuplicatesList = true }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(duplicatesMessage)
+        }
+        .sheet(isPresented: $showDuplicatesList) {
+            DuplicateTracksView(groups: initialDuplicateGroups)
+        }
+    }
+
+    /// Shows the duplicates alert only if there's anything to show — called
+    /// once the exclusion alert (and its own "View List" sheet, if opened)
+    /// is fully dismissed, never while either is still on screen. Also the
+    /// direct trigger at `init` time when there was no exclusion alert to
+    /// chain after in the first place (see `_showDuplicatesAlert`'s own
+    /// initial value).
+    private func presentDuplicatesAlertIfNeeded() {
+        guard !initialDuplicateGroups.isEmpty else { return }
+        showDuplicatesAlert = true
+    }
+
+    /// Plain count, no advisory language — see the alert's own comment above
+    /// for why.
+    private var duplicatesMessage: String {
+        let extraCopies = initialDuplicateGroups.reduce(0) { $0 + $1.count - 1 }
+        let copiesWord = extraCopies == 1 ? "copy" : "copies"
+        return "\(extraCopies) duplicate \(copiesWord) of songs already in this mix were skipped, so they don't play back-to-back."
     }
 
     // MARK: - Track list + footer (scrollable, header excluded)
@@ -335,7 +393,7 @@ struct PlaylistDetailView: View {
                 Section {
                     ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
                         trackRow(
-                            row, isLast: index == viewModel.rows.count - 1, isImminent: index == 0,
+                            row, index: index, isLast: index == viewModel.rows.count - 1, isImminent: index == 0,
                             // `!playbackEngine.isPaused` -- same 2026-08-14
                             // fix as `isThisPlaylistAudiblyPlaying` above:
                             // don't show animated bars on a paused track.
@@ -435,20 +493,10 @@ struct PlaylistDetailView: View {
                     // `isThisPlaylistLoaded`'s doc comment for why this
                     // matters.
                     if !isThisPlaylistLoaded {
-                        playbackEngine.play(
-                            queue: viewModel.rows.map {
-                                PlaybackEngine.QueuedTrack(
-                                    trackPersistentID: $0.trackPersistentID,
-                                    crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec,
-                                    crossfadeDurationSec: $0.crossfadeDurationSec,
-                                    playableStartSec: $0.playableStartSec,
-                                    bpm: $0.bpm
-                                )
-                            },
-                            playlistID: playlist.id
-                        )
+                        play(startIndex: 0)
+                    } else {
+                        showNowPlaying = true
                     }
-                    showNowPlaying = true
                 } label: {
                     // `Label`'s `systemImage:` only takes a static glyph name,
                     // not a custom view, so the "Now Playing" state is built
@@ -520,6 +568,30 @@ struct PlaylistDetailView: View {
         .padding(DesignTokens.Spacing.md)
     }
 
+    /// Starts a fresh playback session on this mix's own track list, at
+    /// `startIndex` — shared by the header Play button (always `0`, only
+    /// when nothing's already loaded) and each track row's tap gesture
+    /// (always exactly the tapped row, an explicit "start here" action
+    /// regardless of what else might already be loaded). See `trackRow`'s
+    /// own doc comment for why row-tap exists.
+    private func play(startIndex: Int) {
+        guard !viewModel.rows.isEmpty else { return }
+        playbackEngine.play(
+            queue: viewModel.rows.map {
+                PlaybackEngine.QueuedTrack(
+                    trackPersistentID: $0.trackPersistentID,
+                    crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec,
+                    crossfadeDurationSec: $0.crossfadeDurationSec,
+                    playableStartSec: $0.playableStartSec,
+                    bpm: $0.bpm
+                )
+            },
+            startIndex: startIndex,
+            playlistID: playlist.id
+        )
+        showNowPlaying = true
+    }
+
     // MARK: - Track list
 
     /// One track row plus (except for the last row) the teal/gray connector
@@ -532,7 +604,20 @@ struct PlaylistDetailView: View {
     /// treatment (tinted background, small play icon in place of the
     /// position number) now that `PlaybackEngine` can actually report which
     /// track is currently sounding.
-    private func trackRow(_ row: PlaylistDetailRow, isLast: Bool, isImminent: Bool, isNowPlaying: Bool) -> some View {
+    /// **Tap-to-play-from-here added 2026-09-05**, per Andy's direct
+    /// request: after a playback session breaks (his real report was a
+    /// route-change glitch closing AirPods into their case while already
+    /// on a different output), there was no way to pick back up except
+    /// tapping the header Play button, which always restarts from track 1
+    /// — "there is actually no way to 'continue' for where one left off."
+    /// Matches Apple Music's own convention (tap any song in a playlist to
+    /// start playback there) — this is the real answer to that need, not
+    /// exact-position recovery after an interruption (which would need
+    /// persisting mid-track elapsed time through a session teardown, much
+    /// higher risk for comparatively little gain over "just tap back in
+    /// roughly where you left off," which the now-playing highlight/
+    /// auto-scroll already helps you find).
+    private func trackRow(_ row: PlaylistDetailRow, index: Int, isLast: Bool, isImminent: Bool, isNowPlaying: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: DesignTokens.Spacing.sm) {
                 if isNowPlaying {
@@ -627,6 +712,10 @@ struct PlaylistDetailView: View {
                 RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
                     .fill(isNowPlaying ? DesignTokens.Color.surfaceTint : Color.clear)
             )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                play(startIndex: index)
+            }
 
             if !isLast {
                 connector(isImminent: isImminent)
