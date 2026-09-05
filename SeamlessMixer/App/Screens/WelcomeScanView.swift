@@ -61,6 +61,20 @@ struct WelcomeScanView: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
 
+                // **Added 2026-09-05, per Testing (60)/(61)** -- Andy timed
+                // a full 2,722-song scan two ways: ~22 minutes with the app
+                // open and the screen on, vs. a ~49 songs/min pace while
+                // backgrounded/locked (projecting to roughly an hour for
+                // the same library). That ~2.5x gap is iOS's own background
+                // CPU throttling, not this app's analysis code being slow
+                // -- not something a third-party app can opt out of, so
+                // the honest fix is setting the right expectation here
+                // rather than a code change.
+                Text("Tip: leave the app open with your screen on for the fastest results. Locking your phone works too, but iOS slows background processing down to save battery, which can make a full scan take noticeably longer.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+
                 // **Added 2026-09-05, real bug found via Andy's own repeated
                 // testing** — the count was only ever shown inside the
                 // "Scan Library" button's own label (see `scanButtonLabel`

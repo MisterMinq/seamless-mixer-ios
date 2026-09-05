@@ -23,10 +23,12 @@ import UIKit
 /// static icon.
 ///
 /// **Deliberately read-only for this first slice** — the per-track "..."
-/// menu is shown (per the confirmed design, every row but "now playing" has
-/// one) but its actions are visible-and-disabled placeholders, the same
-/// "visible but disabled, not hidden" treatment this project uses
-/// everywhere else for a deferred action. Wiring "Remove from this mix" up
+/// menu is shown on every row, including the now-playing one (changed
+/// 2026-09-05 to match `PlaylistDetailView`'s own row, which never hid it
+/// there — see that change's own note further down for why), but its
+/// actions are visible-and-disabled placeholders, the same "visible but
+/// disabled, not hidden" treatment this project uses everywhere else for a
+/// deferred action. Wiring "Remove from this mix" up
 /// for real here would mean handing this screen the actual `Playlist`/
 /// `PlaylistStore`, which `NowPlayingView` was deliberately never given
 /// (only a lightweight `rows` snapshot, per its own doc comment, to keep
@@ -209,35 +211,41 @@ struct QueueView: View {
                     .font(.footnote)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
 
-                // Per the confirmed design, every row but "now playing" gets
-                // its own "..." menu -- real actions deferred, see this
-                // file's own doc comment.
-                if !isNowPlaying {
-                    // Circular chrome + `.menuStyle(.borderlessButton)`
-                    // added 2026-08-19, matching My Mixes' and Playlist
-                    // Detail's "..." exactly -- see PlaylistDetailView's own
-                    // note on why a bare `Menu` needs `.borderlessButton`
-                    // explicitly (its default chrome would otherwise stack
-                    // an extra, unwanted gray layer under this hand-coded
-                    // circle rather than being replaced by it).
-                    Menu {
-                        Button {} label: {
-                            Label("Remove from this mix", systemImage: "minus.circle")
-                        }
-                        .disabled(true)
-                        Button {} label: {
-                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
-                        }
-                        .disabled(true)
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .foregroundStyle(DesignTokens.Color.textSecondary)
-                            .frame(width: 32, height: 32)
-                            .background(Circle().fill(DesignTokens.Color.surfaceTint))
-                            .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
+                // **Changed 2026-09-05, per Andy's direct report**: the
+                // confirmed design originally called for hiding this on the
+                // now-playing row (a play-state icon "in that spot instead")
+                // -- but `PlaylistDetailView.trackRow` was built with its own
+                // "..." Menu shown unconditionally on every row, including
+                // the now-playing one, and nobody ever reconciled the two.
+                // Andy caught the resulting inconsistency directly (visible
+                // on Playlist Detail's playing row, missing here) and asked
+                // for them to match -- this now always shows, mirroring
+                // Playlist Detail exactly rather than the other way around,
+                // since Playlist Detail's version is the one with a real,
+                // working action behind it (deferred here, same as before).
+                // Circular chrome + `.menuStyle(.borderlessButton)` matches
+                // My Mixes' and Playlist Detail's "..." exactly -- see
+                // PlaylistDetailView's own note on why a bare `Menu` needs
+                // `.borderlessButton` explicitly (its default chrome would
+                // otherwise stack an extra, unwanted gray layer under this
+                // hand-coded circle rather than being replaced by it).
+                Menu {
+                    Button {} label: {
+                        Label("Remove from this mix", systemImage: "minus.circle")
                     }
-                    .menuStyle(.borderlessButton)
+                    .disabled(true)
+                    Button {} label: {
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                    .disabled(true)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(DesignTokens.Color.surfaceTint))
+                        .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
                 }
+                .menuStyle(.borderlessButton)
             }
             .padding(.vertical, DesignTokens.Spacing.xxs)
             .padding(.horizontal, isNowPlaying ? DesignTokens.Spacing.xs : 0)

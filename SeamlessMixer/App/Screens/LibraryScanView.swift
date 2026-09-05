@@ -77,7 +77,16 @@ struct LibraryScanView: View {
             Text("To build seamless mixes from your whole library, the app needs to scan it once and learn each song's tempo, key, and energy. This happens once — after that, a whole-library mix is instant.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(DesignTokens.Color.textSecondary)
-            Text("Stay on this screen while it runs. If you leave partway through, coming back later picks up right where it left off — nothing already analyzed gets redone.")
+            // **Reworded 2026-09-05, per Testing (60)/(61)** -- a real,
+            // quantified finding, not a guess: Andy timed the same
+            // 2,722-song scan at ~124 songs/min with the phone unlocked
+            // and the app open vs. ~49 songs/min backgrounded, a ~2.5x
+            // gap that's iOS's own background CPU throttling (battery
+            // protection), not this app's analysis code being slow. That
+            // throttling isn't something a third-party app can opt out
+            // of, so the honest fix is telling the user up front, not a
+            // performance change.
+            Text("Stay on this screen with your phone unlocked for the fastest results — iOS slows background work down to save battery, so locking your phone will make this take noticeably longer. If you leave partway through, coming back later picks up right where it left off — nothing already analyzed gets redone.")
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(DesignTokens.Color.textSecondary)
