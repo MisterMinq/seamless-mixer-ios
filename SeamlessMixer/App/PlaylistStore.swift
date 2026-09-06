@@ -196,6 +196,29 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    /// Track-level favorite — added 2026-09-06, per Andy's direct request:
+    /// a way to mark an individual song encountered inside a mix (the
+    /// motivating case is a Whole Library mix surfacing something he's
+    /// never consciously listened to before) as a favorite, separate from
+    /// the existing playlist-level `setFavorite` above. Looked up and
+    /// updated directly on the track's own `tracks` row rather than through
+    /// any one playlist — a song's favorite status isn't scoped to which
+    /// mix it happened to play in. Same "no `refresh()`" reasoning as
+    /// `removeTrack`/`reorderTracks`: this doesn't change anything
+    /// `MyMixesView`'s rows display.
+    func setTrackFavorite(trackPersistentID: Int64, isFavorite: Bool) {
+        guard let db else { return }
+        do {
+            try db.dbQueue.write { conn in
+                guard var track = try Track.fetchOne(conn, key: trackPersistentID) else { return }
+                track.isFavorite = isFavorite
+                try track.update(conn)
+            }
+        } catch {
+            loadError = "Couldn't update favorite: \(error.localizedDescription)"
+        }
+    }
+
     private static func databaseURL() throws -> URL {
         let appSupport = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,

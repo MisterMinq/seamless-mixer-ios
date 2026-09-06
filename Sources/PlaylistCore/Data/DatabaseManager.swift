@@ -139,6 +139,17 @@ public final class DatabaseManager {
             }
         }
 
+        // Added 2026-09-06, per Andy's direct request — a track-level
+        // favorite (see `Track.isFavorite`'s own doc comment), separate from
+        // the existing playlist-level `playlists.is_favorite`. NOT NULL with
+        // a `false` default so every existing track row backfills as "not
+        // favorited" rather than nil/unknown.
+        migrator.registerMigration("v4_track_favorite") { db in
+            try db.alter(table: "tracks") { t in
+                t.add(column: "is_favorite", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         return migrator
     }
 }

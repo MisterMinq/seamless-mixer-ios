@@ -32,6 +32,11 @@ struct PlaylistDetailRow: Identifiable {
     /// "carried for `QueuedTrack`, not shown" treatment as the other
     /// playback-timing fields above.
     let bpm: Double?
+    /// Track-level favorite — added 2026-09-06, per Andy's direct request
+    /// (see `Track.isFavorite`'s own doc comment). Drives the star shown in
+    /// this row's own "..." menu, separate from the playlist-level star in
+    /// this screen's toolbar.
+    var isFavorite: Bool
 }
 
 @MainActor
@@ -82,7 +87,8 @@ final class PlaylistDetailViewModel: ObservableObject {
                     crossfadeDurationSec: entry.crossfadeDurationSec,
                     playableStartSec: entry.track.playableStartSec ?? 0,
                     artwork: artworkByTrack[entry.track.persistentID],
-                    bpm: entry.track.bpm
+                    bpm: entry.track.bpm,
+                    isFavorite: entry.track.isFavorite
                 )
             }
 
@@ -144,7 +150,8 @@ final class PlaylistDetailViewModel: ObservableObject {
                 crossfadeDurationSec: row.crossfadeDurationSec,
                 playableStartSec: row.playableStartSec,
                 artwork: row.artwork,
-                bpm: row.bpm
+                bpm: row.bpm,
+                isFavorite: row.isFavorite
             )
         }
 
@@ -155,6 +162,20 @@ final class PlaylistDetailViewModel: ObservableObject {
         let newOrder = rows.map(\.id)
         guard newOrder != previousOrder, let playlistID = playlist.id else { return }
         store.reorderTracks(playlistID: playlistID, orderedPlaylistTrackIDs: newOrder)
+    }
+
+    /// Toggles a single track's favorite status (separate from the
+    /// playlist-level Favorite star) — added 2026-09-06 per Andy's direct
+    /// request, so a song discovered inside a mix (especially a Whole
+    /// Library one) can be found again later. Updates `rows` in place for
+    /// instant feedback rather than a full `load()` reload, since a
+    /// favorite toggle doesn't change anything else this screen displays
+    /// (song count, duration, subtitle).
+    func toggleTrackFavorite(row: PlaylistDetailRow, store: PlaylistStore) {
+        let newValue = !row.isFavorite
+        store.setTrackFavorite(trackPersistentID: row.trackPersistentID, isFavorite: newValue)
+        guard let index = rows.firstIndex(where: { $0.id == row.id }) else { return }
+        rows[index].isFavorite = newValue
     }
 
     private static func formatDuration(_ seconds: Double) -> String {

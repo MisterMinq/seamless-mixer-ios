@@ -289,7 +289,7 @@ struct PlaylistDetailView: View {
         // exposes track *IDs*, never titles/artists, so something has to
         // supply that lookup.
         .navigationDestination(isPresented: $showNowPlaying) {
-            NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle)
+            NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle, store: store)
         }
         // `onDismiss` re-loads regardless of which action was taken (Rename/
         // Refresh/neither) -- Refresh replaces this playlist's tracks, so
@@ -663,6 +663,19 @@ struct PlaylistDetailView: View {
                     .foregroundStyle(DesignTokens.Color.textSecondary)
 
                 Menu {
+                    // **Added 2026-09-06**, per Andy's direct request — a
+                    // per-song favorite, separate from this screen's own
+                    // playlist-level star (toolbar). Motivating case: a
+                    // Whole Library mix can surface a song Andy's never
+                    // consciously listened to before, and without this
+                    // there'd be no way to find it again inside a library
+                    // of thousands of tracks. See `Track.isFavorite`'s own
+                    // doc comment.
+                    Button {
+                        viewModel.toggleTrackFavorite(row: row, store: store)
+                    } label: {
+                        Label(row.isFavorite ? "Remove Favourite" : "Favourite", systemImage: row.isFavorite ? "star.slash" : "star")
+                    }
                     Button(role: .destructive) {
                         viewModel.removeTrack(row: row, playlist: playlist, store: store)
                     } label: {

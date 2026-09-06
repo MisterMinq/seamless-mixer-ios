@@ -53,6 +53,16 @@ public struct Track: Codable, Equatable, Identifiable {
     /// duration. Same nil-until-analyzed rule as `playableStartSec`.
     public var playableDurationSec: Double?
 
+    /// Track-level favorite — added 2026-09-06, per Andy's direct request.
+    /// Separate from `Playlist.isFavorite` (which favorites a whole saved
+    /// mix): this marks one individual song, independent of which mix it
+    /// happened to play in — the motivating case being a Whole Library mix
+    /// surfacing a song Andy's never consciously listened to before, which
+    /// would otherwise be near-impossible to find again inside a library of
+    /// thousands of tracks. Defaults to `false` so every existing row
+    /// backfills as "not favorited" once this column lands, not nil/unknown.
+    public var isFavorite: Bool
+
     public var id: Int64 { persistentID }
 
     public init(
@@ -69,7 +79,8 @@ public struct Track: Codable, Equatable, Identifiable {
         hasRawAudioAccess: Bool = true,
         analyzedAt: Date? = nil,
         playableStartSec: Double? = nil,
-        playableDurationSec: Double? = nil
+        playableDurationSec: Double? = nil,
+        isFavorite: Bool = false
     ) {
         self.persistentID = persistentID
         self.title = title
@@ -85,6 +96,7 @@ public struct Track: Codable, Equatable, Identifiable {
         self.analyzedAt = analyzedAt
         self.playableStartSec = playableStartSec
         self.playableDurationSec = playableDurationSec
+        self.isFavorite = isFavorite
     }
 
     /// True once every analysis field the sequencer *and* the mixing engine
@@ -121,6 +133,7 @@ extension Track: FetchableRecord, PersistableRecord {
         case analyzedAt = "analyzed_at"
         case playableStartSec = "playable_start_sec"
         case playableDurationSec = "playable_duration_sec"
+        case isFavorite = "is_favorite"
     }
 
     public init(row: Row) throws {
@@ -138,6 +151,7 @@ extension Track: FetchableRecord, PersistableRecord {
         analyzedAt = row[Columns.analyzedAt]
         playableStartSec = row[Columns.playableStartSec]
         playableDurationSec = row[Columns.playableDurationSec]
+        isFavorite = row[Columns.isFavorite]
     }
 
     public func encode(to container: inout PersistenceContainer) {
@@ -155,5 +169,6 @@ extension Track: FetchableRecord, PersistableRecord {
         container[Columns.analyzedAt] = analyzedAt
         container[Columns.playableStartSec] = playableStartSec
         container[Columns.playableDurationSec] = playableDurationSec
+        container[Columns.isFavorite] = isFavorite
     }
 }

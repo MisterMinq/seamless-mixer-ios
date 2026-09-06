@@ -22,18 +22,21 @@ import UIKit
 /// real animated `NowPlayingBarsView` for the now-playing row, instead of a
 /// static icon.
 ///
-/// **Deliberately read-only for this first slice** — the per-track "..."
-/// menu is shown on every row, including the now-playing one (changed
-/// 2026-09-05 to match `PlaylistDetailView`'s own row, which never hid it
-/// there — see that change's own note further down for why), but its
-/// actions are visible-and-disabled placeholders, the same "visible but
-/// disabled, not hidden" treatment this project uses everywhere else for a
-/// deferred action. Wiring "Remove from this mix" up
-/// for real here would mean handing this screen the actual `Playlist`/
-/// `PlaylistStore`, which `NowPlayingView` was deliberately never given
-/// (only a lightweight `rows` snapshot, per its own doc comment, to keep
-/// its footprint small) — kept out of scope for this pass rather than
-/// widening that on the strength of this one screen.
+/// **Mostly read-only, with one real action as of 2026-09-06** — the
+/// per-track "..." menu is shown on every row, including the now-playing
+/// one (changed 2026-09-05 to match `PlaylistDetailView`'s own row, which
+/// never hid it there — see that change's own note further down for why).
+/// "Remove from this mix"/"Play Next" stay visible-and-disabled
+/// placeholders, the same "visible but disabled, not hidden" treatment
+/// this project uses everywhere else for a deferred action — wiring
+/// "Remove from this mix" up for real here would mean handing this screen
+/// the actual `Playlist`, which `NowPlayingView` was deliberately never
+/// given (only a lightweight `rows` snapshot, per its own doc comment, to
+/// keep its footprint small). The per-track **Favourite** toggle is real,
+/// though (per Andy's direct request — a song discovered in a Whole
+/// Library mix needs to be findable again) — it only needs a track's own
+/// `persistentID` and `PlaylistStore`, not the full `Playlist`, so it
+/// didn't need that same widening.
 ///
 /// **Real per-track artwork and matching "..." chrome, as of 2026-08-19** —
 /// per Andy's direct request to make thumbnails and the fixed "..." style
@@ -56,9 +59,20 @@ import UIKit
 /// scrolls underneath it rather than carrying it away.
 struct QueueView: View {
     let rows: [PlaylistDetailRow]
+    /// **Added 2026-09-06**, per Andy's direct request to add a per-track
+    /// favorite to this screen's own "..." menu, alongside Playlist
+    /// Detail's — needs real database access, unlike this screen's other
+    /// (still-deferred) menu actions.
+    let store: PlaylistStore
 
     @EnvironmentObject private var playbackEngine: PlaybackEngine
     @Environment(\.dismiss) private var dismiss
+    /// Local, optimistic overrides for the favorite toggle above — this
+    /// screen receives `rows` as a plain snapshot (not an `@Published`
+    /// array it owns, unlike `PlaylistDetailViewModel`), so a toggle here
+    /// needs its own lightweight local state to reflect immediately rather
+    /// than waiting on this sheet being dismissed and re-presented.
+    @State private var favoriteOverrides: [Int64: Bool] = [:]
 
     /// Index of the now-playing row within `rows`. `nil` shouldn't happen in
     /// practice — this sheet is only reachable from a screen that's already
@@ -230,6 +244,17 @@ struct QueueView: View {
                 // otherwise stack an extra, unwanted gray layer under this
                 // hand-coded circle rather than being replaced by it).
                 Menu {
+                    // **Added 2026-09-06**, per Andy's direct request — same
+                    // per-track favorite as Playlist Detail's own menu (see
+                    // that file's own note on why: finding a song again
+                    // inside a Whole Library mix would otherwise be a real
+                    // problem). Unlike this menu's other two actions, this
+                    // one is real, not a disabled placeholder.
+                    Button {
+                        toggleFavorite(row)
+                    } label: {
+                        Label(isFavorite(row) ? "Remove Favourite" : "Favourite", systemImage: isFavorite(row) ? "star.slash" : "star")
+                    }
                     Button {} label: {
                         Label("Remove from this mix", systemImage: "minus.circle")
                     }
@@ -273,6 +298,21 @@ struct QueueView: View {
                 connector(isImminent: isImminent)
             }
         }
+    }
+
+    /// Current favorite state for a row — `favoriteOverrides` (this
+    /// screen's own local, optimistic state) takes precedence over `row
+    /// .isFavorite` (the value as of when `rows` was handed to this sheet),
+    /// so a toggle made here shows immediately without needing the whole
+    /// sheet re-presented.
+    private func isFavorite(_ row: PlaylistDetailRow) -> Bool {
+        favoriteOverrides[row.trackPersistentID] ?? row.isFavorite
+    }
+
+    private func toggleFavorite(_ row: PlaylistDetailRow) {
+        let newValue = !isFavorite(row)
+        favoriteOverrides[row.trackPersistentID] = newValue
+        store.setTrackFavorite(trackPersistentID: row.trackPersistentID, isFavorite: newValue)
     }
 
     /// Starts a fresh playback session on this playlist's own track list
@@ -337,6 +377,6 @@ struct QueueView: View {
 }
 
 #Preview {
-    QueueView(rows: [])
+    QueueView(rows: [], store: PlaylistStore())
         .environmentObject(PlaybackEngine())
 }

@@ -67,15 +67,44 @@ import MediaPlayer
 /// its organic, curved color blending kept reading as "wavy" on a real
 /// device even with all animation removed.
 ///
+/// **Track-level favourite star added 2026-09-06**, beside the title — per
+/// Andy's own opinion, explicitly not buried in a menu: the real scenario
+/// is discovering an unfamiliar song *while it's playing* (a Whole Library
+/// mix surfacing something never consciously heard before) and wanting to
+/// mark it in the moment, the same placement Apple Music itself uses for a
+/// song-level favorite. See `isNowPlayingFavorite`'s doc comment. Kept
+/// alongside — not instead of — the equivalent toggle already in Playlist
+/// Detail's/Queue's per-track "..." menus, per Andy's explicit "keep both
+/// for now" call, revisit later if one placement turns out to dominate in
+/// practice.
+///
 /// **Deliberate, flagged simplification still remaining:**
-/// - **No favourite star / "..." overflow on this screen.** `PlaylistOverflowSheet`
-///   is keyed off a real `Playlist`, which this screen was deliberately
-///   *not* handed (only `rows`/`sourceCaption`, a lighter snapshot) to keep
-///   this slice's scope to "show what's playing," not duplicate Playlist
-///   Detail's controls. Revisit if that turns out to matter in practice.
+/// - **No "..." overflow on this screen** (playlist-level actions —
+///   Rename/Refresh/Delete/Share). `PlaylistOverflowSheet` is keyed off a
+///   real `Playlist`, which this screen was deliberately *not* handed
+///   (only `rows`/`sourceCaption`/`store`, a lighter set than the full
+///   `Playlist`) to keep this slice's scope to "show what's playing," not
+///   duplicate Playlist Detail's controls. Revisit if that turns out to
+///   matter in practice. (The track-level favorite above doesn't need
+///   this — it only needs a track ID and `store`, not the full `Playlist`.)
+/// - **No "Add to a new mix" from here** — discussed and deliberately not
+///   built: an Apple-Music-style "Add to Playlist" doesn't map cleanly onto
+///   this app's recipe-based playlists (a manually-inserted song has no
+///   real crossfade/tempo data and would silently vanish on the next
+///   Refresh, since it isn't part of any recorded source). The intended
+///   equivalent — favoriting songs while listening, then building a mix
+///   from "Favorite Songs" as a real source (same shape as
+///   `SourceType.wholeLibrary`) — is logged in CLAUDE.md's schema section
+///   but not yet built.
 struct NowPlayingView: View {
     let rows: [PlaylistDetailRow]
     let sourceCaption: String
+    /// **Added 2026-09-06**, purely to forward to `QueueView` — this screen
+    /// itself still has no favourite/"..." overflow of its own (see this
+    /// file's own "Deliberate, flagged simplification" note above), but
+    /// `QueueView`'s per-track "..." menu now needs real database access to
+    /// support the new per-track favorite Andy asked for.
+    let store: PlaylistStore
 
     @EnvironmentObject private var playbackEngine: PlaybackEngine
     @Environment(\.dismiss) private var dismiss
@@ -88,6 +117,13 @@ struct NowPlayingView: View {
     @State private var dragValue: Double = 0
     @State private var artworkImage: UIImage?
     @State private var showQueue = false
+    /// **Added 2026-09-06** — local, optimistic favorite state for whichever
+    /// track is currently playing, same reasoning as `QueueView.favoriteOverrides`:
+    /// `rows` is a plain snapshot, not something this screen owns/reloads,
+    /// so a toggle needs its own state to show immediately. Synced from
+    /// `nowPlayingRow?.isFavorite` on appear and every time the playing
+    /// track changes (`.onChange(of: playbackEngine.nowPlayingTrackID)`).
+    @State private var isNowPlayingFavorite = false
     /// The dynamic background's two source palettes — see
     /// `Views/NowPlayingBackground.swift`'s own doc comment for the full
     /// design. `currentPalette` is extracted alongside `artworkImage`
@@ -166,11 +202,31 @@ struct NowPlayingView: View {
 
                     if let row = nowPlayingRow {
                         VStack(spacing: DesignTokens.Spacing.xxs) {
-                            Text(row.title)
-                                .font(.title2.weight(.semibold))
-                                .foregroundStyle(primaryTextColor)
-                                .multilineTextAlignment(.center)
-                                .lineLimit(2)
+                            // **Favourite star added 2026-09-06**, per
+                            // Andy's direct request/opinion — beside the
+                            // title, not buried in a menu, since the real
+                            // scenario is discovering an unfamiliar song
+                            // *while it's playing* (e.g. a Whole Library
+                            // mix) and wanting to mark it in the moment,
+                            // matching Apple Music's own song-level
+                            // favorite placement. Kept alongside (not
+                            // instead of) the same toggle in Playlist
+                            // Detail's/Queue's "..." menus, per Andy's own
+                            // explicit call to keep both for now.
+                            HStack(spacing: DesignTokens.Spacing.xs) {
+                                Text(row.title)
+                                    .font(.title2.weight(.semibold))
+                                    .foregroundStyle(primaryTextColor)
+                                    .multilineTextAlignment(.center)
+                                    .lineLimit(2)
+                                Button {
+                                    toggleNowPlayingFavorite(row: row)
+                                } label: {
+                                    Image(systemName: isNowPlayingFavorite ? "star.fill" : "star")
+                                        .foregroundStyle(primaryTextColor)
+                                }
+                                .buttonStyle(.plain)
+                            }
                             Text(row.artist)
                                 .font(.body)
                                 .foregroundStyle(secondaryTextColor)
@@ -254,6 +310,7 @@ struct NowPlayingView: View {
         }
         .onChange(of: playbackEngine.nowPlayingTrackID) { _, trackID in
             loadArtwork(for: trackID)
+            syncNowPlayingFavorite(for: trackID)
             // **Added 2026-08-21** — Testing (51): Andy reported the
             // progress bar "stayed at the full time for the next songs
             // even when the song was starting" after seeking near a
@@ -280,9 +337,10 @@ struct NowPlayingView: View {
         .onAppear {
             loadArtwork(for: playbackEngine.nowPlayingTrackID)
             loadNextPalette()
+            syncNowPlayingFavorite(for: playbackEngine.nowPlayingTrackID)
         }
         .sheet(isPresented: $showQueue) {
-            QueueView(rows: rows)
+            QueueView(rows: rows, store: store)
         }
     }
 
@@ -352,6 +410,23 @@ struct NowPlayingView: View {
         let image = ArtworkResolver.loadArtwork(forTrackPersistentID: trackID, size: CGSize(width: 260, height: 260))
         artworkImage = image
         currentPalette = image.flatMap(ArtworkPaletteExtractor.extractPalette(from:))
+    }
+
+    // MARK: - Favourite
+
+    /// Reads the current track's favorite status from `rows` (already
+    /// resolved by `PlaylistDetailViewModel`) into local state — see
+    /// `isNowPlayingFavorite`'s own doc comment for why this needs its own
+    /// state rather than reading `nowPlayingRow?.isFavorite` inline (this
+    /// screen's `rows` is a fixed snapshot, so a toggle here wouldn't
+    /// otherwise be reflected until the track actually changes).
+    private func syncNowPlayingFavorite(for trackID: Int64?) {
+        isNowPlayingFavorite = rows.first { $0.trackPersistentID == trackID }?.isFavorite ?? false
+    }
+
+    private func toggleNowPlayingFavorite(row: PlaylistDetailRow) {
+        isNowPlayingFavorite.toggle()
+        store.setTrackFavorite(trackPersistentID: row.trackPersistentID, isFavorite: isNowPlayingFavorite)
     }
 
     /// Separate from `loadArtwork` -- the next track's artwork comes from
@@ -520,7 +595,7 @@ struct NowPlayingView: View {
 
 #Preview {
     NavigationStack {
-        NowPlayingView(rows: [], sourceCaption: "Genre · Smooth jazz · Energy wave · 12 songs · 47 min")
+        NowPlayingView(rows: [], sourceCaption: "Genre · Smooth jazz · Energy wave · 12 songs · 47 min", store: PlaylistStore())
             .environmentObject(PlaybackEngine())
     }
 }
