@@ -1006,7 +1006,18 @@ final class PlaybackEngine: ObservableObject {
     /// same click-free treatment as an interruption recovery, not just a
     /// forced reschedule.
     func pause() {
-        guard isPlaying, !isPaused else { return }
+        // **Republish-on-no-op moved here 2026-09-06, Testing (62)** — see
+        // this function's own doc comment below and `resume()`'s matching
+        // change for the full reasoning: a no-op tap (already paused) used
+        // to rely on `setupRemoteCommands`'s handlers to republish current
+        // state externally, which broke down for `resume()` specifically
+        // once it went `async` — the fix is for `pause()`/`resume()` to
+        // always tell iOS the real state themselves, on every call,
+        // whether or not anything actually changed.
+        guard isPlaying, !isPaused else {
+            publishNowPlayingPlaybackState()
+            return
+        }
         isPaused = true
         stopTimer()
         publishNowPlayingPlaybackState()
@@ -1143,12 +1154,54 @@ final class PlaybackEngine: ObservableObject {
     /// without private APIs — it is not an absolute guarantee sound is
     /// reaching the physical output, so this narrows the false-positive gap
     /// significantly without claiming to close it completely.
+    ///
+    /// **Fixed 2026-09-06, Testing (62) — a real, previously-unnoticed race
+    /// between this function and `setupRemoteCommands`'s own handlers.**
+    /// Andy gave a detailed, stepped reproduction of the lock-screen/in-app
+    /// mismatch first flagged at Testing 54: pausing *from the app* left the
+    /// lock screen stuck showing "playing" indefinitely, while pausing/
+    /// resuming *from the lock screen itself* eventually synced back to the
+    /// app correctly (with the already-known small delay) — a real,
+    /// asymmetric bug, not the vague "maybe one-off render staleness" the
+    /// 0.25.49 fix left open. Root cause, found by re-reading the play/
+    /// pause/toggle remote-command handlers against this function's own
+    /// `async` structure: those handlers called `self.resume()` then
+    /// **immediately, synchronously** called `self.publishNowPlayingPlaybackState()`
+    /// right after — but `resume()` only *schedules* its verification work
+    /// in a `Task`; it doesn't set `isPaused = false` until that Task
+    /// actually completes, anywhere from ~400ms to ~2s later depending on
+    /// retries. That immediate republish therefore re-asserted the *old*
+    /// paused state (rate 0.0) to iOS a moment after a play command was
+    /// handled — actively telling the system "still paused" right when it
+    /// expected "now playing" — before the real, correct publish (rate 1.0)
+    /// followed once `resume()` actually finished. `pause()` never had this
+    /// problem (it sets `isPaused = true` and publishes synchronously,
+    /// before any async fade-out), which is exactly why lock-screen-
+    /// initiated pauses always synced correctly while resumes/toggles
+    /// didn't reliably. **Fixed by moving the "always publish the real
+    /// current state, even on a no-op tap" responsibility from the command
+    /// handlers into `pause()`/`resume()` themselves** (see the guard
+    /// clauses in both), each publishing at the moment its own state
+    /// actually changes (or fails to) rather than a fixed instant after the
+    /// command handler returns — `setupRemoteCommands`'s own redundant/
+    /// unsafe explicit republish calls are removed accordingly.
     func resume() {
-        guard isPlaying, isPaused, !isResuming else { return }
+        guard isPlaying, isPaused, !isResuming else {
+            publishNowPlayingPlaybackState()
+            return
+        }
         isResuming = true
         Task { @MainActor in
             defer { isResuming = false }
-            guard await attemptResumeWithVerification() else { return }
+            guard await attemptResumeWithVerification() else {
+                // Publish even on failure -- otherwise a failed resume
+                // leaves iOS believing whatever stale info it last had
+                // (possibly a play command it thinks succeeded), with no
+                // way to learn the app is actually still paused until some
+                // later, unrelated state change happens to republish.
+                publishNowPlayingPlaybackState()
+                return
+            }
             isPaused = false
             startTimerIfNeeded()
             publishNowPlayingPlaybackState()
@@ -1506,9 +1559,28 @@ final class PlaybackEngine: ObservableObject {
     /// `MPNowPlayingInfoPropertyPlaybackRate` on its own, so republishing at
     /// 10Hz would just be redundant, wasted work, not a way to keep it more
     /// in sync.
+    ///
+    /// **Fixed 2026-09-06, Testing (62) — a second, separate real gap found
+    /// alongside `resume()`'s republish-timing bug (see its own doc
+    /// comment): this had only ever set `MPNowPlayingInfoPropertyPlaybackRate`
+    /// in the info dictionary, never `MPNowPlayingInfoCenter.default()
+    /// .playbackState` — a distinct, explicit `MPNowPlayingPlaybackState`
+    /// enum (`.playing`/`.paused`/`.stopped`, iOS 13+) that some system
+    /// surfaces (the Lock Screen/Dynamic Island media widget in particular)
+    /// use directly to decide which transport icon to render, separately
+    /// from inferring it off the raw rate value. Never setting it at all is
+    /// a real, well-documented gap, not a guess — likely why an in-app
+    /// pause (which *did* already correctly publish rate 0.0, synchronously,
+    /// before this fix) still wasn't reliably flipping the lock screen's
+    /// icon even though the rate itself was right. Setting both together is
+    /// the standard, defensive approach; this doesn't replace the rate
+    /// property (still needed for the system's own elapsed-time
+    /// extrapolation), it complements it.
     private func publishNowPlayingPlaybackState() {
+        let state: MPNowPlayingPlaybackState = (isPlaying && !isPaused) ? .playing : (isPlaying ? .paused : .stopped)
         guard !nowPlayingMetadata.isEmpty else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             return
         }
         var info = nowPlayingMetadata
@@ -1516,11 +1588,13 @@ final class PlaybackEngine: ObservableObject {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsedSeconds
         info[MPNowPlayingInfoPropertyPlaybackRate] = (isPlaying && !isPaused) ? 1.0 : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = state
     }
 
     private func clearNowPlayingInfo() {
         nowPlayingMetadata = [:]
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
     }
 
     /// Registered once, in `init`. `MainActor.assumeIsolated` bridges
@@ -1535,49 +1609,44 @@ final class PlaybackEngine: ObservableObject {
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
 
-        // **Republish added to all three 2026-08-22, Testing (54)/(55)** —
-        // Andy found the lock screen's transport icon could get stuck
-        // showing "playing" (pause-bars) after a genuine pause, and stay
-        // stuck indefinitely (confirmed by checking again minutes later,
-        // not just a brief propagation lag). Root cause: `pause()`/`resume()`
-        // each have their own internal guard that makes them a silent no-op
-        // when the requested action doesn't match the real current state
-        // (e.g. `pause()` while already paused) -- but these handlers
-        // returned `.success` to iOS regardless, and a no-op call never
-        // republishes anything. If the lock screen's own displayed icon
-        // ever drifts out of sync with reality (root cause of the *first*
-        // drift still unconfirmed -- possibly system-side render staleness
-        // on the very first publish), tapping it invokes whichever command
-        // matches that stale icon, no-ops, and nothing ever tells iOS the
-        // real state -- exactly matching what Andy observed: the first tap
-        // did nothing (still paused, icon unchanged), only the *second* tap
-        // (which happened to invoke the other command) actually resumed.
-        // Explicitly republishing after every command -- even a no-op one --
-        // means any tap, matching or not, forces iOS to receive the real
-        // current state and gives it a chance to self-correct its icon,
-        // rather than only ever hearing from us when something changes.
+        // **Republish-on-no-op added to all three 2026-08-22, Testing
+        // (54)/(55)** — Andy found the lock screen's transport icon could
+        // get stuck showing "playing" (pause-bars) after a genuine pause,
+        // and stay stuck indefinitely. Root cause at the time: `pause()`/
+        // `resume()` each have their own internal guard that makes them a
+        // silent no-op when the requested action doesn't match the real
+        // current state (e.g. `pause()` while already paused), and a no-op
+        // call never republished anything on its own — so a stale lock-
+        // screen icon could never self-correct.
+        //
+        // **Moved out of these handlers entirely, 2026-09-06, Testing
+        // (62)** — the original fix (explicitly republishing here, right
+        // after calling `resume()`/`pause()`) worked for the synchronous
+        // `pause()` case but was actively wrong for `resume()`: `resume()`
+        // is `async` and only flips `isPaused`/publishes once its own
+        // verification `Task` completes, up to ~2s later — republishing
+        // synchronously here, immediately after starting it, re-asserted
+        // the *old* paused state to iOS right when a play command had just
+        // been handled, exactly the asymmetric bug (lock-screen resumes/
+        // toggles unreliable, pauses fine) Andy's detailed Testing (62)
+        // repro pinned down. `pause()`/`resume()` now each publish the real
+        // current state themselves at the right moment — including their
+        // own no-op guard paths (see their own doc comments) — so these
+        // handlers no longer need to do it a second time, at the wrong
+        // time, from the outside.
         center.playCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            MainActor.assumeIsolated {
-                self.resume()
-                self.publishNowPlayingPlaybackState()
-            }
+            MainActor.assumeIsolated { self.resume() }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            MainActor.assumeIsolated {
-                self.pause()
-                self.publishNowPlayingPlaybackState()
-            }
+            MainActor.assumeIsolated { self.pause() }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            MainActor.assumeIsolated {
-                self.isPaused ? self.resume() : self.pause()
-                self.publishNowPlayingPlaybackState()
-            }
+            MainActor.assumeIsolated { self.isPaused ? self.resume() : self.pause() }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
