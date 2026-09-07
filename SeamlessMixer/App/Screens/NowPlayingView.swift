@@ -87,15 +87,15 @@ import MediaPlayer
 ///   duplicate Playlist Detail's controls. Revisit if that turns out to
 ///   matter in practice. (The track-level favorite above doesn't need
 ///   this — it only needs a track ID and `store`, not the full `Playlist`.)
-/// - **No "Add to a new mix" from here** — discussed and deliberately not
-///   built: an Apple-Music-style "Add to Playlist" doesn't map cleanly onto
-///   this app's recipe-based playlists (a manually-inserted song has no
-///   real crossfade/tempo data and would silently vanish on the next
-///   Refresh, since it isn't part of any recorded source). The intended
-///   equivalent — favoriting songs while listening, then building a mix
-///   from "Favorite Songs" as a real source (same shape as
-///   `SourceType.wholeLibrary`) — is logged in CLAUDE.md's schema section
-///   but not yet built.
+/// - ~~No "Add to a new mix" from here~~ **Built 2026-09-07 (Batch 3 of the
+///   confirmed "Add to Playlist" design, CLAUDE.md 0.25.68/0.25.70)** — a
+///   "..." toolbar menu, its one item ("Add to Playlist") opening
+///   `AddToPlaylistView` as a sheet. This is the real native-playlist
+///   concept (`CustomPlaylist`), not this app's own Seamless Mix recipes —
+///   the original concern about a manually-inserted song silently vanishing
+///   on Refresh never applied to `CustomPlaylist` in the first place, since
+///   nothing about it is sequenced until it's actually picked as a Build
+///   Mix source (see `CustomPlaylist`'s own doc comment).
 struct NowPlayingView: View {
     let rows: [PlaylistDetailRow]
     let sourceCaption: String
@@ -117,6 +117,12 @@ struct NowPlayingView: View {
     @State private var dragValue: Double = 0
     @State private var artworkImage: UIImage?
     @State private var showQueue = false
+    /// **Added 2026-09-07, Batch 3** — drives the "Add to Playlist" sheet.
+    /// Owned here (not by `AddToPlaylistView` itself) so a song added deep
+    /// inside that screen's own nested "New Playlist" push can close the
+    /// *whole* flow in one step — see `AddToPlaylistView`'s own doc comment
+    /// for why a plain `@Environment(\.dismiss)` there wouldn't do that.
+    @State private var showAddToPlaylist = false
     /// **Added 2026-09-06** — local, optimistic favorite state for whichever
     /// track is currently playing, same reasoning as `QueueView.favoriteOverrides`:
     /// `rows` is a plain snapshot, not something this screen owns/reloads,
@@ -296,6 +302,36 @@ struct NowPlayingView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // **Added 2026-09-07, Batch 3** — the confirmed design's "..." menu,
+        // holding exactly one item ("Add to Playlist"), matching Playlist
+        // Detail's own `ToolbarItemGroup` pattern. The favourite star lives
+        // beside the title instead of in this toolbar, per Andy's own
+        // explicit preference (0.25.65) — only the "..." belongs up here.
+        // `.menuStyle(.borderlessButton)` avoids the default-chrome bug this
+        // project has already hit and fixed on every other bare Menu/Button
+        // in this app (A-Z rails, per-track "..." menus, the transport row
+        // just below).
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button("Add to Playlist", systemImage: "text.badge.plus") {
+                        showAddToPlaylist = true
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(primaryTextColor)
+                }
+                .menuStyle(.borderlessButton)
+                .disabled(nowPlayingRow == nil)
+            }
+        }
+        .sheet(isPresented: $showAddToPlaylist) {
+            if let row = nowPlayingRow {
+                AddToPlaylistView(trackPersistentID: row.trackPersistentID, store: store) {
+                    showAddToPlaylist = false
+                }
+            }
+        }
         .onChange(of: playbackEngine.isPlaying) { _, isPlaying in
             // If playback stops entirely (queue ran out, or an error) while
             // this screen is showing, there's nothing left to display --

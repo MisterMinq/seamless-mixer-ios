@@ -338,50 +338,47 @@ struct SourceSelectionHubView: View {
         .buttonStyle(.plain)
     }
 
-    /// **Added 2026-09-07**, per Andy's direct confirmation: "let's add
-    /// favourites as song selections for a build mix" — a pinned row above
-    /// the four category rows, pulling every track marked favorite
-    /// (`Track.isFavorite`), scoped to individual songs only, per his own
-    /// explicit call ("Let's limit favourites to songs for now"). Unlike
-    /// "Use your whole library," this is a real, ordinary toggleable
-    /// `SelectedSource` (like a genre or artist pick) rather than an
-    /// exclusive all-or-nothing flag — combining Favourites with a specific
-    /// genre or artist in the same mix is a completely reasonable thing to
-    /// want, so it lives inside the same `categoryRows` group (grayed out
-    /// only when "whole library" is selected, same as every other row
-    /// there) rather than getting its own separate exclusivity rule.
-    private var favoritesRow: some View {
-        let source = SelectedSource(id: "favorites", type: .favoriteSongs, label: "Favorites")
-        let selected = viewModel.isSelected(source)
-        return Button {
-            viewModel.toggle(source)
-        } label: {
-            HStack {
-                Image(systemName: "star.fill")
-                    .font(.system(size: DesignTokens.Size.iconMedium))
-                    .foregroundStyle(DesignTokens.Color.primaryText)
-                Text("Favourites")
-                    .font(.body)
-                    .foregroundStyle(DesignTokens.Color.textPrimary)
-                Spacer()
-                Text(selected ? "Selected" : "\(viewModel.favoriteSongsCount)")
-                    .font(.footnote)
-                    .foregroundStyle(selected ? DesignTokens.Color.primaryText : DesignTokens.Color.textSecondary)
-                if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(DesignTokens.Color.primary)
-                }
-            }
-            .padding(DesignTokens.Spacing.sm)
-            .background(DesignTokens.Color.surface)
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusMedium))
-        }
-        .buttonStyle(.plain)
-    }
-
+    /// **Revised 2026-09-07 (Testing 65 / CLAUDE.md 0.25.71) — from a pinned
+    /// toggle row into a real category picker, matching Andy's own direct
+    /// clarification.** Batch 1's original version was a single opaque
+    /// toggle-the-whole-bucket row (mirroring "Use your whole library"'s own
+    /// shape) — you could select "all favourites" as one block, but never
+    /// see which songs were actually in it. Andy: "I was expecting... when
+    /// I declare a song as a favourite, that these 'songs' populate the
+    /// Favourites category in the SelectionHub so I can 1. view the songs
+    /// and 2. select them" — the same real, individually-browsable behavior
+    /// every other category row already has. This now pushes to
+    /// `FavoriteSongsPickerView` (mirrors `SongPickerView`'s shape/pattern
+    /// exactly, filtered to `tracks.is_favorite`) via the shared
+    /// `categoryRow` helper below, same as Playlists/Genres/Artists/Albums/
+    /// Songs.
+    ///
+    /// **`SourceType.favoriteSongs` (Batch 1's bulk-bucket source type) is
+    /// deliberately left in place but no longer constructed anywhere** —
+    /// `FavoriteSongsPickerView`'s individual checkboxes use the same
+    /// `.songs`-typed source `SongPickerView` already does (a favourited
+    /// song picked here is indistinguishable from the same song picked via
+    /// the plain Songs picker, which already has full, tested resolve/
+    /// persist/Refresh support — no new source-type machinery needed).
+    /// Removing `.favoriteSongs` outright felt like more churn than value
+    /// this round: it's tested, harmless, and any playlist already saved
+    /// against it during Batch 1 testing still Refreshes correctly via
+    /// `MixBuilder.selectedSource(from:)`'s existing case. Parked dormant,
+    /// not deleted — revisit if a real "select every current favourite in
+    /// one tap, dynamically" need ever surfaces.
+    ///
+    /// **Known, accepted trade-off**: because both this row and the plain
+    /// Songs row now share the `.songs` source type for their individual
+    /// picks, `categoryRow`'s "N selected" badge below reflects the
+    /// combined total of songs picked via *either* screen, not just this
+    /// one — a song is either selected or it isn't, regardless of which
+    /// browsing screen it was checked off in, so this is read as an honest
+    /// reflection of shared state, not a bug.
     private var categoryRows: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
-            favoritesRow
+            categoryRow(title: "Favourites", icon: "star.fill", count: viewModel.favoriteSongsCount, type: .songs) {
+                FavoriteSongsPickerView(viewModel: viewModel, store: store)
+            }
             // **Badge count widened 2026-09-07 (Batch 2)**: `PlaylistPickerView`
             // now also picks `.customPlaylist`-typed sources (native, "SM"-
             // badged playlists merged into the same grid) — this row's own
