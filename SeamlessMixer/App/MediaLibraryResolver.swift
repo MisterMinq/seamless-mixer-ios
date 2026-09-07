@@ -1,4 +1,5 @@
 import MediaPlayer
+import PlaylistCore
 
 /// Resolves a set of selected sources (genre/artist/album/playlist) to their
 /// real `MPMediaItem`s, de-duplicated across sources — moved out of
@@ -8,14 +9,21 @@ import MediaPlayer
 /// the per-`SourceType` `MPMediaQuery` predicates in two places.
 enum MediaLibraryResolver {
     /// - Parameter sources: any combination of genre/artist/album/playlist/
-    ///   song selections. "Whole library" itself is *not* one of these — it
-    ///   stays its own separate `useWholeLibrary` toggle, never modeled as a
-    ///   `SelectedSource` — but as of 2026-08-16, `.songs` genuinely does
-    ///   mean "one specific song," matching ADR-7's original five source
-    ///   types (Playlist/Songs/Genre/Artist/Album). It had been a dead,
-    ///   defensively-skipped case until now — see `SongPickerView`'s own doc
-    ///   comment for the real screen this finally builds.
-    static func resolveItems(for sources: [SelectedSource]) -> [MPMediaItem] {
+    ///   song/favorites selections. "Whole library" itself is *not* one of
+    ///   these — it stays its own separate `useWholeLibrary` toggle, never
+    ///   modeled as a `SelectedSource` — but as of 2026-08-16, `.songs`
+    ///   genuinely does mean "one specific song," matching ADR-7's original
+    ///   five source types (Playlist/Songs/Genre/Artist/Album). It had been
+    ///   a dead, defensively-skipped case until now — see `SongPickerView`'s
+    ///   own doc comment for the real screen this finally builds.
+    /// - Parameter db: **added 2026-09-07**, alongside `.favoriteSongs` —
+    ///   the first source type this function needs to consult this app's
+    ///   own database for (every other source resolves purely from
+    ///   `MediaPlayer`). `nil` is tolerated (that case just resolves to
+    ///   nothing) rather than making every existing call site handle a
+    ///   throwing/optional-unwrap change for a database that's always
+    ///   actually available in practice.
+    static func resolveItems(for sources: [SelectedSource], db: DatabaseManager?) -> [MPMediaItem] {
         var items: [MPMediaItem] = []
         var seenIDs = Set<MPMediaEntityPersistentID>()
 
@@ -111,6 +119,28 @@ enum MediaLibraryResolver {
                 // when Refreshing an already-built whole-library playlist,
                 // and that path resolves through here.
                 add(allSongs())
+
+            case .favoriteSongs:
+                // **Added 2026-09-07** — the first source type resolved from
+                // this app's own database rather than purely `MediaPlayer`.
+                // Reads `tracks.is_favorite` directly (raw SQL, matching this
+                // project's established "raw SQL for anything beyond
+                // `fetchOne(key:)`" convention) rather than a GRDB
+                // query-interface expression never exercised before. Once we
+                // have the real persistentIDs, resolution goes through the
+                // same "fetch every song, filter locally by a Swift `Set`"
+                // pattern `.songs` above already uses — never a
+                // `MPMediaPropertyPredicate` keyed on a raw persistentID,
+                // which is the exact class of bug (large, high-bit-set
+                // `UInt64` values silently failing to match) already found
+                // and fixed three times elsewhere in this file.
+                guard let db else { continue }
+                let favoriteIDs: [Int64] = (try? db.dbQueue.read { conn in
+                    try Int64.fetchAll(conn, sql: "SELECT persistent_id FROM tracks WHERE is_favorite = 1")
+                }) ?? []
+                guard !favoriteIDs.isEmpty else { continue }
+                let favoriteIDSet = Set(favoriteIDs)
+                add(MPMediaQuery.songs().items?.filter { favoriteIDSet.contains(Int64(bitPattern: $0.persistentID)) })
             }
         }
         return items

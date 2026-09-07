@@ -123,7 +123,15 @@ struct SourceSelectionHubView: View {
         } message: {
             Text("Going back will lose everything selected for this mix so far.")
         }
-        .onAppear { viewModel.requestAccessAndLoadCounts() }
+        .onAppear {
+            // **Added 2026-09-07** — `viewModel` had no database access at
+            // all before Favourites needed one (see `SourceSelectionViewModel
+            // .attach(store:)`'s own doc comment); must run before
+            // `requestAccessAndLoadCounts()` so the Favourites count loads
+            // correctly the first time too, not just on a later refresh.
+            viewModel.attach(store: store)
+            viewModel.requestAccessAndLoadCounts()
+        }
         .overlay {
             if mixBuilder.isBuilding {
                 buildingOverlay
@@ -272,6 +280,10 @@ struct SourceSelectionHubView: View {
         // not a search-result type) -- but needed for this switch to stay
         // exhaustive now that `.wholeLibrary` is a real `SourceType` case.
         case .wholeLibrary: return "books.vertical"
+        // Never actually shown here either (same reasoning as `.wholeLibrary`
+        // above) — Favourites is a standalone pinned row, not a search-
+        // result type — but needed to keep this switch exhaustive.
+        case .favoriteSongs: return "star.fill"
         }
     }
 
@@ -283,6 +295,7 @@ struct SourceSelectionHubView: View {
         case .album: return "Album"
         case .songs: return "Song"
         case .wholeLibrary: return "Library"
+        case .favoriteSongs: return "Favourites"
         }
     }
 
@@ -316,8 +329,50 @@ struct SourceSelectionHubView: View {
         .buttonStyle(.plain)
     }
 
+    /// **Added 2026-09-07**, per Andy's direct confirmation: "let's add
+    /// favourites as song selections for a build mix" — a pinned row above
+    /// the four category rows, pulling every track marked favorite
+    /// (`Track.isFavorite`), scoped to individual songs only, per his own
+    /// explicit call ("Let's limit favourites to songs for now"). Unlike
+    /// "Use your whole library," this is a real, ordinary toggleable
+    /// `SelectedSource` (like a genre or artist pick) rather than an
+    /// exclusive all-or-nothing flag — combining Favourites with a specific
+    /// genre or artist in the same mix is a completely reasonable thing to
+    /// want, so it lives inside the same `categoryRows` group (grayed out
+    /// only when "whole library" is selected, same as every other row
+    /// there) rather than getting its own separate exclusivity rule.
+    private var favoritesRow: some View {
+        let source = SelectedSource(id: "favorites", type: .favoriteSongs, label: "Favorites")
+        let selected = viewModel.isSelected(source)
+        return Button {
+            viewModel.toggle(source)
+        } label: {
+            HStack {
+                Image(systemName: "star.fill")
+                    .font(.system(size: DesignTokens.Size.iconMedium))
+                    .foregroundStyle(DesignTokens.Color.primaryText)
+                Text("Favourites")
+                    .font(.body)
+                    .foregroundStyle(DesignTokens.Color.textPrimary)
+                Spacer()
+                Text(selected ? "Selected" : "\(viewModel.favoriteSongsCount)")
+                    .font(.footnote)
+                    .foregroundStyle(selected ? DesignTokens.Color.primaryText : DesignTokens.Color.textSecondary)
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(DesignTokens.Color.primary)
+                }
+            }
+            .padding(DesignTokens.Spacing.sm)
+            .background(DesignTokens.Color.surface)
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusMedium))
+        }
+        .buttonStyle(.plain)
+    }
+
     private var categoryRows: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
+            favoritesRow
             categoryRow(title: "Playlists", icon: "music.note.list", count: viewModel.playlistCount, type: .playlist) {
                 PlaylistPickerView(viewModel: viewModel)
             }

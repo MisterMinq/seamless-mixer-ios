@@ -26,6 +26,18 @@ public enum SourceType: String, Codable, CaseIterable, Hashable, DatabaseValueCo
     /// only capitalizes the first letter, so a camelCase raw value would
     /// have rendered as the awkward "Wholelibrary" in a real subtitle.
     case wholeLibrary = "library"
+    /// **Added 2026-09-07** — per Andy's direct request/confirmation: a
+    /// pinned Hub row pulling every track marked favorite (`Track
+    /// .isFavorite`, added the same session), scoped to individual songs
+    /// only ("Let's limit favourites to songs for now"). Unlike
+    /// `.wholeLibrary`, this is a regular, *combinable* source — you can
+    /// genuinely want Favourites plus a specific genre or artist in the
+    /// same mix, so it's modeled as an ordinary toggleable `SelectedSource`
+    /// (like `.genre`), not an exclusive all-or-nothing flag. `sourceValue`
+    /// carries no persistentID (nothing to look up — `MediaLibraryResolver`
+    /// just queries `tracks.is_favorite` directly), same "value mirrors
+    /// label" convention `.wholeLibrary` already uses.
+    case favoriteSongs = "favorites"
 }
 
 public struct PlaylistSource: Codable, Equatable, Identifiable {

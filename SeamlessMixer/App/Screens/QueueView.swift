@@ -244,23 +244,29 @@ struct QueueView: View {
                 // otherwise stack an extra, unwanted gray layer under this
                 // hand-coded circle rather than being replaced by it).
                 Menu {
-                    // **Added 2026-09-06**, per Andy's direct request — same
-                    // per-track favorite as Playlist Detail's own menu (see
-                    // that file's own note on why: finding a song again
-                    // inside a Whole Library mix would otherwise be a real
-                    // problem). Unlike this menu's other two actions, this
-                    // one is real, not a disabled placeholder.
+                    // **Ordering fixed 2026-09-07, per Andy's direct
+                    // instruction**: every per-track "..." menu in the app
+                    // reads top to bottom Favourite -> Play Next -> Remove
+                    // from this mix, consistently (matches Playlist Detail's
+                    // own menu exactly).
+                    //
+                    // **Favourite added 2026-09-06**, per Andy's direct
+                    // request — same per-track favorite as Playlist Detail's
+                    // own menu (see that file's own note on why: finding a
+                    // song again inside a Whole Library mix would otherwise
+                    // be a real problem). Unlike this menu's other two
+                    // actions, this one is real, not a disabled placeholder.
                     Button {
                         toggleFavorite(row)
                     } label: {
                         Label(isFavorite(row) ? "Remove Favourite" : "Favourite", systemImage: isFavorite(row) ? "star.slash" : "star")
                     }
                     Button {} label: {
-                        Label("Remove from this mix", systemImage: "minus.circle")
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                     .disabled(true)
                     Button {} label: {
-                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        Label("Remove from this mix", systemImage: "minus.circle")
                     }
                     .disabled(true)
                 } label: {

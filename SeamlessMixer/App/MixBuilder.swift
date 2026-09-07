@@ -183,7 +183,7 @@ final class MixBuilder: ObservableObject {
                 throw BuildError.needsLibraryScanFirst(unanalyzedCount: unanalyzedCount)
             }
         } else {
-            items = MediaLibraryResolver.resolveItems(for: selectedSources)
+            items = MediaLibraryResolver.resolveItems(for: selectedSources, db: db)
         }
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
@@ -308,7 +308,7 @@ final class MixBuilder: ObservableObject {
         guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
 
         progressText = "Finding songs…"
-        let items = MediaLibraryResolver.resolveItems(for: selectedSources)
+        let items = MediaLibraryResolver.resolveItems(for: selectedSources, db: db)
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
         // Same safety valve as `performBuild`'s whole-library path -- a
@@ -469,6 +469,12 @@ final class MixBuilder: ObservableObject {
             // .wholeLibrary`'s own doc comment), so this just reconstructs
             // the same synthetic source `performBuild` created originally.
             return SelectedSource(id: "wholeLibrary", type: .wholeLibrary, label: playlistSource.sourceLabel)
+        case .favoriteSongs:
+            // Added 2026-09-07, same "no persistentID to parse" shape as
+            // `.wholeLibrary` above -- Favourites has nothing to look up
+            // either, `MediaLibraryResolver` just queries `tracks
+            // .is_favorite` directly.
+            return SelectedSource(id: "favorites", type: .favoriteSongs, label: playlistSource.sourceLabel)
         }
     }
 

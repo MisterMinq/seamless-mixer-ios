@@ -663,11 +663,16 @@ struct PlaylistDetailView: View {
                     .foregroundStyle(DesignTokens.Color.textSecondary)
 
                 Menu {
-                    // **Added 2026-09-06**, per Andy's direct request — a
-                    // per-song favorite, separate from this screen's own
-                    // playlist-level star (toolbar). Motivating case: a
-                    // Whole Library mix can surface a song Andy's never
-                    // consciously listened to before, and without this
+                    // **Ordering fixed 2026-09-07, per Andy's direct
+                    // instruction**: every per-track "..." menu in the app
+                    // (this one, Queue's) reads top to bottom Favourite ->
+                    // Play Next -> Remove from this mix, consistently.
+                    //
+                    // **Favourite added 2026-09-06**, per Andy's direct
+                    // request — a per-song favorite, separate from this
+                    // screen's own playlist-level star (toolbar). Motivating
+                    // case: a Whole Library mix can surface a song Andy's
+                    // never consciously listened to before, and without this
                     // there'd be no way to find it again inside a library
                     // of thousands of tracks. See `Track.isFavorite`'s own
                     // doc comment.
@@ -675,11 +680,6 @@ struct PlaylistDetailView: View {
                         viewModel.toggleTrackFavorite(row: row, store: store)
                     } label: {
                         Label(row.isFavorite ? "Remove Favourite" : "Favourite", systemImage: row.isFavorite ? "star.slash" : "star")
-                    }
-                    Button(role: .destructive) {
-                        viewModel.removeTrack(row: row, playlist: playlist, store: store)
-                    } label: {
-                        Label("Remove from this mix", systemImage: "minus.circle")
                     }
                     // Blocked on the not-yet-built playback queue (per CLAUDE.md's
                     // Mixing Engine section) -- same "visible but disabled, not
@@ -689,6 +689,11 @@ struct PlaylistDetailView: View {
                         Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                     .disabled(true)
+                    Button(role: .destructive) {
+                        viewModel.removeTrack(row: row, playlist: playlist, store: store)
+                    } label: {
+                        Label("Remove from this mix", systemImage: "minus.circle")
+                    }
                 } label: {
                     // **Real root cause found 2026-08-18, third attempt at
                     // this exact control.** The first fix added explicit

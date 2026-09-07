@@ -66,6 +66,28 @@ final class SourceSelectionViewModel: ObservableObject {
     /// confirmed category picker (Playlist/Songs/Genre/Artist/Album, per
     /// ADR-7).
     @Published private(set) var songCount: Int = 0
+    /// **Added 2026-09-07** — how many tracks are currently marked favorite
+    /// (`Track.isFavorite`), shown on the Hub's pinned Favourites row. Reads
+    /// this app's own database, not `MediaPlayer` — the first count here to
+    /// do so, which is why this view model now needs `store` at all (see
+    /// `attach(store:)`).
+    @Published private(set) var favoriteSongsCount: Int = 0
+
+    /// **Added 2026-09-07**, alongside `favoriteSongsCount`/`.favoriteSongs`
+    /// — this view model had no database access at all before now (every
+    /// prior count/selection came purely from `MediaPlayer`). Set once via
+    /// `attach(store:)` from `SourceSelectionHubView`'s `.onAppear`, the
+    /// same "thread it in after construction, not through `@StateObject`'s
+    /// own init expression" pattern already used elsewhere in this app
+    /// (e.g. `PlaylistDetailViewModel.load(playlist:store:)`), rather than
+    /// risking a `@StateObject` initial-value expression that reads another
+    /// of this view's own stored properties before Swift guarantees it's
+    /// set.
+    private var store: PlaylistStore?
+
+    func attach(store: PlaylistStore) {
+        self.store = store
+    }
 
     /// Segmented-control selection, per the confirmed Source Selection
     /// design ("Mode picker") — defaults to Energy Wave.
@@ -203,7 +225,7 @@ final class SourceSelectionViewModel: ObservableObject {
             previewTotalMinutes = nil
             return
         }
-        let items = MediaLibraryResolver.resolveItems(for: selectedSources)
+        let items = MediaLibraryResolver.resolveItems(for: selectedSources, db: store?.db)
         previewSongCount = items.count
         let totalSeconds = items.reduce(0.0) { $0 + $1.playbackDuration }
         previewTotalMinutes = Int((totalSeconds / 60).rounded())
@@ -236,6 +258,20 @@ final class SourceSelectionViewModel: ObservableObject {
         artistCount = MPMediaQuery.artists().collections?.count ?? 0
         albumCount = MPMediaQuery.albums().collections?.count ?? 0
         songCount = MPMediaQuery.songs().items?.count ?? 0
+        loadFavoriteSongsCount()
+    }
+
+    /// **Added 2026-09-07** — reads `tracks.is_favorite` directly (raw SQL,
+    /// same convention as `MediaLibraryResolver`'s own `.favoriteSongs`
+    /// case). Best-effort: a `nil` `store`/`db` or a query failure just
+    /// leaves the count at 0 rather than surfacing a separate error state
+    /// for what's a small, non-critical display number.
+    private func loadFavoriteSongsCount() {
+        guard let db = store?.db else { return }
+        let count: Int? = try? db.dbQueue.read { conn in
+            try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM tracks WHERE is_favorite = 1")
+        }
+        favoriteSongsCount = count ?? 0
     }
 
     // MARK: - Hub-level search

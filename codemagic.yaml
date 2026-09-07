@@ -340,16 +340,26 @@ workflows:
         # that `beta_groups` + omitting/false-ing `submit_to_testflight` is
         # exactly this project's use case.
         submit_to_testflight: false
-        # Added 2026-08-14: explicitly targets Andy's real internal testing
-        # group (named "SeamlessDJ Testers" in App Store Connect's TestFlight
-        # tab, confirmed by Andy directly rather than assumed/guessed) so
-        # every build is added to it automatically — no manual per-build step
-        # in App Store Connect's UI needed. Andy plans to add a few more
-        # testers to this same internal group; external testers stay off the
-        # table until he says otherwise (see `submit_to_testflight` above).
-        # Not yet verified against a live Codemagic run — same standing
-        # caveat as every other change in this file; if the group name here
-        # doesn't exactly match what's in App Store Connect, expect a clear
-        # error naming the mismatch rather than a silent no-op.
-        beta_groups:
-          - SeamlessDJ Testers
+        # **Removed 2026-09-07** — this `beta_groups: [SeamlessDJ Testers]`
+        # entry (added 2026-08-14) has failed on every single build since it
+        # was added, confirmed directly from a real Codemagic log Andy sent:
+        # "Failed to add a build ... to 'SeamlessDJ Testers' beta group.
+        # Builds cannot be assigned to this internal group. - Cannot add
+        # internal group to a build." This confirms the theory flagged (but
+        # not acted on) back at 0.20.2: "SeamlessDJ Testers" is an *internal*
+        # App Store Connect group (every team member with app access — just
+        # Andy), and Apple's API has no "assign a build to an internal
+        # group" operation at all, because internal groups don't work that
+        # way — every team member with access gets every processed build
+        # automatically, with no assignment step, which is exactly why Andy
+        # has never had to wait for anything as an internal tester (see
+        # `submit_to_testflight`'s own comment above). The `beta_groups`
+        # action only makes sense for *external* groups, where assignment is
+        # a real, selective step. Since internal delivery was never gated on
+        # this call succeeding, the error was always harmless noise at the
+        # tail of an otherwise-successful build — but it's been a standing,
+        # unresolved item since 0.20.2, so closing it properly now rather
+        # than leaving it to reappear in every future build log. If Andy
+        # later creates a real *external* TestFlight group (to add testers
+        # who aren't on the App Store Connect team), that's the case where
+        # `beta_groups: [<external group name>]` actually belongs here.
