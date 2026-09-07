@@ -453,11 +453,14 @@ final class MixBuilder: ObservableObject {
     /// pool. `.songs` (individual song picks) joined `.artist`/`.album`/
     /// `.playlist`'s persistentID-based reconstruction 2026-08-16, once it
     /// became a real, persistable source type — see `SongPickerView`.
+    /// `.customPlaylist` joined the same group 2026-09-07 (Batch 2) — its
+    /// "persistentID" is really a `CustomPlaylist` row id bit-cast into the
+    /// same field, but the round-trip through a string is identical.
     private func selectedSource(from playlistSource: PlaylistSource) -> SelectedSource? {
         switch playlistSource.sourceType {
         case .genre:
             return SelectedSource(id: "genre:\(playlistSource.sourceValue)", type: .genre, label: playlistSource.sourceLabel)
-        case .artist, .album, .playlist, .songs:
+        case .artist, .album, .playlist, .songs, .customPlaylist:
             guard let persistentID = MPMediaEntityPersistentID(playlistSource.sourceValue) else { return nil }
             return SelectedSource(
                 id: "\(playlistSource.sourceType.rawValue):\(persistentID)", type: playlistSource.sourceType,

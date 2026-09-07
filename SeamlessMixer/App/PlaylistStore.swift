@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import MediaPlayer
 import PlaylistCore
 import UIKit
 
@@ -216,6 +217,116 @@ final class PlaylistStore: ObservableObject {
             }
         } catch {
             loadError = "Couldn't update favorite: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - CustomPlaylist (Batch 2, 2026-09-07)
+
+    /// Plain "New Playlist" creation — no Apple Music origin. Returns `nil`
+    /// on failure (surfaced via `loadError`, same convention as everywhere
+    /// else in this file) rather than throwing, so `NewPlaylistView` can
+    /// stay a simple optional-check away from its own "did this work" state.
+    @discardableResult
+    func createCustomPlaylist(name: String) -> CustomPlaylist? {
+        guard let db else { return nil }
+        do {
+            return try db.createCustomPlaylist(name: name)
+        } catch {
+            loadError = "Couldn't create playlist: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func renameCustomPlaylist(customPlaylistID: Int64, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let db, !trimmed.isEmpty else { return }
+        do {
+            try db.renameCustomPlaylist(customPlaylistID: customPlaylistID, to: trimmed)
+        } catch {
+            loadError = "Couldn't rename playlist: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteCustomPlaylist(customPlaylistID: Int64) {
+        guard let db else { return }
+        do {
+            try db.deleteCustomPlaylist(customPlaylistID: customPlaylistID)
+        } catch {
+            loadError = "Couldn't delete playlist: \(error.localizedDescription)"
+        }
+    }
+
+    /// "Add to Playlist" for one real `MPMediaItem` — ensures a `tracks` row
+    /// exists first (see `DatabaseManager.upsertTrackMetadataIfNeeded`'s own
+    /// doc comment for why this doesn't run a real analysis), then appends
+    /// it. Safe to call for a song already in the list — a no-op, per
+    /// `DatabaseManager.addTrack`'s own doc comment.
+    func addToCustomPlaylist(item: MPMediaItem, customPlaylistID: Int64) {
+        guard let db else { return }
+        do {
+            try db.upsertTrackMetadataIfNeeded(
+                persistentID: Int64(bitPattern: item.persistentID),
+                title: item.title ?? "Untitled", artist: item.artist ?? "Unknown Artist",
+                album: item.albumTitle ?? "Unknown Album", genre: item.genre ?? "Unknown Genre",
+                durationSec: item.playbackDuration
+            )
+            try db.addTrack(trackPersistentID: Int64(bitPattern: item.persistentID), toCustomPlaylistID: customPlaylistID)
+        } catch {
+            loadError = "Couldn't add song to playlist: \(error.localizedDescription)"
+        }
+    }
+
+    func removeCustomPlaylistTrack(id: Int64, fromCustomPlaylistID customPlaylistID: Int64) {
+        guard let db else { return }
+        do {
+            try db.removeCustomPlaylistTrack(id: id, fromCustomPlaylistID: customPlaylistID)
+        } catch {
+            loadError = "Couldn't remove song: \(error.localizedDescription)"
+        }
+    }
+
+    /// The confirmed "copy-on-edit" flow for a real Apple Music playlist:
+    /// there's no write API to a real Apple Music playlist's membership
+    /// (per CLAUDE.md's "Add to Playlist" design), so opening one to edit
+    /// it makes an independent, app-native copy at that moment instead —
+    /// the original Apple Music playlist is left untouched and can diverge
+    /// from this copy afterward.
+    ///
+    /// Idempotent: if this exact Apple Music playlist was already copied
+    /// once before (`DatabaseManager.customPlaylist(originApplePlaylistPersistentID:)`),
+    /// that existing `CustomPlaylist` is returned as-is rather than making a
+    /// second, redundant copy — re-opening an already-edited playlist just
+    /// reopens the same native copy, matching the confirmed design's "that
+    /// row *replaces* the plain Apple Music row" (there's only ever one
+    /// native copy per origin playlist, never two).
+    func copyAppleMusicPlaylist(_ applePlaylist: MPMediaPlaylist) -> CustomPlaylist? {
+        guard let db else { return nil }
+        do {
+            if let existing = try db.customPlaylist(originApplePlaylistPersistentID: applePlaylist.persistentID) {
+                return existing
+            }
+
+            let name = applePlaylist.name ?? "Untitled Playlist"
+            let newPlaylist = try db.createCustomPlaylist(name: name, originApplePlaylistPersistentID: applePlaylist.persistentID)
+            guard let newPlaylistID = newPlaylist.id else { return newPlaylist }
+
+            var trackIDs: [Int64] = []
+            for item in applePlaylist.items {
+                let trackID = Int64(bitPattern: item.persistentID)
+                try db.upsertTrackMetadataIfNeeded(
+                    persistentID: trackID,
+                    title: item.title ?? "Untitled", artist: item.artist ?? "Unknown Artist",
+                    album: item.albumTitle ?? "Unknown Album", genre: item.genre ?? "Unknown Genre",
+                    durationSec: item.playbackDuration
+                )
+                trackIDs.append(trackID)
+            }
+            try db.copyTracks(trackIDs, intoCustomPlaylistID: newPlaylistID)
+
+            return newPlaylist
+        } catch {
+            loadError = "Couldn't copy playlist: \(error.localizedDescription)"
+            return nil
         }
     }
 

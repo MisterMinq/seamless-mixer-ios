@@ -150,6 +150,46 @@ public final class DatabaseManager {
             }
         }
 
+        // Added 2026-09-07, Batch 2 of the confirmed "Add to Playlist"
+        // design — the new native-playlist concept (`CustomPlaylist`), a
+        // raw, unsequenced, user-curated song list, deliberately a separate
+        // pair of tables from `playlists`/`playlist_tracks` rather than a
+        // variant of them — see `CustomPlaylist`'s own doc comment for why.
+        migrator.registerMigration("v5_custom_playlists") { db in
+            try db.create(table: "custom_playlists") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("name", .text).notNull()
+                // Nullable — only set for a row created via copy-on-edit
+                // from a real Apple Music playlist (see `CustomPlaylist
+                // .originApplePlaylistPersistentID`'s own doc comment).
+                // Stored as a plain `.integer` (SQLite has no native
+                // UInt64); the model round-trips it via `UInt64(bitPattern:)`
+                // / `Int64(bitPattern:)`, the same convention already used
+                // elsewhere in this app for `MPMediaEntityPersistentID`
+                // values bit-cast into a signed column.
+                t.column("origin_apple_playlist_persistent_id", .integer)
+                t.column("created_at", .datetime).notNull()
+                t.column("updated_at", .datetime).notNull()
+            }
+
+            try db.create(table: "custom_playlist_tracks") { t in
+                t.autoIncrementedPrimaryKey("id")
+                // Explicit .column(...).references(...), not belongsTo(...)
+                // — same reasoning as every other FK in this file: belongsTo's
+                // auto-derived column name doesn't reliably come out as the
+                // snake_case name this schema (and its own index) expect.
+                t.column("custom_playlist_id", .integer)
+                    .notNull()
+                    .references("custom_playlists", onDelete: .cascade)
+                t.column("track_persistent_id", .integer)
+                    .notNull()
+                    .indexed()
+                    .references("tracks", column: "persistent_id", onDelete: .restrict)
+                t.column("position", .integer).notNull()
+            }
+            try db.create(index: "idx_custom_playlist_tracks_playlist_position", on: "custom_playlist_tracks", columns: ["custom_playlist_id", "position"])
+        }
+
         return migrator
     }
 }

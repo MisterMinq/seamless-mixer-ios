@@ -284,6 +284,14 @@ struct SourceSelectionHubView: View {
         // above) — Favourites is a standalone pinned row, not a search-
         // result type — but needed to keep this switch exhaustive.
         case .favoriteSongs: return "star.fill"
+        // Never shown here either — a `CustomPlaylist` isn't a Hub search-
+        // result type, it's picked from the merged Playlists picker (see
+        // `PlaylistPickerView`) — but needed to keep this switch exhaustive,
+        // per every other never-searched case above. Reuses the same icon
+        // as a real Apple Music playlist; the two are visually
+        // differentiated by the "SM" badge on the picker's own cells, not
+        // by a different icon here.
+        case .customPlaylist: return "music.note.list"
         }
     }
 
@@ -296,6 +304,7 @@ struct SourceSelectionHubView: View {
         case .songs: return "Song"
         case .wholeLibrary: return "Library"
         case .favoriteSongs: return "Favourites"
+        case .customPlaylist: return "Playlist"
         }
     }
 
@@ -373,8 +382,17 @@ struct SourceSelectionHubView: View {
     private var categoryRows: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
             favoritesRow
-            categoryRow(title: "Playlists", icon: "music.note.list", count: viewModel.playlistCount, type: .playlist) {
-                PlaylistPickerView(viewModel: viewModel)
+            // **Badge count widened 2026-09-07 (Batch 2)**: `PlaylistPickerView`
+            // now also picks `.customPlaylist`-typed sources (native, "SM"-
+            // badged playlists merged into the same grid) — this row's own
+            // "N selected" badge needs to reflect both, not just `.playlist`
+            // picks, or a selected custom playlist would silently show as
+            // "0 selected" here despite genuinely being part of the pool.
+            categoryRow(
+                title: "Playlists", icon: "music.note.list", count: viewModel.playlistCount, type: .playlist,
+                additionalSelectedCount: viewModel.selectedCount(for: .customPlaylist)
+            ) {
+                PlaylistPickerView(viewModel: viewModel, store: store)
             }
             categoryRow(title: "Genres", icon: "guitars", count: viewModel.genreCount, type: .genre) {
                 GenrePickerView(viewModel: viewModel)
@@ -405,11 +423,15 @@ struct SourceSelectionHubView: View {
     /// - Parameter type: which `SourceType` this row represents, used only
     ///   to compute the live "N selected" badge from `viewModel.selectedSources`
     ///   — the row's own picked-ness has no other bearing on navigation.
+    /// - Parameter additionalSelectedCount: **added 2026-09-07** — folded
+    ///   into the same badge for a row whose picker surfaces more than one
+    ///   `SourceType` (only the Playlists row, so far — see its own call
+    ///   site). Defaults to 0, a no-op for every other row.
     private func categoryRow<Destination: View>(
-        title: String, icon: String, count: Int, type: SourceType,
+        title: String, icon: String, count: Int, type: SourceType, additionalSelectedCount: Int = 0,
         @ViewBuilder destination: () -> Destination
     ) -> some View {
-        let selectedCount = viewModel.selectedCount(for: type)
+        let selectedCount = viewModel.selectedCount(for: type) + additionalSelectedCount
         return NavigationLink {
             destination()
         } label: {

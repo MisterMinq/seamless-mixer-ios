@@ -38,6 +38,26 @@ public enum SourceType: String, Codable, CaseIterable, Hashable, DatabaseValueCo
     /// just queries `tracks.is_favorite` directly), same "value mirrors
     /// label" convention `.wholeLibrary` already uses.
     case favoriteSongs = "favorites"
+    /// **Added 2026-09-07, Batch 2** — a saved `CustomPlaylist` (the new
+    /// native-playlist concept, see that type's own doc comment) picked as
+    /// a Build Mix source. Resolved via `MediaLibraryResolver`'s
+    /// `.customPlaylist` case, which reads `custom_playlist_tracks`
+    /// directly (this app's own database), not `MediaPlayer`. Modeled the
+    /// same way `.playlist`/`.artist`/`.album` already are — a
+    /// `SelectedSource.persistentID` carries the lookup key, here the
+    /// `CustomPlaylist`'s own `Int64` row id bit-cast into the same
+    /// `MPMediaEntityPersistentID` field every real Apple Music source
+    /// already uses that field for (a deliberate field-reuse choice, not a
+    /// new one — avoids widening `SelectedSource`/`PlaylistSource` for a
+    /// single extra case). Raw value deliberately `"custom playlist"`, not
+    /// the implicit camelCase `"customPlaylist"` — same reasoning as
+    /// `.wholeLibrary`'s own raw-value comment: `PlaylistNaming.subtitle`'s
+    /// `.rawValue.capitalized` needs real word boundaries to work with, and
+    /// Foundation's `.capitalized` actually *lowercases* the rest of a
+    /// single unbroken word (so the implicit raw value would have rendered
+    /// as "Customplaylist," not "CustomPlaylist") — a space gives it two
+    /// real words to capitalize, producing "Custom Playlist" instead.
+    case customPlaylist = "custom playlist"
 }
 
 public struct PlaylistSource: Codable, Equatable, Identifiable {

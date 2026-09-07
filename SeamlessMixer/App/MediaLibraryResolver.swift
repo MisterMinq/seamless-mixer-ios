@@ -141,6 +141,28 @@ enum MediaLibraryResolver {
                 guard !favoriteIDs.isEmpty else { continue }
                 let favoriteIDSet = Set(favoriteIDs)
                 add(MPMediaQuery.songs().items?.filter { favoriteIDSet.contains(Int64(bitPattern: $0.persistentID)) })
+
+            case .customPlaylist:
+                // **Added 2026-09-07, Batch 2** — a `CustomPlaylist`'s own
+                // Int64 row id, bit-cast back out of `source.persistentID`
+                // (see `SourceType.customPlaylist`'s own doc comment for
+                // why that field carries it). Reads `custom_playlist_tracks`
+                // directly (raw SQL, same convention as `.favoriteSongs`
+                // above), then resolves through the same "fetch every song,
+                // filter locally by a Swift `Set`" pattern every other case
+                // here uses — never a `MPMediaPropertyPredicate` keyed on a
+                // raw persistentID.
+                guard let db, let persistentID = source.persistentID else { continue }
+                let customPlaylistID = Int64(bitPattern: persistentID)
+                let trackIDs: [Int64] = (try? db.dbQueue.read { conn in
+                    try Int64.fetchAll(
+                        conn, sql: "SELECT track_persistent_id FROM custom_playlist_tracks WHERE custom_playlist_id = ? ORDER BY position",
+                        arguments: [customPlaylistID]
+                    )
+                }) ?? []
+                guard !trackIDs.isEmpty else { continue }
+                let trackIDSet = Set(trackIDs)
+                add(MPMediaQuery.songs().items?.filter { trackIDSet.contains(Int64(bitPattern: $0.persistentID)) })
             }
         }
         return items

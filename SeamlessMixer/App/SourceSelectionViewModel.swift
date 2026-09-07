@@ -87,6 +87,26 @@ final class SourceSelectionViewModel: ObservableObject {
 
     func attach(store: PlaylistStore) {
         self.store = store
+        loadCustomPlaylists()
+    }
+
+    /// **Added 2026-09-07, Batch 2** — every saved `CustomPlaylist` (the new
+    /// native-playlist concept), merged into `PlaylistPickerView`'s grid
+    /// alongside real Apple Music playlists. Loaded once on `attach(store:)`
+    /// and again via `refreshCustomPlaylists()` after anything that could
+    /// change the list (a new one created, one renamed/deleted, or a copy-
+    /// on-edit just ran) — `PlaylistPickerView` itself has no independent
+    /// database access, so it can't refresh this on its own the way
+    /// `PlaylistStore.refresh()` covers `Playlist` rows for My Mixes.
+    @Published private(set) var customPlaylists: [CustomPlaylist] = []
+
+    func refreshCustomPlaylists() {
+        loadCustomPlaylists()
+    }
+
+    private func loadCustomPlaylists() {
+        guard let db = store?.db else { return }
+        customPlaylists = (try? db.loadCustomPlaylists()) ?? []
     }
 
     /// Segmented-control selection, per the confirmed Source Selection
