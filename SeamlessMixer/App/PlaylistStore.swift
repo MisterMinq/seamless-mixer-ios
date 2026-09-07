@@ -276,6 +276,27 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    /// **Added 2026-09-07, Batch 3** — a convenience overload for callers
+    /// (Now Playing's "Add to Playlist") that only have a bare
+    /// `trackPersistentID`, not an already-in-hand `MPMediaItem` — unlike
+    /// `PlaylistDetailRow` (which powers `PlaylistPickerView`'s copy-on-edit
+    /// path), `PlaylistDetailRow` doesn't carry album/genre/raw duration, so
+    /// the currently-playing row alone isn't enough to call the method
+    /// above directly. Re-resolves the real `MPMediaItem` first via the
+    /// project's established "fetch every song, filter locally by a plain
+    /// `==`" pattern — never a `MPMediaPropertyPredicate` keyed on a raw
+    /// persistentID, the same class of bug already fixed multiple times
+    /// elsewhere (see `MediaLibraryResolver`'s own doc comments) — then
+    /// delegates to the real implementation above.
+    func addToCustomPlaylist(trackPersistentID: Int64, customPlaylistID: Int64) {
+        let targetID = MPMediaEntityPersistentID(bitPattern: trackPersistentID)
+        guard let item = MPMediaQuery.songs().items?.first(where: { $0.persistentID == targetID }) else {
+            loadError = "Couldn't find that song in your library."
+            return
+        }
+        addToCustomPlaylist(item: item, customPlaylistID: customPlaylistID)
+    }
+
     func removeCustomPlaylistTrack(id: Int64, fromCustomPlaylistID customPlaylistID: Int64) {
         guard let db else { return }
         do {

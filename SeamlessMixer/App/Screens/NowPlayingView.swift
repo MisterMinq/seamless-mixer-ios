@@ -67,26 +67,28 @@ import MediaPlayer
 /// its organic, curved color blending kept reading as "wavy" on a real
 /// device even with all animation removed.
 ///
-/// **Track-level favourite star added 2026-09-06**, beside the title — per
-/// Andy's own opinion, explicitly not buried in a menu: the real scenario
-/// is discovering an unfamiliar song *while it's playing* (a Whole Library
-/// mix surfacing something never consciously heard before) and wanting to
-/// mark it in the moment, the same placement Apple Music itself uses for a
-/// song-level favorite. See `isNowPlayingFavorite`'s doc comment. Kept
-/// alongside — not instead of — the equivalent toggle already in Playlist
-/// Detail's/Queue's per-track "..." menus, per Andy's explicit "keep both
-/// for now" call, revisit later if one placement turns out to dominate in
-/// practice.
+/// **Track-level favourite star, added 2026-09-06, moved to the toolbar
+/// 2026-09-07.** First built beside the title (per Andy's own opinion at
+/// the time — the real scenario is discovering an unfamiliar song *while
+/// it's playing*, and marking it in the moment the way Apple Music places
+/// its own song-level favorite). Andy later asked directly to move it into
+/// the top-right `ToolbarItemGroup` instead, matching `PlaylistDetailView`'s
+/// own star placement exactly for consistency across both screens — the
+/// layout this screen was actually confirmed to use back at 0.25.68, before
+/// 0.25.65 moved it beside the title. See `isNowPlayingFavorite`'s doc
+/// comment and the `.toolbar` block below. Still kept as its own control,
+/// alongside — not instead of — the equivalent toggle in Playlist Detail's/
+/// Queue's per-track "..." menus, per Andy's original "keep both" call.
 ///
 /// **Deliberate, flagged simplification still remaining:**
-/// - **No "..." overflow on this screen** (playlist-level actions —
-///   Rename/Refresh/Delete/Share). `PlaylistOverflowSheet` is keyed off a
-///   real `Playlist`, which this screen was deliberately *not* handed
-///   (only `rows`/`sourceCaption`/`store`, a lighter set than the full
-///   `Playlist`) to keep this slice's scope to "show what's playing," not
-///   duplicate Playlist Detail's controls. Revisit if that turns out to
-///   matter in practice. (The track-level favorite above doesn't need
-///   this — it only needs a track ID and `store`, not the full `Playlist`.)
+/// - ~~No "..." overflow on this screen~~ **A "..." now exists as of Batch 3
+///   (below)**, but still only for one action ("Add to Playlist") — the
+///   fuller playlist-level overflow (`PlaylistOverflowSheet`'s Rename/
+///   Refresh/Delete/Share, keyed off a real `Playlist`) is still not here;
+///   this screen was deliberately *not* handed the full `Playlist` (only
+///   `rows`/`sourceCaption`/`store`, a lighter set) to keep its scope to
+///   "show what's playing," not duplicate Playlist Detail's controls.
+///   Revisit if that turns out to matter in practice.
 /// - ~~No "Add to a new mix" from here~~ **Built 2026-09-07 (Batch 3 of the
 ///   confirmed "Add to Playlist" design, CLAUDE.md 0.25.68/0.25.70)** — a
 ///   "..." toolbar menu, its one item ("Add to Playlist") opening
@@ -208,31 +210,24 @@ struct NowPlayingView: View {
 
                     if let row = nowPlayingRow {
                         VStack(spacing: DesignTokens.Spacing.xxs) {
-                            // **Favourite star added 2026-09-06**, per
-                            // Andy's direct request/opinion — beside the
-                            // title, not buried in a menu, since the real
-                            // scenario is discovering an unfamiliar song
-                            // *while it's playing* (e.g. a Whole Library
-                            // mix) and wanting to mark it in the moment,
-                            // matching Apple Music's own song-level
-                            // favorite placement. Kept alongside (not
-                            // instead of) the same toggle in Playlist
-                            // Detail's/Queue's "..." menus, per Andy's own
-                            // explicit call to keep both for now.
-                            HStack(spacing: DesignTokens.Spacing.xs) {
-                                Text(row.title)
-                                    .font(.title2.weight(.semibold))
-                                    .foregroundStyle(primaryTextColor)
-                                    .multilineTextAlignment(.center)
-                                    .lineLimit(2)
-                                Button {
-                                    toggleNowPlayingFavorite(row: row)
-                                } label: {
-                                    Image(systemName: isNowPlayingFavorite ? "star.fill" : "star")
-                                        .foregroundStyle(primaryTextColor)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                            // **Favourite star moved to the toolbar
+                            // 2026-09-07** — see this file's own top-of-file
+                            // doc comment for the full back-and-forth: added
+                            // beside the title at 0.25.65 (Andy's own call at
+                            // the time, matching Apple Music's song-level
+                            // favorite placement), then moved here per
+                            // Andy's direct follow-up request for
+                            // consistency with Playlist Detail's star, which
+                            // has always lived in its own top-right
+                            // `ToolbarItemGroup` — the placement this screen
+                            // was actually confirmed to use back at 0.25.68,
+                            // before 0.25.65 revised it. See `.toolbar`
+                            // below for where it lives now.
+                            Text(row.title)
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(primaryTextColor)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
                             Text(row.artist)
                                 .font(.body)
                                 .foregroundStyle(secondaryTextColor)
@@ -302,17 +297,32 @@ struct NowPlayingView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        // **Added 2026-09-07, Batch 3** — the confirmed design's "..." menu,
-        // holding exactly one item ("Add to Playlist"), matching Playlist
-        // Detail's own `ToolbarItemGroup` pattern. The favourite star lives
-        // beside the title instead of in this toolbar, per Andy's own
-        // explicit preference (0.25.65) — only the "..." belongs up here.
-        // `.menuStyle(.borderlessButton)` avoids the default-chrome bug this
-        // project has already hit and fixed on every other bare Menu/Button
-        // in this app (A-Z rails, per-track "..." menus, the transport row
-        // just below).
+        // **Star + "..." menu, both in the top-right `ToolbarItemGroup`, as
+        // of 2026-09-07** — matches `PlaylistDetailView`'s own toolbar
+        // layout exactly (star first, then the overflow control), the
+        // placement this screen was originally confirmed to use (0.25.68)
+        // before 0.25.65 moved the star beside the title instead. Andy
+        // asked directly to move it back for consistency across both
+        // screens, citing the same "oval island" conversation that
+        // confirmed this layout in the first place. The "..." itself holds
+        // exactly one item ("Add to Playlist," Batch 3). `.menuStyle
+        // (.borderlessButton)`/`.buttonStyle(.plain)` avoid the default-
+        // chrome bug this project has already hit and fixed on every other
+        // bare Menu/Button in this app (A-Z rails, per-track "..." menus,
+        // the transport row just below).
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button {
+                    if let row = nowPlayingRow {
+                        toggleNowPlayingFavorite(row: row)
+                    }
+                } label: {
+                    Image(systemName: isNowPlayingFavorite ? "star.fill" : "star")
+                        .foregroundStyle(primaryTextColor)
+                }
+                .buttonStyle(.plain)
+                .disabled(nowPlayingRow == nil)
+
                 Menu {
                     Button("Add to Playlist", systemImage: "text.badge.plus") {
                         showAddToPlaylist = true
