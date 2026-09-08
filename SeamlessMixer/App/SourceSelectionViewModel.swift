@@ -73,6 +73,19 @@ final class SourceSelectionViewModel: ObservableObject {
     /// `attach(store:)`).
     @Published private(set) var favoriteSongsCount: Int = 0
 
+    /// **Added 2026-09-08 (Testing 67)** — every currently-favourited
+    /// track's own `persistentID`, needed to compute the Favourites row's
+    /// "N selected" badge *correctly*, separately from the plain Songs
+    /// row's. Both rows pick individual songs via the identical `.songs`
+    /// source type (per `categoryRows`' own doc comment — a deliberate,
+    /// documented trade-off), which made the Favourites badge quietly wrong
+    /// in practice: Andy picked 4 (his only 4) favourited songs via this
+    /// row, then 2 more, non-favourited songs via the plain Songs row — and
+    /// *both* rows showed "6 selected," implying all 6 were favourites when
+    /// only 4 were. See `selectedFavoriteSongsCount` below for the actual
+    /// fix.
+    @Published private(set) var favoriteSongPersistentIDs: Set<Int64> = []
+
     /// **Added 2026-09-07**, alongside `favoriteSongsCount`/`.favoriteSongs`
     /// — this view model had no database access at all before now (every
     /// prior count/selection came purely from `MediaPlayer`). Set once via
@@ -214,6 +227,20 @@ final class SourceSelectionViewModel: ObservableObject {
         selectedSources.filter { $0.type == type }.count
     }
 
+    /// **Added 2026-09-08 (Testing 67)** — the actual fix for the
+    /// Favourites badge bug described on `favoriteSongPersistentIDs`' own
+    /// doc comment: counts only the currently-selected `.songs` sources
+    /// whose track is a genuine favourite, not every `.songs` selection
+    /// regardless of origin (that's what `selectedCount(for: .songs)`
+    /// already correctly reports, and is left alone — the plain Songs row
+    /// is supposed to show the shared total).
+    var selectedFavoriteSongsCount: Int {
+        selectedSources.filter { source in
+            guard source.type == .songs, let persistentID = source.persistentID else { return false }
+            return favoriteSongPersistentIDs.contains(Int64(bitPattern: persistentID))
+        }.count
+    }
+
     func isSelected(_ source: SelectedSource) -> Bool {
         selectedSources.contains(source)
     }
@@ -292,6 +319,13 @@ final class SourceSelectionViewModel: ObservableObject {
             try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM tracks WHERE is_favorite = 1")
         }
         favoriteSongsCount = count ?? 0
+        // **Added 2026-09-08** alongside the count above — see
+        // `favoriteSongPersistentIDs`' own doc comment for why this is
+        // needed too, not just the aggregate count.
+        let ids: [Int64] = (try? db.dbQueue.read { conn in
+            try Int64.fetchAll(conn, sql: "SELECT persistent_id FROM tracks WHERE is_favorite = 1")
+        }) ?? []
+        favoriteSongPersistentIDs = Set(ids)
     }
 
     // MARK: - Hub-level search

@@ -376,7 +376,21 @@ struct SourceSelectionHubView: View {
     /// reflection of shared state, not a bug.
     private var categoryRows: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
-            categoryRow(title: "Favourites", icon: "star.fill", count: viewModel.favoriteSongsCount, type: .songs) {
+            // **`selectedCountOverride` added 2026-09-08 (Testing 67) — a
+            // real bug fix, not the documented trade-off above.** This row
+            // and the plain Songs row both pick individual songs via the
+            // same `.songs` source type, so the generic `selectedCount(for:)`
+            // this row used to rely on (like every other row) reflects the
+            // *combined* total picked via either screen — accurate for the
+            // Songs row, but wrong here: Andy picked his only 4 favourites
+            // via this row, then 2 more (non-favourite) songs via the plain
+            // Songs picker, and both rows showed "6 selected," implying all
+            // 6 were favourites. `selectedFavoriteSongsCount` counts only
+            // the selections that are genuinely favourited tracks.
+            categoryRow(
+                title: "Favourites", icon: "star.fill", count: viewModel.favoriteSongsCount, type: .songs,
+                selectedCountOverride: viewModel.selectedFavoriteSongsCount
+            ) {
                 FavoriteSongsPickerView(viewModel: viewModel, store: store)
             }
             // **Badge count widened 2026-09-07 (Batch 2)**: `PlaylistPickerView`
@@ -424,11 +438,18 @@ struct SourceSelectionHubView: View {
     ///   into the same badge for a row whose picker surfaces more than one
     ///   `SourceType` (only the Playlists row, so far — see its own call
     ///   site). Defaults to 0, a no-op for every other row.
+    /// - Parameter selectedCountOverride: **added 2026-09-08** — when
+    ///   given, replaces the generic `type`-based count entirely rather
+    ///   than adding to it (unlike `additionalSelectedCount` above). Only
+    ///   the Favourites row uses this so far — see its own call site for
+    ///   why the generic per-`type` count is actively wrong there, not just
+    ///   incomplete.
     private func categoryRow<Destination: View>(
         title: String, icon: String, count: Int, type: SourceType, additionalSelectedCount: Int = 0,
+        selectedCountOverride: Int? = nil,
         @ViewBuilder destination: () -> Destination
     ) -> some View {
-        let selectedCount = viewModel.selectedCount(for: type) + additionalSelectedCount
+        let selectedCount = selectedCountOverride ?? (viewModel.selectedCount(for: type) + additionalSelectedCount)
         return NavigationLink {
             destination()
         } label: {
