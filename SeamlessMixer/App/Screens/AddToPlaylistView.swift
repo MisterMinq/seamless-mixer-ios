@@ -280,7 +280,7 @@ struct AddToPlaylistView: View {
     /// write API to a real Apple Music playlist's own membership.
     private func addSong(to row: MergedRow) {
         switch row {
-        case .custom(let custom, _):
+        case .custom(let custom, _, _):
             addSong(toCustomPlaylistID: custom.id)
         case .apple(let apple):
             guard let matchingPlaylist = MPMediaQuery.playlists().collections?
