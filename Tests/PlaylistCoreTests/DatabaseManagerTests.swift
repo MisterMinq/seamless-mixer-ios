@@ -91,6 +91,11 @@ final class DatabaseManagerTests: XCTestCase {
         let detail = try db.loadPlaylistDetail(playlistID: playlistID)
         XCTAssertEqual(detail.sources.count, 1)
         XCTAssertEqual(detail.sources.first?.sourceLabel, "Smooth jazz")
+        // `isExclusion` (added 2026-09-09, whole-library-exclusion support)
+        // defaults to `false` for an ordinary source like this one — a real
+        // round-trip check that the new column reads back correctly, not
+        // just that it compiles.
+        XCTAssertEqual(detail.sources.first?.isExclusion, false)
         XCTAssertEqual(detail.tracks.map(\.track.title), ["A", "B"])
         XCTAssertEqual(detail.tracks.map(\.position), [0, 1])
         // Confirms `crossfadeStartOffsetSec`/`crossfadeDurationSec` actually

@@ -22,6 +22,17 @@ import PlaylistCore
 /// error explaining it isn't supported yet, per the reasoning in
 /// `MixBuilder`'s own doc comment.
 ///
+/// **"Whole library" gained real exclusion support 2026-09-09, per Andy's
+/// direct request.** The category rows used to gray out entirely the
+/// moment "Use your whole library" was on — a pick made in that mode now
+/// means *leave this out of* the whole library instead, so those rows stay
+/// fully usable; `categoryRow`'s badge and `chipRow`'s chips both switch to
+/// a distinct `warning`-tinted "excluded" look in that mode so the two
+/// meanings (include vs. exclude) never read as identical. See
+/// `SourceSelectionViewModel.useWholeLibrary`'s own doc comment for the
+/// underlying selection-state rule, and `MixBuilder.resolveWholeLibraryPool`
+/// for how the exclusion actually gets applied at Build Mix/Refresh time.
+///
 /// **Navigation on success changed twice, both real bugs, not style
 /// choices.** First (2026-08-14): this used to push `PlaylistDetailView`
 /// directly from *within* this Hub via `.navigationDestination(item:)`,
@@ -310,6 +321,11 @@ struct SourceSelectionHubView: View {
 
     // MARK: - Rows
 
+    /// **Subtitle added 2026-09-09**, alongside the category rows no longer
+    /// graying out below — see `categoryRows`' own doc comment for the full
+    /// reasoning. This is the row where that mode switch is actually
+    /// toggled, so it's the natural place to state plainly what picking
+    /// something else now means while it's active.
     private var allSongsRow: some View {
         Button {
             viewModel.useWholeLibrary.toggle()
@@ -318,9 +334,16 @@ struct SourceSelectionHubView: View {
                 Image(systemName: "music.note.house")
                     .font(.system(size: DesignTokens.Size.iconMedium))
                     .foregroundStyle(DesignTokens.Color.primaryText)
-                Text("Use your whole library")
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(DesignTokens.Color.textPrimary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use your whole library")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                    if viewModel.useWholeLibrary {
+                        Text("Picks below now exclude — leave a genre, artist, etc. out of the mix.")
+                            .font(.caption2)
+                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                    }
+                }
                 Spacer()
                 if viewModel.useWholeLibrary {
                     Image(systemName: "checkmark.circle.fill")
@@ -374,6 +397,17 @@ struct SourceSelectionHubView: View {
     /// one — a song is either selected or it isn't, regardless of which
     /// browsing screen it was checked off in, so this is read as an honest
     /// reflection of shared state, not a bug.
+    /// **No longer grayed out while "whole library" is active, 2026-09-09,
+    /// per Andy's direct request.** They used to be fully disabled the
+    /// moment `useWholeLibrary` turned on, since combining "everything"
+    /// with more inclusions was redundant — but a pick made in that mode now
+    /// means *exclude*, not *include* ("there are 2 ways of selecting
+    /// things... selecting everything and excluding some... the faster way
+    /// will be better option depending on the goal"), a genuinely useful
+    /// thing to do, so disabling them no longer made sense. See
+    /// `allSongsRow`'s own new subtitle for where that mode switch is
+    /// explained, and `categoryRow`'s own doc comment for how each row's
+    /// badge communicates it too.
     private var categoryRows: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
             // **`selectedCountOverride` added 2026-09-08 (Testing 67) — a
@@ -424,11 +458,6 @@ struct SourceSelectionHubView: View {
                 SongPickerView(viewModel: viewModel)
             }
         }
-        // "All Songs" combining with anything else is redundant, per the
-        // confirmed design -- gray these out rather than letting both be
-        // selected at once.
-        .opacity(viewModel.useWholeLibrary ? 0.4 : 1.0)
-        .disabled(viewModel.useWholeLibrary)
     }
 
     /// - Parameter type: which `SourceType` this row represents, used only
@@ -444,12 +473,20 @@ struct SourceSelectionHubView: View {
     ///   the Favourites row uses this so far — see its own call site for
     ///   why the generic per-`type` count is actively wrong there, not just
     ///   incomplete.
+    ///
+    /// **Badge reads "N excluded" in `warning`-colored text while "whole
+    /// library" is active, 2026-09-09** — same picks, same count, different
+    /// meaning depending on the Hub's current mode (see `categoryRows`' own
+    /// doc comment); the wording/color change is what keeps that mode
+    /// visible at a glance on every row, not just the pinned one where it's
+    /// toggled.
     private func categoryRow<Destination: View>(
         title: String, icon: String, count: Int, type: SourceType, additionalSelectedCount: Int = 0,
         selectedCountOverride: Int? = nil,
         @ViewBuilder destination: () -> Destination
     ) -> some View {
         let selectedCount = selectedCountOverride ?? (viewModel.selectedCount(for: type) + additionalSelectedCount)
+        let isExclusionMode = viewModel.useWholeLibrary
         return NavigationLink {
             destination()
         } label: {
@@ -461,9 +498,13 @@ struct SourceSelectionHubView: View {
                     .font(.body)
                     .foregroundStyle(DesignTokens.Color.textPrimary)
                 Spacer()
-                Text(selectedCount > 0 ? "\(selectedCount) selected" : "\(count)")
+                Text(selectedCount > 0 ? "\(selectedCount) \(isExclusionMode ? "excluded" : "selected")" : "\(count)")
                     .font(.footnote)
-                    .foregroundStyle(selectedCount > 0 ? DesignTokens.Color.primaryText : DesignTokens.Color.textSecondary)
+                    .foregroundStyle(
+                        selectedCount > 0
+                            ? (isExclusionMode ? DesignTokens.Color.warning : DesignTokens.Color.primaryText)
+                            : DesignTokens.Color.textSecondary
+                    )
                 Image(systemName: "chevron.right")
                     .font(.caption)
                     .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -503,13 +544,22 @@ struct SourceSelectionHubView: View {
     /// `MarqueeText` overflow. Capping each chip to `chipMaxWidth` with
     /// `.lineLimit(1)`/`.truncationMode(.tail)` means a long label truncates
     /// with an ellipsis instead of ever reporting an oversized width.
+    /// **Exclusion styling added 2026-09-09** — a chip means something
+    /// different depending on the Hub's current mode (see `categoryRows`'
+    /// own doc comment), and this row is exactly where that ambiguity would
+    /// otherwise be most visible/dangerous (a "Christmas" chip meaning
+    /// "included" one session and "excluded" the next, rendered identically
+    /// either way). A leading minus sign plus the same `warning` tint
+    /// `categoryRow`'s own badge uses keeps the two readings from ever
+    /// looking the same.
     @ViewBuilder
     private var chipRow: some View {
         if !viewModel.selectedSources.isEmpty {
+            let isExclusionMode = viewModel.useWholeLibrary
             FlowLayout(spacing: DesignTokens.Spacing.xs) {
                 ForEach(viewModel.selectedSources) { source in
                     HStack(spacing: DesignTokens.Spacing.xxs) {
-                        Text(source.label)
+                        Text(isExclusionMode ? "\u{2212} \(source.label)" : source.label)
                             .font(.footnote)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -523,8 +573,8 @@ struct SourceSelectionHubView: View {
                     }
                     .padding(.horizontal, DesignTokens.Spacing.sm)
                     .padding(.vertical, DesignTokens.Spacing.xxs)
-                    .background(DesignTokens.Color.surfaceTint)
-                    .foregroundStyle(DesignTokens.Color.primaryText)
+                    .background(isExclusionMode ? DesignTokens.Color.warning.opacity(0.15) : DesignTokens.Color.surfaceTint)
+                    .foregroundStyle(isExclusionMode ? DesignTokens.Color.warning : DesignTokens.Color.primaryText)
                     .clipShape(Capsule())
                 }
             }
@@ -654,11 +704,18 @@ struct SourceSelectionHubView: View {
                     // against "how many made it into the finished mix"
                     // without waiting for a full build, per his own request
                     // during real-device testing of the exclusion-count
-                    // question. `nil` for "whole library" (never resolved
-                    // this way) or an empty selection -- both already covered
-                    // by `selectionSummary` above, so no redundant line.
+                    // question. `nil` for a plain "whole library" pick with
+                    // nothing excluded, or an empty selection -- both
+                    // already covered by `selectionSummary` above, so no
+                    // redundant line. **Extended 2026-09-09** to also cover
+                    // whole-library-minus-exclusions, worded as "remaining"
+                    // rather than "found" since it's a subtraction, not a
+                    // lookup -- see `SourceSelectionViewModel
+                    // .refreshPreviewSongCount`'s own doc comment.
                     if let previewSongCount = viewModel.previewSongCount {
-                        Text("\(previewSongCount) song\(previewSongCount == 1 ? "" : "s") found")
+                        Text(viewModel.useWholeLibrary
+                            ? "\(previewSongCount) song\(previewSongCount == 1 ? "" : "s") remaining"
+                            : "\(previewSongCount) song\(previewSongCount == 1 ? "" : "s") found")
                             .font(.caption2)
                             .foregroundStyle(DesignTokens.Color.textSecondary)
                         // Total minutes, added 2026-08-20 per Andy's direct
@@ -709,8 +766,16 @@ struct SourceSelectionHubView: View {
         .background(DesignTokens.Color.surface)
     }
 
+    /// **Exclusion case added 2026-09-09** — "Whole library selected"
+    /// unchanged when nothing's excluded (today's exact wording, for every
+    /// playlist already built this way); a real, distinct summary once one
+    /// or more picks are excluding something from it.
     private var selectionSummary: String {
-        if viewModel.useWholeLibrary { return "Whole library selected" }
+        if viewModel.useWholeLibrary {
+            let excludedCount = viewModel.selectedSources.count
+            guard excludedCount > 0 else { return "Whole library selected" }
+            return "Whole library, excluding \(excludedCount) source\(excludedCount == 1 ? "" : "s")"
+        }
         let count = viewModel.selectedSources.count
         if count == 0 { return "No sources selected" }
         return "\(count) source\(count == 1 ? "" : "s") selected"

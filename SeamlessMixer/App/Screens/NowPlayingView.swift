@@ -91,8 +91,10 @@ import MediaPlayer
 ///   Revisit if that turns out to matter in practice.
 /// - ~~No "Add to a new mix" from here~~ **Built 2026-09-07 (Batch 3 of the
 ///   confirmed "Add to Playlist" design, CLAUDE.md 0.25.68/0.25.70)** — a
-///   "..." toolbar menu, its one item ("Add to Playlist") opening
-///   `AddToPlaylistView` as a sheet. This is the real native-playlist
+///   "..." toolbar control opening `AddToPlaylistView` as a sheet
+///   (**a plain `Button`, not a popup `Menu`, as of 2026-09-09** — see
+///   `body`'s own doc comment for the real, root-caused reason). This is
+///   the real native-playlist
 ///   concept (`CustomPlaylist`), not this app's own Seamless Mix recipes —
 ///   the original concern about a manually-inserted song silently vanishing
 ///   on Refresh never applied to `CustomPlaylist` in the first place, since
@@ -150,6 +152,50 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
+        // **"..." Menu replaced with a plain Button, 2026-09-09 — Testing
+        // (68), a real, root-caused bug, not a style tweak.** Andy: "the
+        // menu is bright and dims in about a second... 1st time you tap on
+        // it it works. 2nd time... it doesn't work. Sometimes you tap on
+        // the menu and it does not work, sometimes it does. This bright and
+        // dim visual also happens sometimes with the 3 dot ellipsis."
+        // Root cause: this whole screen re-evaluates its `body` roughly
+        // 10x/second while a track is playing, since `elapsedSeconds`
+        // (driving `progressBar`) is `@Published` on the shared
+        // `PlaybackEngine`, and `@EnvironmentObject` re-invalidates every
+        // subscribing view's `body` on *any* published change to that
+        // object, not just the ones a given view actually reads — the same
+        // "any @Published change reruns the whole subscriber" mechanism
+        // already documented as a real hazard elsewhere in this project
+        // (see `SeamlessMixerApp`'s own `PlaybackEngine`/`PlaylistStore`
+        // hoisting notes, and why `MPNowPlayingInfoCenter` updates are
+        // deliberately *not* published on every tick). The "..." control
+        // was a SwiftUI `Menu`, which presents its popup via a real UIKit
+        // context-menu interaction anchored to the toolbar button — since
+        // the toolbar closure reruns on every one of those ~10Hz ticks, the
+        // Menu's underlying button/interaction gets rebuilt while its own
+        // popup may still be open or its tap still resolving, which lines
+        // up exactly with the reported symptoms: the popup's own
+        // presentation animation replaying ("bright and dims"), and a tap
+        // landing on a row whose backing view got swapped out mid-gesture
+        // ("works, then doesn't, unpredictably"). This app's other plain
+        // `Button`s on this same screen (the transport row, the star) sit
+        // under the identical 10Hz churn and were never reported as flaky —
+        // real, if circumstantial, evidence this is specifically a
+        // Menu-popup problem, not a general re-render problem every control
+        // here would share. Since this "..." has always held exactly one
+        // action ("Add to Playlist," Batch 3), there was never a real need
+        // for a popup menu here in the first place. **Fixed** by replacing
+        // the `Menu` with a plain `Button` that opens `AddToPlaylistView`
+        // directly, same as the star beside it — no popup, no UIKit
+        // context-menu interaction for the 10Hz churn to destabilize. If a
+        // second action is ever added here, re-introducing a real `Menu`
+        // would need this same 10Hz-churn problem solved first (most likely
+        // by no longer declaring `@EnvironmentObject playbackEngine` on
+        // this screen's own body and instead confining that subscription to
+        // the small subviews that genuinely need per-tick freshness — a
+        // real, larger refactor, not attempted here since a single-item
+        // popup never needed to exist at all).
+        //
         // Wrapped in a ScrollView as of 2026-08-14 -- real-device feedback
         // found the play button, the time labels, and long titles cut off
         // ("out of range, not in the screen range") once a track was
@@ -297,19 +343,21 @@ struct NowPlayingView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        // **Star + "..." menu, both in the top-right `ToolbarItemGroup`, as
-        // of 2026-09-07** — matches `PlaylistDetailView`'s own toolbar
+        // **Star + "..." button, both in the top-right `ToolbarItemGroup`,
+        // as of 2026-09-07** — matches `PlaylistDetailView`'s own toolbar
         // layout exactly (star first, then the overflow control), the
         // placement this screen was originally confirmed to use (0.25.68)
         // before 0.25.65 moved the star beside the title instead. Andy
         // asked directly to move it back for consistency across both
         // screens, citing the same "oval island" conversation that
-        // confirmed this layout in the first place. The "..." itself holds
-        // exactly one item ("Add to Playlist," Batch 3). `.menuStyle
-        // (.borderlessButton)`/`.buttonStyle(.plain)` avoid the default-
-        // chrome bug this project has already hit and fixed on every other
-        // bare Menu/Button in this app (A-Z rails, per-track "..." menus,
-        // the transport row just below).
+        // confirmed this layout in the first place. **"..." is a plain
+        // `Button` as of 2026-09-09, not a `Menu`** — see the flaky-popup
+        // fix described at the top of `body` above; it opens
+        // `AddToPlaylistView` directly, the same as it did as this popup's
+        // one and only item. `.buttonStyle(.plain)` on both controls avoids
+        // the default-chrome bug this project has already hit and fixed on
+        // every other bare Menu/Button in this app (A-Z rails, per-track
+        // "..." menus, the transport row just below).
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button {
@@ -323,15 +371,13 @@ struct NowPlayingView: View {
                 .buttonStyle(.plain)
                 .disabled(nowPlayingRow == nil)
 
-                Menu {
-                    Button("Add to Playlist", systemImage: "text.badge.plus") {
-                        showAddToPlaylist = true
-                    }
+                Button {
+                    showAddToPlaylist = true
                 } label: {
                     Image(systemName: "ellipsis")
                         .foregroundStyle(primaryTextColor)
                 }
-                .menuStyle(.borderlessButton)
+                .buttonStyle(.plain)
                 .disabled(nowPlayingRow == nil)
             }
         }

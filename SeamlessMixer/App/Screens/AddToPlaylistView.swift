@@ -22,7 +22,11 @@ import PlaylistCore
 /// than building a smaller, self-contained one. Visually mirrors it closely
 /// on purpose though — same merged Apple + native grid, same "SM" badge,
 /// same copy-on-edit rule for an unedited Apple Music row, same "..." →
-/// New Playlist menu — so it reads as "the same Playlists screen," matching
+/// New Playlist menu, same first-track-artwork resolution for a native
+/// playlist's cover (**ported over 2026-09-09** — this screen was built the
+/// round before `PlaylistPickerView` gained that fix and never picked it
+/// up, a real, confirmed gap Andy's own screenshot caught, not a design
+/// choice) — so it reads as "the same Playlists screen," matching
 /// the confirmed flow's own description, just without the checkbox-
 /// selection/edit-pencil affordances that only make sense when picking
 /// Build Mix sources.
@@ -47,6 +51,17 @@ struct AddToPlaylistView: View {
     @State private var applePlaylists: [PlaylistRow] = []
     @State private var customPlaylists: [CustomPlaylist] = []
     @State private var customSongCounts: [Int64: Int] = [:]
+    /// **Added 2026-09-09, Testing (68)** — this screen's own `MergedRow
+    /// .artwork` always returned `nil` for a `.custom` row, unlike
+    /// `PlaylistPickerView`'s equivalent (fixed back at 2026-09-08, per
+    /// Andy's own suggestion to use a native playlist's first song's real
+    /// artwork) — this screen was built the round *before* that fix, as its
+    /// own separate, self-contained type (see this file's own top-of-file
+    /// doc comment for why), and never picked it up. Andy's screenshot of
+    /// this exact screen — every native playlist showing the flat
+    /// placeholder, including a real, 242-song one — confirmed it directly.
+    /// Same fix, same reasoning, ported over rather than duplicated blind.
+    @State private var customArtwork: [Int64: UIImage] = [:]
     @State private var showNewPlaylist = false
     @State private var errorMessage: String?
 
@@ -63,30 +78,30 @@ struct AddToPlaylistView: View {
     /// view's own `private` one, keeping this screen self-contained.
     private enum MergedRow: Identifiable {
         case apple(PlaylistRow)
-        case custom(CustomPlaylist, songCount: Int)
+        case custom(CustomPlaylist, songCount: Int, artwork: UIImage?)
 
         var id: String {
             switch self {
             case .apple(let row): return "apple:\(row.persistentID)"
-            case .custom(let playlist, _): return "custom:\(playlist.id ?? 0)"
+            case .custom(let playlist, _, _): return "custom:\(playlist.id ?? 0)"
             }
         }
         var name: String {
             switch self {
             case .apple(let row): return row.name
-            case .custom(let playlist, _): return playlist.name
+            case .custom(let playlist, _, _): return playlist.name
             }
         }
         var songCount: Int {
             switch self {
             case .apple(let row): return row.songCount
-            case .custom(_, let count): return count
+            case .custom(_, let count, _): return count
             }
         }
         var artwork: UIImage? {
             switch self {
             case .apple(let row): return row.artwork
-            case .custom: return nil
+            case .custom(_, _, let artwork): return artwork
             }
         }
         var isNative: Bool {
@@ -108,12 +123,12 @@ struct AddToPlaylistView: View {
 
         var rows: [MergedRow] = applePlaylists.map { apple in
             if let custom = customByOrigin[apple.persistentID] {
-                return .custom(custom, songCount: customSongCounts[custom.id ?? -1] ?? apple.songCount)
+                return .custom(custom, songCount: customSongCounts[custom.id ?? -1] ?? apple.songCount, artwork: customArtwork[custom.id ?? -1])
             }
             return .apple(apple)
         }
         for custom in standaloneCustom {
-            rows.append(.custom(custom, songCount: customSongCounts[custom.id ?? -1] ?? 0))
+            rows.append(.custom(custom, songCount: customSongCounts[custom.id ?? -1] ?? 0, artwork: customArtwork[custom.id ?? -1]))
         }
         return rows
     }
@@ -244,11 +259,17 @@ struct AddToPlaylistView: View {
         guard let db = store.db else { return }
         customPlaylists = (try? db.loadCustomPlaylists()) ?? []
         var counts: [Int64: Int] = [:]
+        var artwork: [Int64: UIImage] = [:]
         for playlist in customPlaylists {
             guard let id = playlist.id else { continue }
-            counts[id] = (try? db.loadCustomPlaylistDetail(customPlaylistID: id))?.tracks.count ?? 0
+            let detail = try? db.loadCustomPlaylistDetail(customPlaylistID: id)
+            counts[id] = detail?.tracks.count ?? 0
+            if let firstTrackID = detail?.tracks.first?.track.persistentID {
+                artwork[id] = ArtworkResolver.loadArtwork(forTrackPersistentID: firstTrackID, size: CGSize(width: 140, height: 140))
+            }
         }
         customSongCounts = counts
+        customArtwork = artwork
     }
 
     /// A `.custom` row already has a real `CustomPlaylist` id to add

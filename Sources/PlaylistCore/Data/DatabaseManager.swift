@@ -190,6 +190,22 @@ public final class DatabaseManager {
             try db.create(index: "idx_custom_playlist_tracks_playlist_position", on: "custom_playlist_tracks", columns: ["custom_playlist_id", "position"])
         }
 
+        // Added 2026-09-09, per Andy's direct request — "Use your whole
+        // library" plus one or more picks that mean *exclude*, not
+        // *include* (e.g. "everything except my Christmas genre"), rather
+        // than every other category row going fully inert the moment whole
+        // library is on. `NOT NULL` with a `false` default so every
+        // existing `playlist_sources` row (all of them genuine inclusions,
+        // since exclusion never existed before this) backfills correctly
+        // with no behavior change for any already-built playlist. See
+        // `PlaylistSource.isExclusion`'s own doc comment for how this is
+        // used.
+        migrator.registerMigration("v6_playlist_source_exclusion") { db in
+            try db.alter(table: "playlist_sources") { t in
+                t.add(column: "is_exclusion", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         return migrator
     }
 }

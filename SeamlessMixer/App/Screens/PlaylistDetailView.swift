@@ -71,6 +71,13 @@ import PlaylistCore
 ///   adjacent rows. Adding a track to an already-built playlist (short of a
 ///   full Refresh) is still not implemented — see CLAUDE.md's Rule 8 gap
 ///   list.
+/// - **Auto-opened "Name this mix" prompt, added 2026-09-09** — per Andy's
+///   own request/recommendation (Testing (68)): right after landing here
+///   from a fresh Build Mix (never for an existing playlist reopened from
+///   My Mixes), the same Rename mechanism `PlaylistOverflowSheet` already
+///   uses opens itself once, prefilled with the auto-generated suggested
+///   name, chained to run only after the exclusion/duplicates alerts are
+///   both out of the way. See `showRenamePrompt`'s own doc comment.
 /// - **`header` moved out of the `List` entirely, 2026-08-14** — see
 ///   `body`'s own doc comment. It used to be the `List`'s own first
 ///   `Section`, which meant scrolling the track list scrolled the header
@@ -119,6 +126,20 @@ struct PlaylistDetailView: View {
     private let initialDuplicateGroups: [[Track]]
     @State private var showDuplicatesAlert: Bool
     @State private var showDuplicatesList = false
+    /// **Added 2026-09-09**, per Andy's own request and recommendation
+    /// (CLAUDE.md's Testing (68) round): a New-Playlist-style "name this"
+    /// prompt, prefilled with the auto-generated suggested name, shown once
+    /// right after a *fresh* Build Mix — the lower-risk of two options
+    /// discussed (the other being restructuring `MixBuilder` to defer
+    /// persisting until a name is confirmed; this instead just auto-opens
+    /// the *existing* Rename mechanism, prefilled, the moment the new mix's
+    /// own screen appears, no change to when/how it's actually saved).
+    /// Chained to the very end of the exclusion/duplicates alert sequence
+    /// below (never shown at the same time as either) — see
+    /// `presentRenamePromptIfNeeded`'s own doc comment.
+    private let justBuilt: Bool
+    @State private var showRenamePrompt: Bool
+    @State private var renameDraft: String
     // Seeded from `playlist.isFavorite` at init so the star renders correctly
     // immediately, then updated optimistically on tap — `playlist` itself is
     // a `let` snapshot from navigation, not observed, so it wouldn't reflect
@@ -177,19 +198,29 @@ struct PlaylistDetailView: View {
         return CGFloat(14 + maxDigits * 8)
     }
 
-    init(playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil, initialExcludedTracks: [Track] = [], initialDuplicateGroups: [[Track]] = []) {
+    init(
+        playlist: Playlist, store: PlaylistStore, initialExclusionMessage: String? = nil,
+        initialExcludedTracks: [Track] = [], initialDuplicateGroups: [[Track]] = [], justBuilt: Bool = false
+    ) {
         self.playlist = playlist
         self.store = store
         self.initialExclusionMessage = initialExclusionMessage
         self.initialExcludedTracks = initialExcludedTracks
         self.initialDuplicateGroups = initialDuplicateGroups
+        self.justBuilt = justBuilt
         _isFavorite = State(initialValue: playlist.isFavorite)
         _displayName = State(initialValue: playlist.name)
+        _renameDraft = State(initialValue: playlist.name)
         _showExclusionAlert = State(initialValue: initialExclusionMessage != nil)
         // Only seeded true here when there's no exclusion alert to chain
         // after (see `presentDuplicatesAlertIfNeeded`) -- showing both at
         // once isn't reliable in SwiftUI.
         _showDuplicatesAlert = State(initialValue: initialExclusionMessage == nil && !initialDuplicateGroups.isEmpty)
+        // Same "only seed true if nothing earlier in the chain needs to
+        // show first" rule as `showDuplicatesAlert` above, one link further:
+        // the rename prompt is the last stop, so it only starts true when
+        // *both* of the alerts ahead of it have nothing to show.
+        _showRenamePrompt = State(initialValue: justBuilt && initialExclusionMessage == nil && initialDuplicateGroups.isEmpty)
     }
 
     var body: some View {
@@ -342,12 +373,33 @@ struct PlaylistDetailView: View {
             if !initialDuplicateGroups.isEmpty {
                 Button("View List") { showDuplicatesList = true }
             }
-            Button("OK", role: .cancel) {}
+            Button("OK", role: .cancel) { presentRenamePromptIfNeeded() }
         } message: {
             Text(duplicatesMessage)
         }
-        .sheet(isPresented: $showDuplicatesList) {
+        .sheet(isPresented: $showDuplicatesList, onDismiss: presentRenamePromptIfNeeded) {
             DuplicateTracksView(groups: initialDuplicateGroups)
+        }
+        // **Added 2026-09-09** — the last link in this screen's alert
+        // chain (exclusion -> duplicates -> this), shown once right after a
+        // fresh Build Mix, never for an already-existing playlist opened
+        // from My Mixes (`justBuilt` is only ever `true` at the one call
+        // site that follows a real build — see `MyMixesView`'s own
+        // `.navigationDestination`). Reuses the exact same rename mechanism
+        // `PlaylistOverflowSheet`'s own Rename action already uses
+        // (`PlaylistStore.rename`), just auto-opened and prefilled with the
+        // suggested name instead of waiting for a manual "..." tap.
+        .alert("Name this mix", isPresented: $showRenamePrompt) {
+            TextField("Name", text: $renameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, let id = playlist.id else { return }
+                displayName = trimmed
+                store.rename(playlistID: id, to: trimmed)
+            }
+        } message: {
+            Text("We suggested a name — change it if you'd like.")
         }
     }
 
@@ -356,10 +408,24 @@ struct PlaylistDetailView: View {
     /// is fully dismissed, never while either is still on screen. Also the
     /// direct trigger at `init` time when there was no exclusion alert to
     /// chain after in the first place (see `_showDuplicatesAlert`'s own
-    /// initial value).
+    /// initial value). Hands off to `presentRenamePromptIfNeeded()` when
+    /// there's nothing here to show either, so the chain still reaches the
+    /// rename prompt for a fresh build with no exclusions and no duplicates.
     private func presentDuplicatesAlertIfNeeded() {
-        guard !initialDuplicateGroups.isEmpty else { return }
+        guard !initialDuplicateGroups.isEmpty else {
+            presentRenamePromptIfNeeded()
+            return
+        }
         showDuplicatesAlert = true
+    }
+
+    /// The last stop in this screen's alert chain — see `showRenamePrompt`'s
+    /// own doc comment. A no-op for anything but a fresh Build Mix
+    /// (`justBuilt`), so this is safe to call unconditionally from every
+    /// dismissal path ahead of it in the chain.
+    private func presentRenamePromptIfNeeded() {
+        guard justBuilt else { return }
+        showRenamePrompt = true
     }
 
     /// Plain count, no advisory language — see the alert's own comment above

@@ -69,13 +69,26 @@ public struct PlaylistSource: Codable, Equatable, Identifiable {
     /// Human-readable display form (e.g. an artist's name, not their raw ID) —
     /// stored so subtitles and "Refresh" don't need a separate lookup.
     public var sourceLabel: String
+    /// **Added 2026-09-09** — per Andy's direct request: when a playlist was
+    /// built with "Use your whole library" active, every *other* row picked
+    /// alongside it means *leave this out*, not *also include this* — the
+    /// opposite of what a normal combination of sources means. `false` for
+    /// every source type other than the one synthetic `.wholeLibrary` row
+    /// itself and whatever's picked alongside it in that mode; always
+    /// `false` for an ordinary (non-whole-library) build, which still means
+    /// exactly what it always has. See `PlaylistNaming` below for how this
+    /// changes the auto-generated name/subtitle, and `MixBuilder
+    /// .performBuild`'s whole-library branch for how the exclusion actually
+    /// gets applied to the resolved pool.
+    public var isExclusion: Bool
 
-    public init(id: Int64? = nil, playlistID: Int64, sourceType: SourceType, sourceValue: String, sourceLabel: String) {
+    public init(id: Int64? = nil, playlistID: Int64, sourceType: SourceType, sourceValue: String, sourceLabel: String, isExclusion: Bool = false) {
         self.id = id
         self.playlistID = playlistID
         self.sourceType = sourceType
         self.sourceValue = sourceValue
         self.sourceLabel = sourceLabel
+        self.isExclusion = isExclusion
     }
 }
 
@@ -88,6 +101,7 @@ extension PlaylistSource: FetchableRecord, MutablePersistableRecord {
         case sourceType = "source_type"
         case sourceValue = "source_value"
         case sourceLabel = "source_label"
+        case isExclusion = "is_exclusion"
     }
 
     public init(row: Row) throws {
@@ -96,6 +110,7 @@ extension PlaylistSource: FetchableRecord, MutablePersistableRecord {
         sourceType = row[Columns.sourceType]
         sourceValue = row[Columns.sourceValue]
         sourceLabel = row[Columns.sourceLabel]
+        isExclusion = row[Columns.isExclusion]
     }
 
     public func encode(to container: inout PersistenceContainer) {
@@ -104,6 +119,7 @@ extension PlaylistSource: FetchableRecord, MutablePersistableRecord {
         container[Columns.sourceType] = sourceType
         container[Columns.sourceValue] = sourceValue
         container[Columns.sourceLabel] = sourceLabel
+        container[Columns.isExclusion] = isExclusion
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -115,7 +131,30 @@ extension PlaylistSource: FetchableRecord, MutablePersistableRecord {
 /// CLAUDE.md's "Auto-naming logic": 1 source names itself directly, 2 sources
 /// join as "A + B", 3+ falls back to "Custom Seamless Mix".
 public enum PlaylistNaming {
+    /// **Added 2026-09-09** — a whole-library build with one or more
+    /// exclusion sources needs its own naming shape, since the plain
+    /// count-based cases below were never designed for a "base source +
+    /// N things to leave out" structure (a whole library plus 2 excluded
+    /// genres has `sources.count == 3`, which would otherwise fall into the
+    /// generic "3 sources" combination case below and read as if all 3 were
+    /// being *included* together). Deliberately checked before, not folded
+    /// into, the count-based switch — an ordinary whole-library build with
+    /// *no* exclusions has exactly one source and correctly keeps falling
+    /// through to `case 1` unchanged, matching every playlist already built
+    /// this way before exclusions existed.
+    private static func exclusionBase(in sources: [PlaylistSource]) -> (base: PlaylistSource, exclusions: [PlaylistSource])? {
+        let exclusions = sources.filter(\.isExclusion)
+        guard !exclusions.isEmpty, let base = sources.first(where: { $0.sourceType == .wholeLibrary }) else { return nil }
+        return (base, exclusions)
+    }
+
     public static func title(for sources: [PlaylistSource]) -> String {
+        if let (base, exclusions) = exclusionBase(in: sources) {
+            if exclusions.count == 1 {
+                return "\(base.sourceLabel) (excluding \(exclusions[0].sourceLabel)) Seamless Mix"
+            }
+            return "\(base.sourceLabel) (excluding \(exclusions.count) sources) Seamless Mix"
+        }
         switch sources.count {
         case 0:
             return "Seamless Mix"
@@ -135,6 +174,11 @@ public enum PlaylistNaming {
         let minutes = Int((durationSec / 60).rounded())
         let durationText = "\(minutes) min"
         let countText = "\(songCount) songs"
+
+        if let (base, exclusions) = exclusionBase(in: sources) {
+            let excludedLabels = exclusions.map(\.sourceLabel).joined(separator: ", ")
+            return "\(base.sourceLabel) · excluding \(excludedLabels) · \(mode.displayName) · \(countText) · \(durationText)"
+        }
 
         switch sources.count {
         case 1:

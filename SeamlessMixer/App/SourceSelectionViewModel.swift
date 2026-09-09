@@ -24,6 +24,18 @@ struct SelectedSource: Identifiable {
     let type: SourceType
     let label: String
     var persistentID: MPMediaEntityPersistentID?
+    /// **Added 2026-09-09** — set true only when this source was picked
+    /// while "Use your whole library" was active, in which case it means
+    /// *leave this out of* the whole library rather than *combine it with*
+    /// other picks. `MixBuilder`/`MediaLibraryResolver` don't actually need
+    /// this to resolve correctly (the whole `selectedSources` list is
+    /// interpreted as exclusions or inclusions together, based on
+    /// `useWholeLibrary` at Build Mix time) — it exists so `persist(...)`
+    /// can carry the right meaning into each individual `PlaylistSource`
+    /// row it writes (see that type's own `isExclusion` doc comment), since
+    /// a whole-library build's saved sources are a mix of one real base row
+    /// and N exclusion rows in the same array.
+    var isExclusion: Bool = false
 
     init(id: String, type: SourceType, label: String, persistentID: MPMediaEntityPersistentID? = nil) {
         self.id = id
@@ -184,12 +196,26 @@ final class SourceSelectionViewModel: ObservableObject {
         UserDefaults.standard.object(forKey: extraCrossfadeSecDefaultsKey) as? Double ?? 0
     }
 
-    /// True once "Use your whole library" is picked — per the confirmed
-    /// design, this clears/disables the four category rows since combining
-    /// it with anything else is redundant.
+    /// True once "Use your whole library" is picked.
+    ///
+    /// **Revised 2026-09-09, per Andy's direct request** — the four (five,
+    /// counting Songs) category rows used to gray out and disable entirely
+    /// the moment this was on, since combining "everything" with more
+    /// inclusions was redundant. They no longer do: a pick made while this
+    /// is active now means *exclude that from the whole library* instead of
+    /// *include it alongside everything*, so picking is still useful here —
+    /// "there are 2 ways of selecting things... selecting everything and
+    /// excluding some... the faster way will be better option depending on
+    /// the goal." `selectedSources` is still cleared whenever this flag
+    /// *changes*, in either direction (not just when turning on, as
+    /// before) — a batch of picks means something different depending on
+    /// which mode they were made in (inclusions vs. exclusions), so
+    /// carrying them across a mode switch would silently reinterpret what
+    /// the user meant rather than just starting the new mode fresh.
     @Published var useWholeLibrary: Bool = false {
         didSet {
-            if useWholeLibrary { selectedSources.removeAll() }
+            guard oldValue != useWholeLibrary else { return }
+            selectedSources.removeAll()
             refreshPreviewSongCount()
         }
     }
@@ -208,8 +234,9 @@ final class SourceSelectionViewModel: ObservableObject {
     /// resolution/de-duplication `MixBuilder` uses, moved into its own
     /// shared type specifically so this preview and the real build can't
     /// drift apart) any time `selectedSources`/`useWholeLibrary` changes.
-    /// `nil` for "whole library" (never resolved this way — see
-    /// `refreshPreviewSongCount`) or while nothing is selected.
+    /// `nil` while nothing is selected, including plain "whole library"
+    /// with no exclusions yet — see `refreshPreviewSongCount`'s own doc
+    /// comment for exactly when this is (and isn't) computed.
     @Published private(set) var previewSongCount: Int?
 
     /// **Added 2026-08-20**, per Andy's direct request — "you are planning
@@ -245,12 +272,16 @@ final class SourceSelectionViewModel: ObservableObject {
         selectedSources.contains(source)
     }
 
-    /// Ticking any per-source checkbox implicitly clears "whole library" —
-    /// the two are mutually exclusive per the confirmed design (picking
-    /// "All Songs" clears the chip row and grays out the category rows;
-    /// this is that same rule working in the other direction).
+    /// **Revised 2026-09-09** — this used to force `useWholeLibrary = false`
+    /// on every call, back when the two were strictly mutually exclusive.
+    /// They no longer are: picking a source while "whole library" is active
+    /// now means excluding it, a real, meaningful selection in that mode,
+    /// not something that should silently cancel the mode itself. Whichever
+    /// mode is active when a source is toggled determines what it means
+    /// (see `useWholeLibrary`'s own doc comment for how a mode switch clears
+    /// `selectedSources` instead, so the two meanings never mix within one
+    /// list).
     func toggle(_ source: SelectedSource) {
-        useWholeLibrary = false
         if let index = selectedSources.firstIndex(of: source) {
             selectedSources.remove(at: index)
         } else {
@@ -262,17 +293,31 @@ final class SourceSelectionViewModel: ObservableObject {
     /// Re-runs the same `MPMediaQuery` resolution `MixBuilder` will run at
     /// Build Mix time, purely for the live count — synchronous and local
     /// (no network, no analysis), so recomputing on every selection change
-    /// is cheap at personal-library scale. `useWholeLibrary` has no source
-    /// list to resolve (it was never modeled as a `SelectedSource`, see
-    /// `MediaLibraryResolver`'s own doc comment), so the count is `nil`
-    /// rather than a misleading 0.
+    /// is cheap at personal-library scale. `nil` (no preview line shown)
+    /// whenever there's genuinely nothing to preview yet: plain "whole
+    /// library" with no exclusions (a raw library scan, same cost as
+    /// `allSongs()` itself, not worth running just to restate the Songs
+    /// row's own count), or no selection at all.
+    ///
+    /// **Extended 2026-09-09** — a whole-library pick with one or more
+    /// exclusions now gets a real preview too: the full library, minus
+    /// whatever the current exclusion picks resolve to, mirroring exactly
+    /// what `MixBuilder.performBuild`'s own whole-library-minus-exclusions
+    /// branch will do at Build Mix time.
     private func refreshPreviewSongCount() {
-        guard !useWholeLibrary, !selectedSources.isEmpty else {
+        guard !selectedSources.isEmpty else {
             previewSongCount = nil
             previewTotalMinutes = nil
             return
         }
-        let items = MediaLibraryResolver.resolveItems(for: selectedSources, db: store?.db)
+        let items: [MPMediaItem]
+        if useWholeLibrary {
+            let excluded = MediaLibraryResolver.resolveItems(for: selectedSources, db: store?.db)
+            let excludedIDs = Set(excluded.map(\.persistentID))
+            items = MediaLibraryResolver.allSongs().filter { !excludedIDs.contains($0.persistentID) }
+        } else {
+            items = MediaLibraryResolver.resolveItems(for: selectedSources, db: store?.db)
+        }
         previewSongCount = items.count
         let totalSeconds = items.reduce(0.0) { $0 + $1.playbackDuration }
         previewTotalMinutes = Int((totalSeconds / 60).rounded())

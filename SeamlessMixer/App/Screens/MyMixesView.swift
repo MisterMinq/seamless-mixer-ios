@@ -134,7 +134,15 @@ struct MyMixesView: View {
                 case .hub:
                     SourceSelectionHubView(store: store, onBuilt: handleBuilt)
                 case .playlist(let playlist):
-                    PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage, initialExcludedTracks: pendingExcludedTracks, initialDuplicateGroups: pendingDuplicateGroups)
+                    // `justBuilt: true` unconditionally here is correct, not
+                    // an approximation -- `.playlist(...)` is only ever
+                    // pushed via `handleBuilt` below (a fresh Build Mix);
+                    // `MixRow`'s own row-tap into an *existing* playlist
+                    // deliberately stays a separate, plain `NavigationLink`
+                    // that never goes through this `path` at all (see this
+                    // file's own doc comment on why), so it can never reach
+                    // this switch case.
+                    PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage, initialExcludedTracks: pendingExcludedTracks, initialDuplicateGroups: pendingDuplicateGroups, justBuilt: true)
                 }
             }
             // `switch destination` above matches on the case alone (the

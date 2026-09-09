@@ -151,6 +151,20 @@ final class MixBuilder: ObservableObject {
         }
     }
 
+    /// Resolves "the whole library, minus whatever `exclusionSources`
+    /// themselves resolve to" — shared by `performBuild` and
+    /// `performRefresh` (2026-09-09) so the actual subtraction logic only
+    /// exists once. An empty `exclusionSources` is just the plain, whole
+    /// library unfiltered, matching this function's behavior before
+    /// exclusions existed at all.
+    private func resolveWholeLibraryPool(excluding exclusionSources: [SelectedSource], db: DatabaseManager) -> [MPMediaItem] {
+        let allItems = MediaLibraryResolver.allSongs()
+        guard !exclusionSources.isEmpty else { return allItems }
+        let excludedItems = MediaLibraryResolver.resolveItems(for: exclusionSources, db: db)
+        let excludedIDs = Set(excludedItems.map(\.persistentID))
+        return allItems.filter { !excludedIDs.contains($0.persistentID) }
+    }
+
     /// A never-scanned library's whole-song pool is treated as "too many to
     /// analyze inline" past this many still-unanalyzed tracks — chosen as a
     /// round number comfortably inside what a single-genre/artist/album
@@ -177,7 +191,17 @@ final class MixBuilder: ObservableObject {
         progressText = "Finding songs…"
         let items: [MPMediaItem]
         if useWholeLibrary {
-            items = MediaLibraryResolver.allSongs()
+            // **Exclusion mode, added 2026-09-09** — per Andy's direct
+            // request, `selectedSources` here means "leave these out of the
+            // whole library," not "also include these," now that the Hub no
+            // longer disables the category rows while whole library is on
+            // (see `SourceSelectionViewModel.useWholeLibrary`'s own doc
+            // comment for the UI side of this). `resolveWholeLibraryPool`
+            // is a no-op subtraction (the plain, unfiltered whole library)
+            // when `selectedSources` is empty, so this doesn't change
+            // behavior for a plain whole-library build with nothing else
+            // picked.
+            items = resolveWholeLibraryPool(excluding: selectedSources, db: db)
             let unanalyzedCount = try await countUnanalyzed(items: items, db: db)
             if unanalyzedCount > wholeLibraryInlineAnalyzeThreshold {
                 throw BuildError.needsLibraryScanFirst(unanalyzedCount: unanalyzedCount)
@@ -240,9 +264,26 @@ final class MixBuilder: ObservableObject {
         // what makes `PlaylistNaming.title(for:)` produce "Whole Library
         // Seamless Mix" (its normal 1-source case) and what `Refresh` later
         // reconstructs via `selectedSource(from:)`.
-        let effectiveSources = useWholeLibrary
-            ? [SelectedSource(id: "wholeLibrary", type: .wholeLibrary, label: "Whole Library")]
-            : selectedSources
+        //
+        // **Extended 2026-09-09**: whatever's in `selectedSources` at this
+        // point (empty, for a plain whole-library build) rides along too,
+        // each tagged `isExclusion = true` — these are the same picks that
+        // were just subtracted from the pool above, now persisted alongside
+        // the base source so Refresh/naming/subtitle can all reconstruct
+        // and describe the exclusion correctly later, not just the moment
+        // this build was made.
+        let effectiveSources: [SelectedSource]
+        if useWholeLibrary {
+            let base = SelectedSource(id: "wholeLibrary", type: .wholeLibrary, label: "Whole Library")
+            let exclusions = selectedSources.map { source -> SelectedSource in
+                var excluded = source
+                excluded.isExclusion = true
+                return excluded
+            }
+            effectiveSources = [base] + exclusions
+        } else {
+            effectiveSources = selectedSources
+        }
 
         progressText = "Saving…"
         return try persist(sequenced: sequenced, sources: effectiveSources, mode: mode, extraCrossfadeSec: extraCrossfadeSec, db: db)
@@ -302,13 +343,23 @@ final class MixBuilder: ObservableObject {
         // (2026-08-20) has no `.wholeLibrary` row to reconstruct, so this
         // is naturally still just its real per-source picks. A playlist
         // built *after* that has exactly one synthetic `.wholeLibrary`
-        // source (see `performBuild`'s own comment), which resolves back
-        // to the whole library here too, below.
-        let selectedSources = detail.sources.compactMap(selectedSource(from:))
-        guard !selectedSources.isEmpty else { throw BuildError.noSupportedSources }
+        // source (see `performBuild`'s own comment) plus, as of 2026-09-09,
+        // zero or more `isExclusion`-tagged sources alongside it — see
+        // `resolveWholeLibraryPool`'s own doc comment for how those two
+        // combine back into a real pool here, the same way `performBuild`
+        // does it for a fresh build.
+        let allSelectedSources = detail.sources.compactMap(selectedSource(from:))
+        guard !allSelectedSources.isEmpty else { throw BuildError.noSupportedSources }
+        let isWholeLibrary = allSelectedSources.contains { $0.type == .wholeLibrary }
 
         progressText = "Finding songs…"
-        let items = MediaLibraryResolver.resolveItems(for: selectedSources, db: db)
+        let items: [MPMediaItem]
+        if isWholeLibrary {
+            let exclusionSources = allSelectedSources.filter(\.isExclusion)
+            items = resolveWholeLibraryPool(excluding: exclusionSources, db: db)
+        } else {
+            items = MediaLibraryResolver.resolveItems(for: allSelectedSources, db: db)
+        }
         guard !items.isEmpty else { throw BuildError.emptyPool }
 
         // Same safety valve as `performBuild`'s whole-library path -- a
@@ -316,7 +367,7 @@ final class MixBuilder: ObservableObject {
         // build would, so it can hit the exact same "the library has grown
         // by a lot since this was last built/refreshed" case, just less
         // often in practice.
-        if selectedSources.contains(where: { $0.type == .wholeLibrary }) {
+        if isWholeLibrary {
             let unanalyzedCount = try await countUnanalyzed(items: items, db: db)
             if unanalyzedCount > wholeLibraryInlineAnalyzeThreshold {
                 throw BuildError.needsLibraryScanFirst(unanalyzedCount: unanalyzedCount)
@@ -459,13 +510,21 @@ final class MixBuilder: ObservableObject {
     private func selectedSource(from playlistSource: PlaylistSource) -> SelectedSource? {
         switch playlistSource.sourceType {
         case .genre:
-            return SelectedSource(id: "genre:\(playlistSource.sourceValue)", type: .genre, label: playlistSource.sourceLabel)
+            var source = SelectedSource(id: "genre:\(playlistSource.sourceValue)", type: .genre, label: playlistSource.sourceLabel)
+            // **Added 2026-09-09** — carries a genre picked as a whole-
+            // library exclusion back through Refresh correctly; `false` for
+            // every genre saved before exclusions existed (the migration's
+            // own default), so this is a no-op for any pre-existing row.
+            source.isExclusion = playlistSource.isExclusion
+            return source
         case .artist, .album, .playlist, .songs, .customPlaylist:
             guard let persistentID = MPMediaEntityPersistentID(playlistSource.sourceValue) else { return nil }
-            return SelectedSource(
+            var source = SelectedSource(
                 id: "\(playlistSource.sourceType.rawValue):\(persistentID)", type: playlistSource.sourceType,
                 label: playlistSource.sourceLabel, persistentID: persistentID
             )
+            source.isExclusion = playlistSource.isExclusion
+            return source
         case .wholeLibrary:
             // Added 2026-08-20 alongside the case itself -- no persistentID
             // to parse (there was never one to store, see `SourceType
@@ -492,12 +551,13 @@ final class MixBuilder: ObservableObject {
     ///   insert — Playlist Detail loads its sources/tracks by that id, so
     ///   the caller needs the row back, not just a success flag.
     private func persist(sequenced: [Track], sources: [SelectedSource], mode: PlaylistMode, extraCrossfadeSec: Double, db: DatabaseManager) throws -> Playlist {
-        // PlaylistNaming only reads `.sourceLabel` off each element, so a
-        // playlistID of 0 here is fine -- these never get persisted, just
-        // used to compute the auto-generated name before the real
-        // `PlaylistSource` rows (with a real playlistID) are inserted below.
+        // PlaylistNaming only reads `.sourceType`/`.sourceLabel`/`.isExclusion`
+        // off each element, so a playlistID of 0 here is fine -- these never
+        // get persisted, just used to compute the auto-generated name before
+        // the real `PlaylistSource` rows (with a real playlistID) are
+        // inserted below.
         let namingSources = sources.map {
-            PlaylistSource(playlistID: 0, sourceType: $0.type, sourceValue: $0.label, sourceLabel: $0.label)
+            PlaylistSource(playlistID: 0, sourceType: $0.type, sourceValue: $0.label, sourceLabel: $0.label, isExclusion: $0.isExclusion)
         }
         let name = PlaylistNaming.title(for: namingSources)
 
@@ -518,7 +578,7 @@ final class MixBuilder: ObservableObject {
                     : source.persistentID.map(String.init) ?? source.label
                 var playlistSource = PlaylistSource(
                     playlistID: playlistID, sourceType: source.type,
-                    sourceValue: sourceValue, sourceLabel: source.label
+                    sourceValue: sourceValue, sourceLabel: source.label, isExclusion: source.isExclusion
                 )
                 try playlistSource.insert(conn)
             }
