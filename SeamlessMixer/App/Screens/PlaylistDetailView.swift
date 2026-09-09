@@ -320,7 +320,13 @@ struct PlaylistDetailView: View {
         // exposes track *IDs*, never titles/artists, so something has to
         // supply that lookup.
         .navigationDestination(isPresented: $showNowPlaying) {
-            NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle, store: store)
+            // **`playbackEngine` passed explicitly as of 2026-09-09** --
+            // `NowPlayingView` no longer fetches it via `@EnvironmentObject`
+            // itself (see that screen's own doc comment for the real,
+            // root-caused toolbar-flakiness fix this is part of); passing
+            // the same instance this screen already holds is a one-line
+            // change here.
+            NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle, store: store, playbackEngine: playbackEngine)
         }
         // `onDismiss` re-loads regardless of which action was taken (Rename/
         // Refresh/neither) -- Refresh replaces this playlist's tracks, so
