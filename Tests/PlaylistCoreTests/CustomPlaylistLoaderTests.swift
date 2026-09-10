@@ -139,6 +139,36 @@ final class CustomPlaylistLoaderTests: XCTestCase {
         XCTAssertNil(try db.loadCustomPlaylistDetail(customPlaylistID: 999))
     }
 
+    /// "Duplicate action" (2026-09-10): an independent standalone copy —
+    /// same songs in order, a new name, **no** Apple origin even if the
+    /// source had one, and the source left completely untouched.
+    func testDuplicateCustomPlaylistMakesIndependentStandaloneCopy() throws {
+        let db = try DatabaseManager(path: nil)
+        try seedTrack(db, id: 10)
+        try seedTrack(db, id: 20)
+        try seedTrack(db, id: 30)
+        let source = try db.createCustomPlaylist(name: "PangaMix", originApplePlaylistPersistentID: 12345)
+        try db.copyTracks([10, 20, 30], intoCustomPlaylistID: source.id!)
+
+        let copy = try XCTUnwrap(try db.duplicateCustomPlaylist(customPlaylistID: source.id!, newName: "PangaMix copy"))
+        XCTAssertNotEqual(copy.id, source.id)
+        XCTAssertEqual(copy.name, "PangaMix copy")
+        XCTAssertNil(copy.originApplePlaylistPersistentID) // a fresh branch, not tied to the Apple playlist
+
+        let copyDetail = try db.loadCustomPlaylistDetail(customPlaylistID: copy.id!)
+        XCTAssertEqual(copyDetail?.tracks.map(\.track.persistentID), [10, 20, 30])
+
+        // Source unchanged.
+        let sourceDetail = try db.loadCustomPlaylistDetail(customPlaylistID: source.id!)
+        XCTAssertEqual(sourceDetail?.playlist.name, "PangaMix")
+        XCTAssertEqual(sourceDetail?.tracks.map(\.track.persistentID), [10, 20, 30])
+    }
+
+    func testDuplicateCustomPlaylistReturnsNilForMissingSource() throws {
+        let db = try DatabaseManager(path: nil)
+        XCTAssertNil(try db.duplicateCustomPlaylist(customPlaylistID: 999, newName: "x"))
+    }
+
     private func seedTrack(_ db: DatabaseManager, id: Int64) throws {
         try db.dbQueue.write { conn in
             var track = Track(persistentID: id, title: "Track \(id)", artist: "Artist", album: "Album", genre: "Genre", durationSec: 200)

@@ -82,6 +82,12 @@ struct CustomPlaylistDetailView: View {
     @State private var newName = ""
     @State private var showDeleteConfirm = false
     @State private var pendingRemoval: RemovalTarget?
+    /// **Added 2026-09-10** — "Duplicate" makes an independent standalone
+    /// copy under a new name (`duplicateName`), leaving this playlist (or,
+    /// for a still-read-only Apple Music playlist, the real Apple original)
+    /// untouched. The confirmed alternative to auto-forking on every edit.
+    @State private var showDuplicateAlert = false
+    @State private var duplicateName = ""
 
     /// A row of a not-yet-copied Apple Music playlist — display only, no
     /// database id to key off of yet.
@@ -156,6 +162,14 @@ struct CustomPlaylistDetailView: View {
                         newName = displayName
                         showRenameAlert = true
                     }
+                    // Works for both: an `.existing` native playlist, and a
+                    // still-read-only Apple Music one (which it snapshots
+                    // into a fresh standalone "SM" playlist without touching
+                    // the real Apple original).
+                    Button("Duplicate", systemImage: "plus.square.on.square") {
+                        duplicateName = "\(displayName) copy"
+                        showDuplicateAlert = true
+                    }
                     // A plain, not-yet-copied Apple Music playlist has
                     // nothing native to delete yet — this only makes sense
                     // once a real copy exists.
@@ -177,6 +191,13 @@ struct CustomPlaylistDetailView: View {
             TextField("Name", text: $newName)
             Button("Cancel", role: .cancel) {}
             Button("Save") { rename(to: newName) }
+        }
+        .alert("Duplicate Playlist", isPresented: $showDuplicateAlert) {
+            TextField("Name", text: $duplicateName)
+            Button("Cancel", role: .cancel) {}
+            Button("Duplicate") { duplicate(named: duplicateName) }
+        } message: {
+            Text("Makes a separate copy with these songs. This playlist stays exactly as it is.")
         }
         .confirmationDialog("Delete this playlist?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -270,16 +291,16 @@ struct CustomPlaylistDetailView: View {
             customPlaylistID = id
             loadExisting(id: id)
         case .appleOrigin(let persistentID):
-            // Already copied in an earlier session (or by an edit made a
-            // moment ago on this same visit)? Re-find it via the same
-            // idempotent lookup `copyAppleMusicPlaylist` itself already
-            // relies on, instead of showing the stale read-only view.
-            if let db = store.db, let existing = try? db.customPlaylist(originApplePlaylistPersistentID: persistentID) {
-                customPlaylistID = existing.id
-                loadExisting(id: existing.id ?? 0)
-            } else {
-                loadAppleReadOnly(persistentID: persistentID)
-            }
+            // **Revised 2026-09-10**: always show the live Apple Music
+            // playlist read-only here, even if an "SM" copy already exists.
+            // Now that the Apple row and its "SM" copy both appear in the
+            // Playlists picker (the copy is no longer hidden), the Apple
+            // row's pencil is meant to be exactly that — the pristine
+            // original, unchanged, so "Duplicate" from here snapshots the
+            // real Apple list. A genuine edit (Rename/Remove) still routes
+            // transparently to the existing copy via `ensureEditable()`,
+            // which stays idempotent.
+            loadAppleReadOnly(persistentID: persistentID)
         }
     }
 
@@ -337,6 +358,31 @@ struct CustomPlaylistDetailView: View {
         guard let id = ensureEditable() else { return }
         store.renameCustomPlaylist(customPlaylistID: id, to: name)
         loadExisting(id: id)
+    }
+
+    /// Deliberately does **not** call `ensureEditable()` — duplicating a
+    /// still-read-only Apple Music playlist snapshots it into a fresh
+    /// standalone "SM" playlist without making the origin-linked copy-on-edit
+    /// copy, so the Apple row stays exactly as it was. Dismisses on success
+    /// so `PlaylistPickerView` picks up the new playlist on its own
+    /// `onDisappear` refresh, landing the user back on the grid where both
+    /// the original and the new copy are visible.
+    private func duplicate(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let created: CustomPlaylist?
+        if let id = customPlaylistID {
+            created = store.duplicateCustomPlaylist(customPlaylistID: id, newName: trimmed)
+        } else if case .appleOrigin(let persistentID) = target,
+                  let mediaPlaylist = MPMediaQuery.playlists().collections?
+                    .first(where: { $0.persistentID == persistentID }) as? MPMediaPlaylist {
+            created = store.duplicateApplePlaylist(mediaPlaylist, newName: trimmed)
+        } else {
+            created = nil
+        }
+        if created != nil {
+            dismiss()
+        }
     }
 
     private func performRemoval(_ removal: RemovalTarget) {

@@ -71,6 +71,39 @@ extension DatabaseManager {
         }
     }
 
+    /// Creates an independent **standalone** copy of an existing
+    /// `CustomPlaylist` — a fresh row with a new name, no Apple Music origin
+    /// (`originApplePlaylistPersistentID` stays `nil` even if the source had
+    /// one), and the same songs in the same order. The source is left
+    /// completely untouched.
+    ///
+    /// **Added 2026-09-10**, per Andy's "Duplicate action" request — the
+    /// deliberate alternative to auto-forking a playlist on every edit: keep
+    /// a pristine starting point around and branch off it on demand. The
+    /// copy has no origin so it never associates back to (or hides) any
+    /// Apple Music row in the merged Playlists picker — it's just its own
+    /// "SM" playlist from then on. The tracks are already guaranteed to have
+    /// `tracks` rows (they're in the source playlist), so no
+    /// `upsertTrackMetadataIfNeeded` pass is needed here.
+    @discardableResult
+    public func duplicateCustomPlaylist(customPlaylistID: Int64, newName: String) throws -> CustomPlaylist? {
+        try dbQueue.write { conn -> CustomPlaylist? in
+            guard try CustomPlaylist.fetchOne(conn, key: customPlaylistID) != nil else { return nil }
+            let sourceRows = try CustomPlaylistTrack.fetchAll(
+                conn, sql: "SELECT * FROM custom_playlist_tracks WHERE custom_playlist_id = ? ORDER BY position",
+                arguments: [customPlaylistID]
+            )
+            var copy = CustomPlaylist(name: newName, originApplePlaylistPersistentID: nil)
+            try copy.insert(conn)
+            guard let copyID = copy.id else { return copy }
+            for (index, row) in sourceRows.enumerated() {
+                var newRow = CustomPlaylistTrack(customPlaylistID: copyID, trackPersistentID: row.trackPersistentID, position: index)
+                try newRow.insert(conn)
+            }
+            return copy
+        }
+    }
+
     public func renameCustomPlaylist(customPlaylistID: Int64, to newName: String) throws {
         try dbQueue.write { conn in
             guard var playlist = try CustomPlaylist.fetchOne(conn, key: customPlaylistID) else { return }

@@ -29,9 +29,14 @@ import SwiftUI
 /// in for the first time — the version-only slice never touched the
 /// database, so this screen's `init` previously took no parameters at all.
 ///
+/// **Extended 2026-09-10** with a "What's new" row → `ChangelogView`, a
+/// per-build plain-language list of user-facing changes (backlog #63) — so
+/// a tester can see which fixes landed in which build without digging
+/// through chat.
+///
 /// Everything else a real Settings screen would eventually hold
-/// (DRM-exclusion overrides, a bug-fix changelog per version) is still out
-/// of scope for this slice on purpose.
+/// (DRM-exclusion overrides) is still out of scope for this slice on
+/// purpose.
 struct SettingsView: View {
     @ObservedObject var store: PlaylistStore
     @Environment(\.dismiss) private var dismiss
@@ -60,6 +65,12 @@ struct SettingsView: View {
                         Spacer()
                         Text(versionString)
                             .foregroundStyle(DesignTokens.Color.textSecondary)
+                    }
+                    NavigationLink {
+                        ChangelogView()
+                    } label: {
+                        Text("What's new")
+                            .foregroundStyle(DesignTokens.Color.textPrimary)
                     }
                 } footer: {
                     Text("This is the exact build/version number shown in TestFlight — useful for confirming which build you're testing against.")

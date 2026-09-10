@@ -338,6 +338,11 @@ struct SourceSelectionHubView: View {
                     Text("Use your whole library")
                         .font(.body.weight(.medium))
                         .foregroundStyle(DesignTokens.Color.textPrimary)
+                    if let ready = viewModel.wholeLibraryReadyCount {
+                        Text("about \(ready.formatted()) of \(viewModel.songCount.formatted()) songs ready to mix")
+                            .font(.caption2)
+                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                    }
                     if viewModel.useWholeLibrary {
                         Text("Picks below now exclude — leave a genre, artist, etc. out of the mix.")
                             .font(.caption2)

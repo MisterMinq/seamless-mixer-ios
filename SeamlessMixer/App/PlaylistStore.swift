@@ -306,6 +306,56 @@ final class PlaylistStore: ObservableObject {
         }
     }
 
+    /// **Added 2026-09-10** — "Duplicate" from a native playlist's "..."
+    /// menu. Makes an independent standalone copy (new name, no Apple
+    /// origin, same songs), leaving the source untouched — the deliberate
+    /// alternative to auto-forking on every edit. See
+    /// `DatabaseManager.duplicateCustomPlaylist`.
+    @discardableResult
+    func duplicateCustomPlaylist(customPlaylistID: Int64, newName: String) -> CustomPlaylist? {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let db, !trimmed.isEmpty else { return nil }
+        do {
+            return try db.duplicateCustomPlaylist(customPlaylistID: customPlaylistID, newName: trimmed)
+        } catch {
+            loadError = "Couldn't duplicate playlist: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// **Added 2026-09-10** — "Duplicate" from a still-read-only Apple Music
+    /// playlist's "..." menu: snapshots its current song list into a fresh
+    /// standalone "SM" playlist (new name, **no** Apple origin, so it never
+    /// hides or replaces the Apple row it was taken from), leaving the real
+    /// Apple Music playlist completely untouched. Distinct from
+    /// `copyAppleMusicPlaylist` above, which makes the *origin-linked* copy
+    /// used by copy-on-edit.
+    @discardableResult
+    func duplicateApplePlaylist(_ applePlaylist: MPMediaPlaylist, newName: String) -> CustomPlaylist? {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let db, !trimmed.isEmpty else { return nil }
+        do {
+            let newPlaylist = try db.createCustomPlaylist(name: trimmed)
+            guard let newPlaylistID = newPlaylist.id else { return newPlaylist }
+            var trackIDs: [Int64] = []
+            for item in applePlaylist.items {
+                let trackID = Int64(bitPattern: item.persistentID)
+                try db.upsertTrackMetadataIfNeeded(
+                    persistentID: trackID,
+                    title: item.title ?? "Untitled", artist: item.artist ?? "Unknown Artist",
+                    album: item.albumTitle ?? "Unknown Album", genre: item.genre ?? "Unknown Genre",
+                    durationSec: item.playbackDuration
+                )
+                trackIDs.append(trackID)
+            }
+            try db.copyTracks(trackIDs, intoCustomPlaylistID: newPlaylistID)
+            return newPlaylist
+        } catch {
+            loadError = "Couldn't duplicate playlist: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// The confirmed "copy-on-edit" flow for a real Apple Music playlist:
     /// there's no write API to a real Apple Music playlist's membership
     /// (per CLAUDE.md's "Add to Playlist" design), so opening one to edit

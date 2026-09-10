@@ -78,6 +78,18 @@ final class SourceSelectionViewModel: ObservableObject {
     /// confirmed category picker (Playlist/Songs/Genre/Artist/Album, per
     /// ADR-7).
     @Published private(set) var songCount: Int = 0
+    /// **Added 2026-09-10**, per Andy's "whole library usable count" request
+    /// (backlog item logged 0.25.81). `songCount` above is a raw
+    /// `MPMediaQuery` count with no awareness of whether a track is actually
+    /// downloaded/DRM-free/analyzed — so a "Use your whole library" build
+    /// routinely includes fewer songs than that number, with the real
+    /// figure only ever surfacing in the after-the-fact exclusion alert.
+    /// This is the count of tracks the app has already scanned and confirmed
+    /// it can actually mix (`has_raw_audio_access = 1` and analyzed) — data
+    /// that already exists post-scan. `nil` until a scan has completed
+    /// (`LibraryScanner.hasCompletedAnyScan`), since before that the number
+    /// is just "however few tracks happen to be in the DB" and misleading.
+    @Published private(set) var wholeLibraryReadyCount: Int?
     /// **Added 2026-09-07** — how many tracks are currently marked favorite
     /// (`Track.isFavorite`), shown on the Hub's pinned Favourites row. Reads
     /// this app's own database, not `MediaPlayer` — the first count here to
@@ -351,6 +363,26 @@ final class SourceSelectionViewModel: ObservableObject {
         albumCount = MPMediaQuery.albums().collections?.count ?? 0
         songCount = MPMediaQuery.songs().items?.count ?? 0
         loadFavoriteSongsCount()
+        loadWholeLibraryReadyCount()
+    }
+
+    /// See `wholeLibraryReadyCount`'s own doc comment. Best-effort: any
+    /// failure (or no scan yet) just leaves it `nil`, and the Hub simply
+    /// doesn't show the "ready to mix" line — no error state for a hint.
+    private func loadWholeLibraryReadyCount() {
+        guard LibraryScanner.hasCompletedAnyScan, let db = store?.db else {
+            wholeLibraryReadyCount = nil
+            return
+        }
+        let count: Int? = try? db.dbQueue.read { conn in
+            try Int.fetchOne(conn, sql: """
+                SELECT COUNT(*) FROM tracks
+                WHERE has_raw_audio_access = 1
+                  AND analyzed_at IS NOT NULL
+                  AND playable_duration_sec IS NOT NULL
+                """)
+        }
+        wholeLibraryReadyCount = count
     }
 
     /// **Added 2026-09-07** — reads `tracks.is_favorite` directly (raw SQL,

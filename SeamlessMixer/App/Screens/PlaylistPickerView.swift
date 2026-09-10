@@ -14,13 +14,12 @@ import PlaylistCore
 /// confirmed "Add to Playlist" design.** This grid used to show only real
 /// Apple Music playlists; it now also shows the app's own native playlists
 /// (created via "New Playlist," or copied from an Apple Music playlist —
-/// see `PlaylistStore.copyAppleMusicPlaylist`). A native copy **replaces**
-/// the plain Apple Music row it was copied from (same name, a small "SM"
-/// badge added) rather than the two coexisting as confusing near-duplicates
-/// — Andy's own confirmed resolution for the "which one do I pick" risk
-/// once a playlist has genuinely diverged from its Apple Music original. A
-/// playlist created fresh (no Apple origin) has no plain row to replace, so
-/// it just appears as its own badged cell.
+/// see `PlaylistStore.copyAppleMusicPlaylist`). **Revised 2026-09-10**: an
+/// origin-linked native copy is shown *right after* its Apple Music row
+/// (both visible, the copy carrying a small "SM" badge), not instead of it
+/// — see `mergedRows`' own doc comment for why the earlier "replaces" rule
+/// was dropped. A playlist created fresh (no Apple origin), or a "Duplicate"
+/// copy, appears as its own badged cell after all the Apple rows.
 ///
 /// **Two separate affordances per cell, not one**: tapping the cell body
 /// (artwork + name) toggles it as a Build Mix *source*, exactly like every
@@ -116,6 +115,18 @@ struct PlaylistPickerView: View {
         }
     }
 
+    /// **Revised 2026-09-10, per Andy's direct request: an origin-linked
+    /// "SM" copy no longer *replaces* its Apple Music row — both are shown,
+    /// the "SM" copy right after its original.** The 0.25.79 "replaces"
+    /// rule was meant to avoid a wrong-pick between two same-named rows, but
+    /// it also meant the pristine Apple Music playlist vanished from the
+    /// picker the moment it was ever edited — and Andy wants that original
+    /// kept as a starting point to build other playlists from ("The old
+    /// original playlist with all songs is no more available"). The "SM"
+    /// badge is the differentiator; picking the Apple row builds from the
+    /// live Apple Music playlist, picking the "SM" row builds from the
+    /// edited copy. Standalone customs (including "Duplicate" copies) come
+    /// after, newest-edited first.
     private var mergedRows: [MergedRow] {
         var customByOrigin: [MPMediaEntityPersistentID: CustomPlaylist] = [:]
         var standaloneCustom: [CustomPlaylist] = []
@@ -127,15 +138,16 @@ struct PlaylistPickerView: View {
             }
         }
 
-        var rows: [MergedRow] = applePlaylists.map { apple in
+        var rows: [MergedRow] = []
+        for apple in applePlaylists {
+            rows.append(.apple(apple))
             if let custom = customByOrigin[apple.persistentID] {
-                return .custom(
+                rows.append(.custom(
                     custom,
                     songCount: customPlaylistSongCounts[custom.id ?? -1] ?? apple.songCount,
                     artwork: customPlaylistArtwork[custom.id ?? -1]
-                )
+                ))
             }
-            return .apple(apple)
         }
         for custom in standaloneCustom {
             rows.append(.custom(
