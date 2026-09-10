@@ -95,6 +95,15 @@ struct MyMixesView: View {
     private enum Destination: Hashable {
         case hub(UUID)
         case playlist(Playlist)
+        /// **Added 2026-09-10** — the persistent mini-player's tap target.
+        /// Pushes straight to `NowPlayingView` (via `NowPlayingLoader`,
+        /// which supplies the `rows`/`sourceCaption` snapshot `NowPlayingView`
+        /// needs), *not* through `PlaylistDetailView` — a single clean push
+        /// to the live-playback screen, matching Apple Music's own
+        /// mini-player → full Now Playing behavior. Distinct from
+        /// `.playlist(...)` because that case hard-codes `justBuilt: true`
+        /// (it's only ever a fresh Build Mix landing).
+        case nowPlaying(Playlist)
     }
 
     @State private var path: [Destination] = []
@@ -143,6 +152,8 @@ struct MyMixesView: View {
                     // file's own doc comment on why), so it can never reach
                     // this switch case.
                     PlaylistDetailView(playlist: playlist, store: store, initialExclusionMessage: pendingExclusionMessage, initialExcludedTracks: pendingExcludedTracks, initialDuplicateGroups: pendingDuplicateGroups, justBuilt: true)
+                case .nowPlaying(let playlist):
+                    NowPlayingLoader(playlist: playlist, store: store)
                 }
             }
             // `switch destination` above matches on the case alone (the
@@ -273,7 +284,27 @@ struct MyMixesView: View {
             // required if it wasn't), rather than relying on inference.
             await store.refresh()
         }
-        .safeAreaInset(edge: .bottom) { buildMixBar }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                // A leaf that renders nothing (zero height, no inset) while
+                // nothing is playing -- `MyMixesView` itself deliberately
+                // never touches `playbackEngine`, so its `body`/`.toolbar`
+                // don't re-evaluate on every ~10Hz `tick()` (the exact
+                // problem the 0.25.84 Now Playing refactor was about). The
+                // mini-player subscribes inside its own small leaf instead.
+                MiniPlayerBar(onOpen: openNowPlaying)
+                buildMixBar
+            }
+        }
+    }
+
+    /// The persistent mini-player's tap → push straight to Now Playing for
+    /// whatever's currently playing. A no-op if the playing playlist can't
+    /// be found in `store.playlists` (e.g. it was deleted while playing) —
+    /// rare, and better than pushing a broken screen.
+    private func openNowPlaying(playlistID: Int64) {
+        guard let playlist = store.playlists.first(where: { $0.id == playlistID }) else { return }
+        path.append(.nowPlaying(playlist))
     }
 
     /// The explicitly-labeled "Build Mix" entry point for when playlists
@@ -503,6 +534,121 @@ private struct FavoriteCard: View {
         }
         .frame(width: 120)
         .padding(.horizontal, DesignTokens.Spacing.xs)
+    }
+}
+
+/// The persistent mini-player — a translucent bar pinned above the bottom
+/// edge of My Mixes whenever a session is loaded, showing what's playing
+/// with a play/pause toggle; tapping the rest of it jumps straight to Now
+/// Playing. Per CLAUDE.md's "Library / My Mixes" and "Real Apple Music
+/// Reference Screens" notes (the confirmed pattern, flagged as unbuilt
+/// since 0.19.0/0.20.0), and Andy's own repeated real-device ask — "no way
+/// to find or return to a playing mix from My Mixes."
+///
+/// **v1 is My Mixes only** — the Hub (`SourceSelectionHubView`) is a
+/// natural second home but it's pushed *inside* this screen's stack and
+/// doesn't own the navigation `path`, so wiring the tap there is a
+/// follow-up, not this slice.
+///
+/// This is the one leaf under My Mixes that subscribes to `PlaybackEngine`
+/// (via `@EnvironmentObject`, the same pattern `MixRow` already uses) —
+/// deliberately kept small and toolbar-free so its ~10Hz re-render during
+/// playback stays cheap and never touches `MyMixesView`'s own `body` or
+/// `.toolbar` (the 0.25.84 lesson). Reads `nowPlayingTitle`/`Artist`/
+/// `Artwork` off `PlaybackEngine` (added 2026-09-10) since this bar has no
+/// `[PlaylistDetailRow]` snapshot of its own to look a track up in.
+private struct MiniPlayerBar: View {
+    let onOpen: (Int64) -> Void
+
+    @EnvironmentObject private var playbackEngine: PlaybackEngine
+
+    var body: some View {
+        Group {
+            if playbackEngine.isPlaying {
+                bar
+            }
+        }
+    }
+
+    private var bar: some View {
+        HStack(spacing: DesignTokens.Spacing.sm) {
+            artwork
+            VStack(alignment: .leading, spacing: 1) {
+                Text(playbackEngine.nowPlayingTitle ?? "Playing")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(DesignTokens.Color.textPrimary)
+                    .lineLimit(1)
+                if let artist = playbackEngine.nowPlayingArtist, !artist.isEmpty {
+                    Text(artist)
+                        .font(.caption2)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: DesignTokens.Spacing.sm)
+            Button {
+                if playbackEngine.isPaused {
+                    playbackEngine.resume()
+                } else {
+                    playbackEngine.pause()
+                }
+            } label: {
+                Image(systemName: playbackEngine.isPaused ? "play.fill" : "pause.fill")
+                    .font(.title3)
+                    .foregroundStyle(DesignTokens.Color.primaryText)
+                    .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, DesignTokens.Spacing.md)
+        .padding(.vertical, DesignTokens.Spacing.xs)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Divider() }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let id = playbackEngine.currentPlaylistID {
+                onOpen(id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall)
+            .fill(DesignTokens.Color.surfaceTint)
+            .frame(width: 40, height: 40)
+            .overlay {
+                if let image = playbackEngine.nowPlayingArtwork {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall))
+                } else {
+                    Image(systemName: "music.note")
+                        .foregroundStyle(DesignTokens.Color.primaryText)
+                }
+            }
+    }
+}
+
+/// Bridges `MyMixesView`'s `.nowPlaying(Playlist)` navigation destination
+/// to `NowPlayingView`, which needs a `[PlaylistDetailRow]` snapshot +
+/// source caption it can't produce itself (`PlaybackEngine` only exposes
+/// track *IDs*). Loads them the same way `PlaylistDetailView` does, via a
+/// throwaway `PlaylistDetailViewModel`. Holding `playbackEngine` here (and
+/// re-passing it explicitly) mirrors exactly how `PlaylistDetailView`
+/// already reaches this screen.
+private struct NowPlayingLoader: View {
+    let playlist: Playlist
+    let store: PlaylistStore
+
+    @EnvironmentObject private var playbackEngine: PlaybackEngine
+    @StateObject private var viewModel = PlaylistDetailViewModel()
+
+    var body: some View {
+        NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle, store: store, playbackEngine: playbackEngine)
+            .task { viewModel.load(playlist: playlist, store: store) }
     }
 }
 

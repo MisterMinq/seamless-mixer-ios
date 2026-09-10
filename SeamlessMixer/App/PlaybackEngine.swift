@@ -1,6 +1,7 @@
 import AVFoundation
 import MediaPlayer
 import PlaylistCore
+import UIKit
 
 /// The AVAudioEngine mixing engine, per CLAUDE.md's "Mixing Engine —
 /// AVAudioEngine Design" (first-pass design, confirmed back when Phase 2
@@ -200,6 +201,18 @@ final class PlaybackEngine: ObservableObject {
     /// before any route change ever fires) and on every subsequent route
     /// change, whether or not that change disrupted playback.
     @Published private(set) var outputRouteName: String = "This iPhone"
+
+    /// The currently-playing track's title / artist / album artwork, for
+    /// any screen that needs to *display* what's playing without holding a
+    /// `[PlaylistDetailRow]` snapshot of its own — **added 2026-09-10 for
+    /// the persistent mini-player** (`MyMixesView`), which has no playlist
+    /// detail loaded. Resolved from the same synchronous single-item
+    /// `MPMediaQuery` lookup `refreshNowPlayingMetadata()` already does for
+    /// `MPNowPlayingInfoCenter` — one query, both consumers. `nil` when
+    /// stopped (or the item can't be resolved).
+    @Published private(set) var nowPlayingTitle: String?
+    @Published private(set) var nowPlayingArtist: String?
+    @Published private(set) var nowPlayingArtwork: UIImage?
 
     private struct PlayerChain {
         let player: AVAudioPlayerNode
@@ -1565,6 +1578,9 @@ final class PlaybackEngine: ObservableObject {
         query.addFilterPredicate(MPMediaPropertyPredicate(value: mediaID, forProperty: MPMediaItemPropertyPersistentID))
         guard let item = query.items?.first else {
             nowPlayingMetadata = [:]
+            nowPlayingTitle = nil
+            nowPlayingArtist = nil
+            nowPlayingArtwork = nil
             publishNowPlayingPlaybackState()
             return
         }
@@ -1575,6 +1591,10 @@ final class PlaybackEngine: ObservableObject {
             info[MPMediaItemPropertyArtwork] = artwork
         }
         nowPlayingMetadata = info
+        nowPlayingTitle = item.title
+        nowPlayingArtist = item.artist
+        // Small — the mini-player renders this at ~40pt.
+        nowPlayingArtwork = item.artwork?.image(at: CGSize(width: 80, height: 80))
         publishNowPlayingPlaybackState()
     }
 
@@ -1620,6 +1640,9 @@ final class PlaybackEngine: ObservableObject {
 
     private func clearNowPlayingInfo() {
         nowPlayingMetadata = [:]
+        nowPlayingTitle = nil
+        nowPlayingArtist = nil
+        nowPlayingArtwork = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         MPNowPlayingInfoCenter.default().playbackState = .stopped
     }
