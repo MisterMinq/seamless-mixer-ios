@@ -27,18 +27,18 @@ final class CrossfadeTimingTests: XCTestCase {
     // MARK: - durationSec(forBPM:)
 
     func testDurationSecAtOrdinaryTempo() {
-        // 120bpm -> beat = 0.5s -> 6 beats = 3.0s, comfortably inside [2, 12].
-        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 120), 3.0, accuracy: 0.001)
+        // 120bpm -> beat = 0.5s -> 8 beats = 4.0s, comfortably inside [3, 16].
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 120), 4.0, accuracy: 0.001)
     }
 
     func testDurationSecClampsToUpperBoundForSlowTempo() {
-        // 20bpm -> beat = 3.0s -> 6 beats = 18s, clipped to the 12s ceiling.
-        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 20), 12.0, accuracy: 0.001)
+        // 20bpm -> beat = 3.0s -> 8 beats = 24s, clipped to the 16s ceiling.
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 20), 16.0, accuracy: 0.001)
     }
 
     func testDurationSecClampsToLowerBoundForFastTempo() {
-        // 300bpm -> beat = 0.2s -> 6 beats = 1.2s, clipped to the 2s floor.
-        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 300), 2.0, accuracy: 0.001)
+        // 300bpm -> beat = 0.2s -> 8 beats = 1.6s, clipped to the 3s floor.
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 300), 3.0, accuracy: 0.001)
     }
 
     func testDurationSecFallsBackTo120BPMWhenNil() {
@@ -52,49 +52,60 @@ final class CrossfadeTimingTests: XCTestCase {
         // non-positive bpm must not crash or produce a negative/NaN result.
         let result = CrossfadeTiming.durationSec(forBPM: 0)
         XCTAssertTrue(result.isFinite)
-        XCTAssertEqual(result, 12.0, accuracy: 0.001) // an ~0bpm beat length is huge, clipped to the ceiling
+        XCTAssertEqual(result, 16.0, accuracy: 0.001) // an ~0bpm beat length is huge, clipped to the ceiling
     }
 
     // MARK: - timing(for:)
 
     func testTimingStartsCrossfadeBeforePlayableEnd() {
+        // 120bpm base = 4.0s; start offset = 200 - 4.0 - 2.0 lead margin.
         let track = makeTrack(bpm: 120, playableDurationSec: 200)
         let timing = CrossfadeTiming.timing(for: track)
-        XCTAssertEqual(timing.durationSec, 3.0, accuracy: 0.001)
-        XCTAssertEqual(timing.startOffsetSec, 197.0, accuracy: 0.001)
+        XCTAssertEqual(timing.durationSec, 4.0, accuracy: 0.001)
+        XCTAssertEqual(timing.startOffsetSec, 194.0, accuracy: 0.001)
+    }
+
+    func testTimingBlendCompletesAheadOfPlayableEndByLeadMargin() {
+        // The whole point of `leadMarginSec`: the blend window (offset ..
+        // offset + duration) ends `leadMarginSec` before the outgoing track's
+        // playable end, not exactly at it.
+        let track = makeTrack(bpm: 100, playableDurationSec: 240)
+        let timing = CrossfadeTiming.timing(for: track)
+        let blendEnd = timing.startOffsetSec + timing.durationSec
+        XCTAssertEqual(240 - blendEnd, CrossfadeTiming.leadMarginSec, accuracy: 0.001)
     }
 
     func testTimingFallsBackToRawDurationWhenPlayableDurationIsNil() {
         let track = makeTrack(bpm: 120, playableDurationSec: nil, durationSec: 200)
         let timing = CrossfadeTiming.timing(for: track)
-        XCTAssertEqual(timing.startOffsetSec, 197.0, accuracy: 0.001)
+        XCTAssertEqual(timing.startOffsetSec, 194.0, accuracy: 0.001)
     }
 
     func testTimingFloorsStartOffsetAtZeroForAVeryShortTrack() {
-        // A track shorter than its own crossfade window must not produce a
-        // negative start offset.
+        // A track shorter than its own crossfade window (+ lead margin) must
+        // not produce a negative start offset.
         let track = makeTrack(bpm: 120, playableDurationSec: 1.0)
         let timing = CrossfadeTiming.timing(for: track)
         XCTAssertEqual(timing.startOffsetSec, 0.0, accuracy: 0.001)
-        XCTAssertEqual(timing.durationSec, 3.0, accuracy: 0.001)
+        XCTAssertEqual(timing.durationSec, 4.0, accuracy: 0.001)
     }
 
     // MARK: - extraSec (added 2026-08-19, per Andy's request for a
     // user-adjustable crossfade length)
 
     func testDurationSecAddsExtraSecOnTopOfTempoDerivedBase() {
-        // 120bpm's own base is 3.0s (see testDurationSecAtOrdinaryTempo) --
-        // +2s on top should land at exactly 5.0s, not just clip back to the
+        // 120bpm's own base is 4.0s (see testDurationSecAtOrdinaryTempo) --
+        // +2s on top should land at exactly 6.0s, not just clip back to the
         // tempo-derived value.
-        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 120, extraSec: 2), 5.0, accuracy: 0.001)
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 120, extraSec: 2), 6.0, accuracy: 0.001)
     }
 
     func testDurationSecExtraSecAppliesAfterTheClampNotBeforeIt() {
-        // A slow track's base is already clipped to the 12s ceiling --
+        // A slow track's base is already clipped to the 16s ceiling --
         // extraSec must still add on top of that, not get absorbed by the
         // clip (which would make the setting silently do nothing for any
         // already-slow song).
-        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 20, extraSec: 3), 15.0, accuracy: 0.001)
+        XCTAssertEqual(CrossfadeTiming.durationSec(forBPM: 20, extraSec: 3), 19.0, accuracy: 0.001)
     }
 
     func testDurationSecExtraSecDefaultsToZero() {
@@ -107,7 +118,7 @@ final class CrossfadeTimingTests: XCTestCase {
     func testTimingThreadsExtraSecIntoBothDurationAndStartOffset() {
         let track = makeTrack(bpm: 120, playableDurationSec: 200)
         let timing = CrossfadeTiming.timing(for: track, extraSec: 2)
-        XCTAssertEqual(timing.durationSec, 5.0, accuracy: 0.001) // 3.0 base + 2 extra
-        XCTAssertEqual(timing.startOffsetSec, 195.0, accuracy: 0.001) // 200 - 5.0
+        XCTAssertEqual(timing.durationSec, 6.0, accuracy: 0.001) // 4.0 base + 2 extra
+        XCTAssertEqual(timing.startOffsetSec, 192.0, accuracy: 0.001) // 200 - 6.0 - 2.0 lead margin
     }
 }

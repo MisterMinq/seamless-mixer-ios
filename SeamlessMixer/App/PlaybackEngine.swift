@@ -271,6 +271,25 @@ final class PlaybackEngine: ObservableObject {
     private var timer: Timer?
     private let tickIntervalSec: Double = 0.1
 
+    /// `ProcessInfo.processInfo.systemUptime` at the previous `tick()` — used
+    /// by `advanceCrossfade` to step the blend by *real elapsed time* rather
+    /// than a fixed `tickIntervalSec` per call.
+    ///
+    /// **Added 2026-09-10 — the second half of the "blends get weaker with
+    /// time" fix** (the first half is `CrossfadeTiming.leadMarginSec`). The
+    /// old code did `crossfadeProgress += tickIntervalSec / duration` once
+    /// per tick, which silently assumed every tick fired exactly 0.1s after
+    /// the last. `Timer` on the main run loop doesn't guarantee that — under
+    /// accumulated main-thread load over a long session, ticks coalesce and
+    /// slip, so the blend advanced in *fewer* steps per wall-second and
+    /// stretched out past the outgoing track's remaining audio, leaving the
+    /// incoming track fading in against silence. Now each step advances by
+    /// the actual time since the last tick (clamped to 0.5s, so a stopped
+    /// timer resuming — a pause/resume mid-blend — catches up gracefully over
+    /// a few ticks instead of snapping straight to done). `systemUptime` is
+    /// monotonic and doesn't jump with wall-clock/NTP changes.
+    private var lastTickUptime: Double = 0
+
     /// The next (incoming) track's duration, computed and stashed the
     /// moment `beginCrossfade` schedules it, then applied to
     /// `currentTrackDurationSec` once `completeCrossfade` makes it the
@@ -812,14 +831,16 @@ final class PlaybackEngine: ObservableObject {
 
     private func tick() {
         guard isPlaying, !isPaused else { return }
+        let now = ProcessInfo.processInfo.systemUptime
         if let elapsed = computeElapsedSeconds(for: activeChain.player) {
             elapsedSeconds = elapsedBaseSec + elapsed
         }
         if isCrossfading {
-            advanceCrossfade()
+            advanceCrossfade(now: now)
         } else {
             checkCrossfadeTrigger()
         }
+        lastTickUptime = now
     }
 
     /// Polled every tick while not already crossfading — starts one the
@@ -874,7 +895,7 @@ final class PlaybackEngine: ObservableObject {
             // `build_mix`, which sizes each crossfade off the track that's
             // fading out) — not a fixed constant. `max(0.5, ...)` guards
             // against a degenerate/zero value ever causing a division blow-up
-            // in `advanceCrossfade`'s `tickIntervalSec / activeCrossfadeDurationSec`.
+            // in `advanceCrossfade`'s `delta / activeCrossfadeDurationSec`.
             activeCrossfadeDurationSec = max(0.5, outgoing.crossfadeDurationSec)
             crossfadeProgress = 0
             isCrossfading = true
@@ -884,14 +905,20 @@ final class PlaybackEngine: ObservableObject {
         }
     }
 
-    /// Advances the blend by one tick using the same equal-power (sqrt)
-    /// curve `playlist_mixer.py`'s `equal_power_crossfade` already
-    /// validated in Phase 1: outgoing volume follows `sqrt(1 - t)`,
-    /// incoming follows `sqrt(t)` — their squares always sum to 1, which is
-    /// what avoids the audible loudness dip a linear fade produces at the
-    /// midpoint.
-    private func advanceCrossfade() {
-        crossfadeProgress = min(1, crossfadeProgress + tickIntervalSec / activeCrossfadeDurationSec)
+    /// Advances the blend using the same equal-power (sqrt) curve
+    /// `playlist_mixer.py`'s `equal_power_crossfade` already validated in
+    /// Phase 1: outgoing volume follows `sqrt(1 - t)`, incoming follows
+    /// `sqrt(t)` — their squares always sum to 1, which is what avoids the
+    /// audible loudness dip a linear fade produces at the midpoint.
+    ///
+    /// **Stepped by real elapsed time as of 2026-09-10**, not a fixed
+    /// `tickIntervalSec` per call — see `lastTickUptime`'s doc comment for
+    /// why. `delta` is clamped so a resumed-after-pause timer (or a badly
+    /// starved run loop) advances the blend at real-time speed rather than
+    /// jumping it straight to completion.
+    private func advanceCrossfade(now: Double) {
+        let delta = min(max(0, now - lastTickUptime), 0.5)
+        crossfadeProgress = min(1, crossfadeProgress + delta / activeCrossfadeDurationSec)
         let t = crossfadeProgress
         activeChain.player.volume = Float(sqrt(1 - t))
         standbyChain.player.volume = Float(sqrt(t))

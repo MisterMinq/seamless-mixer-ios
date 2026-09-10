@@ -602,8 +602,9 @@ struct SourceSelectionHubView: View {
     /// **Added 2026-08-19**, per Andy's direct request — "at Build Mix in
     /// conjunction with Mode setting." Lives immediately under the mode
     /// picker rather than elsewhere on the Hub, per that instruction.
-    /// 0...5 extra seconds, by 1 -- added *on top of* each transition's own
-    /// tempo-derived crossfade length (`CrossfadeTiming`), not a
+    /// 0...12 extra seconds, by 1 (widened from 0...5 on 2026-09-10 alongside
+    /// the longer base blend — see `CrossfadeTiming`) -- added *on top of*
+    /// each transition's own tempo-derived crossfade length, not a
     /// replacement for it, so a fast song and a slow song still don't get
     /// an identical blend length. 0 (today's exact behavior) is the
     /// default; nothing changes for a build unless this is actually moved.
@@ -612,7 +613,7 @@ struct SourceSelectionHubView: View {
     /// blend length" meant a flat 2s, since the label never showed a real
     /// number, and asked to change the Stepper to a fixed "7s ± 3s" range.
     /// There is no flat standard to fix a number to -- the base is
-    /// `clip(60/bpm × 6 beats, 2s, 12s)`, genuinely different per transition
+    /// `clip(60/bpm × 8 beats, 3s, 16s)`, genuinely different per transition
     /// on purpose (a flat length would make a slow ballad's blend feel
     /// rushed or a fast track's feel sluggish -- validated back in Phase 1,
     /// carried over deliberately). Rather than silently replace that
@@ -624,11 +625,11 @@ struct SourceSelectionHubView: View {
             Text("Crossfade length")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(DesignTokens.Color.textSecondary)
-            Stepper(value: $viewModel.extraCrossfadeSec, in: 0...5, step: 1) {
+            Stepper(value: $viewModel.extraCrossfadeSec, in: 0...12, step: 1) {
                 Text(
                     viewModel.extraCrossfadeSec > 0
-                        ? "+\(Int(viewModel.extraCrossfadeSec))s on top — blends run about \(2 + Int(viewModel.extraCrossfadeSec))–\(12 + Int(viewModel.extraCrossfadeSec))s, tempo-based"
-                        : "Standard — blends run 2–12s, based on each song's tempo"
+                        ? "+\(Int(viewModel.extraCrossfadeSec))s on top — blends run about \(3 + Int(viewModel.extraCrossfadeSec))–\(16 + Int(viewModel.extraCrossfadeSec))s, tempo-based"
+                        : "Standard — blends run 3–16s, based on each song's tempo"
                 )
                 .foregroundStyle(DesignTokens.Color.textPrimary)
             }
