@@ -64,6 +64,11 @@ struct PlaylistPickerView: View {
 
     @State private var showNewPlaylist = false
     @State private var editTarget: CustomPlaylistDetailView.Target?
+    /// **Added 2026-09-11**, per Andy's Testing (72) request — a way to
+    /// delete a native/"SM" playlist without opening it, so the grid
+    /// doesn't fill up with editions he no longer wants. Deleting an
+    /// origin-linked copy leaves its Apple Music row showing alone again.
+    @State private var showRemoveSheet = false
 
     struct PlaylistRow: Identifiable {
         let persistentID: MPMediaEntityPersistentID
@@ -189,6 +194,11 @@ struct PlaylistPickerView: View {
                     Button("New Playlist", systemImage: "plus") {
                         showNewPlaylist = true
                     }
+                    if !viewModel.customPlaylists.isEmpty {
+                        Button("Remove a Playlist", systemImage: "trash", role: .destructive) {
+                            showRemoveSheet = true
+                        }
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -203,6 +213,12 @@ struct PlaylistPickerView: View {
                 viewModel.refreshCustomPlaylists()
                 showNewPlaylist = false
             }
+        }
+        .sheet(isPresented: $showRemoveSheet, onDismiss: {
+            viewModel.refreshCustomPlaylists()
+            loadCustomPlaylistSongCounts()
+        }) {
+            RemoveCustomPlaylistsSheet(viewModel: viewModel, store: store, songCounts: customPlaylistSongCounts)
         }
         .navigationDestination(item: $editTarget) { target in
             CustomPlaylistDetailView(target: target, store: store) { copiedPlaylist in
@@ -412,5 +428,58 @@ struct PlaylistPickerView: View {
         }
         customPlaylistSongCounts = counts
         customPlaylistArtwork = artwork
+    }
+}
+
+/// A plain list of just the native/"SM" playlists with swipe-to-delete
+/// (plus an `EditButton` for the batch red-minus mode) — reached from the
+/// Playlists picker's "..." menu, per Andy's Testing (72) request for a
+/// way to trim the grid without opening each playlist. Deletion here is
+/// the same `store.deleteCustomPlaylist` the per-playlist "Delete
+/// Playlist" already uses (songs stay in the library; the schema's
+/// `ON DELETE CASCADE` clears the track rows). `viewModel.customPlaylists`
+/// is the shared `@Published` array, so a deletion updates the picker's
+/// grid live behind this sheet too.
+private struct RemoveCustomPlaylistsSheet: View {
+    @ObservedObject var viewModel: SourceSelectionViewModel
+    let store: PlaylistStore
+    let songCounts: [Int64: Int]
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if viewModel.customPlaylists.isEmpty {
+                    Text("No playlists to remove.")
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                } else {
+                    ForEach(viewModel.customPlaylists) { playlist in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(playlist.name)
+                                .foregroundStyle(DesignTokens.Color.textPrimary)
+                            Text("\(songCounts[playlist.id ?? -1] ?? 0) songs")
+                                .font(.caption)
+                                .foregroundStyle(DesignTokens.Color.textSecondary)
+                        }
+                    }
+                    .onDelete { indexSet in
+                        for index in indexSet {
+                            if let id = viewModel.customPlaylists[index].id {
+                                store.deleteCustomPlaylist(customPlaylistID: id)
+                            }
+                        }
+                        viewModel.refreshCustomPlaylists()
+                    }
+                }
+            }
+            .navigationTitle("Remove Playlists")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) { EditButton() }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
     }
 }

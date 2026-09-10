@@ -92,7 +92,25 @@ struct PlaylistDetailView: View {
     let store: PlaylistStore
 
     @StateObject private var viewModel = PlaylistDetailViewModel()
-    @EnvironmentObject private var playbackEngine: PlaybackEngine
+    /// **Non-subscribing as of 2026-09-11** (was `@EnvironmentObject`) — see
+    /// `EnvironmentValues.playbackEngineRef`. This screen's `.toolbar`
+    /// (Edit/star/"…") was being torn down and rebuilt ~10x/second during
+    /// playback purely because `PlaybackEngine.elapsedSeconds` — which this
+    /// screen never reads — publishes at that rate; the `UIBarButtonItem`
+    /// bridge tolerates that badly ("the button highlights but doesn't
+    /// fire"). The four playback values this screen *does* use all change
+    /// infrequently and are mirrored into `@State` below via `.onReceive`;
+    /// the `playbackEngine` computed accessor is only for method calls
+    /// (`play`) and passing the instance to `NowPlayingView`.
+    @Environment(\.playbackEngineRef) private var playbackEngineRef
+    private var playbackEngine: PlaybackEngine { playbackEngineRef! }
+
+    @State private var enginePlaying = false
+    @State private var enginePaused = false
+    @State private var engineCurrentPlaylistID: Int64?
+    @State private var engineNowPlayingTrackID: Int64?
+    @State private var engineError: String?
+
     @State private var showNowPlaying = false
     /// The DRM-exclusion message from the build that landed the user here,
     /// if any — see `showExclusionAlert`'s doc comment on `init` for why
@@ -168,7 +186,7 @@ struct PlaylistDetailView: View {
     /// just re-opens Now Playing on the in-progress session instead of
     /// restarting it.
     private var isThisPlaylistLoaded: Bool {
-        playbackEngine.isPlaying && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
+        enginePlaying && playlist.id != nil && engineCurrentPlaylistID == playlist.id
     }
 
     /// True only when this playlist is loaded *and* actually audible right
@@ -179,7 +197,7 @@ struct PlaylistDetailView: View {
     /// visually claiming something was playing — even after the user tapped
     /// Pause and no audio was actually sounding.
     private var isThisPlaylistAudiblyPlaying: Bool {
-        isThisPlaylistLoaded && !playbackEngine.isPaused
+        isThisPlaylistLoaded && !enginePaused
     }
 
     /// **Fixed 2026-08-18, real bug, second attempt at this same column.**
@@ -313,6 +331,15 @@ struct PlaylistDetailView: View {
         .task {
             viewModel.load(playlist: playlist, store: store)
         }
+        // Narrow mirrors of just the (infrequently-changing) playback state
+        // this screen uses — see the `playbackEngineRef` property's own doc
+        // comment. `Published<T>.Publisher` emits its current value on
+        // subscribe, so these also seed on first appearance.
+        .onReceive(playbackEngine.$isPlaying) { enginePlaying = $0 }
+        .onReceive(playbackEngine.$isPaused) { enginePaused = $0 }
+        .onReceive(playbackEngine.$currentPlaylistID) { engineCurrentPlaylistID = $0 }
+        .onReceive(playbackEngine.$nowPlayingTrackID) { engineNowPlayingTrackID = $0 }
+        .onReceive(playbackEngine.$playbackError) { engineError = $0 }
         // Play's destination, per the confirmed Navigation Flow (Play ->
         // Now Playing). `rows`/`subtitle` are handed over as a plain
         // snapshot rather than re-fetched by `NowPlayingView` itself --
@@ -466,10 +493,10 @@ struct PlaylistDetailView: View {
                     ForEach(Array(viewModel.rows.enumerated()), id: \.element.id) { index, row in
                         trackRow(
                             row, index: index, isLast: index == viewModel.rows.count - 1, isImminent: index == 0,
-                            // `!playbackEngine.isPaused` -- same 2026-08-14
-                            // fix as `isThisPlaylistAudiblyPlaying` above:
-                            // don't show animated bars on a paused track.
-                            isNowPlaying: playbackEngine.isPlaying && !playbackEngine.isPaused && playbackEngine.nowPlayingTrackID == row.trackPersistentID
+                            // `!enginePaused` -- same 2026-08-14 fix as
+                            // `isThisPlaylistAudiblyPlaying` above: don't
+                            // show animated bars on a paused track.
+                            isNowPlaying: enginePlaying && !enginePaused && engineNowPlayingTrackID == row.trackPersistentID
                         )
                     }
                     .onMove { source, destination in
@@ -492,7 +519,7 @@ struct PlaylistDetailView: View {
             .onAppear {
                 scrollToNowPlaying(proxy: proxy)
             }
-            .onChange(of: playbackEngine.nowPlayingTrackID) { _, _ in
+            .onChange(of: engineNowPlayingTrackID) { _, _ in
                 scrollToNowPlaying(proxy: proxy)
             }
         }
@@ -504,7 +531,7 @@ struct PlaylistDetailView: View {
     /// (a different mix playing in the background while this screen happens
     /// to be open) — `first(where:)` simply finds nothing to scroll to.
     private func scrollToNowPlaying(proxy: ScrollViewProxy) {
-        guard let nowPlayingID = playbackEngine.nowPlayingTrackID,
+        guard let nowPlayingID = engineNowPlayingTrackID,
               let row = viewModel.rows.first(where: { $0.trackPersistentID == nowPlayingID }) else { return }
         withAnimation {
             proxy.scrollTo(row.id, anchor: .top)
@@ -608,7 +635,7 @@ struct PlaylistDetailView: View {
                 .foregroundStyle(DesignTokens.Color.onPrimary)
                 .disabled(viewModel.rows.isEmpty)
 
-                if let error = playbackEngine.playbackError {
+                if let error = engineError {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(DesignTokens.Color.error)
@@ -872,11 +899,13 @@ struct PlaylistDetailView: View {
 }
 
 #Preview {
-    NavigationStack {
+    let engine = PlaybackEngine()
+    return NavigationStack {
         PlaylistDetailView(
             playlist: Playlist(name: "Smooth Jazz Seamless Mix", mode: .energyWave),
             store: PlaylistStore()
         )
     }
-    .environmentObject(PlaybackEngine())
+    .environmentObject(engine)
+    .environment(\.playbackEngineRef, engine)
 }

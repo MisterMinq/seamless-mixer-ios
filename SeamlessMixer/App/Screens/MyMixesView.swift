@@ -383,15 +383,28 @@ private struct MixRow: View {
     let playlist: Playlist
     let store: PlaylistStore
 
-    @EnvironmentObject private var playbackEngine: PlaybackEngine
+    /// **Non-subscribing, 2026-09-11** — see `EnvironmentValues
+    /// .playbackEngineRef`. This row was re-rendering ~10x/second during
+    /// playback (via the old `@EnvironmentObject`) purely for `elapsedSeconds`
+    /// it never reads; the three values it *does* care about all change
+    /// infrequently and are mirrored below.
+    @Environment(\.playbackEngineRef) private var playbackEngine
     @State private var showOverflow = false
 
-    /// `!playbackEngine.isPaused` added 2026-08-14 — a real bug: this used
-    /// to key off `isPlaying` alone, which stays true while paused (by
-    /// design, elsewhere), so a paused mix's row kept showing animated bars
-    /// as if it were still audibly playing.
+    @State private var enginePlaying = false
+    @State private var enginePaused = false
+    @State private var engineCurrentPlaylistID: Int64?
+
+    /// Always injected by `SeamlessMixerApp` (and every preview) — the
+    /// force-unwrap is structurally safe, same as `playlist.id!` elsewhere.
+    private var engine: PlaybackEngine { playbackEngine! }
+
+    /// `!enginePaused` added 2026-08-14 — a real bug: this used to key off
+    /// `isPlaying` alone, which stays true while paused (by design,
+    /// elsewhere), so a paused mix's row kept showing animated bars as if it
+    /// were still audibly playing.
     private var isPlaying: Bool {
-        playbackEngine.isPlaying && !playbackEngine.isPaused && playlist.id != nil && playbackEngine.currentPlaylistID == playlist.id
+        enginePlaying && !enginePaused && playlist.id != nil && engineCurrentPlaylistID == playlist.id
     }
 
     /// **Added 2026-08-20** — up to 4 distinct-album images for this row's
@@ -459,6 +472,9 @@ private struct MixRow: View {
         .sheet(isPresented: $showOverflow) {
             PlaylistOverflowSheet(playlist: playlist, store: store)
         }
+        .onReceive(engine.$isPlaying) { enginePlaying = $0 }
+        .onReceive(engine.$isPaused) { enginePaused = $0 }
+        .onReceive(engine.$currentPlaylistID) { engineCurrentPlaylistID = $0 }
     }
 
     /// **Added 2026-08-20.** Andy asked for the collage to replace this
@@ -550,35 +566,53 @@ private struct FavoriteCard: View {
 /// doesn't own the navigation `path`, so wiring the tap there is a
 /// follow-up, not this slice.
 ///
-/// This is the one leaf under My Mixes that subscribes to `PlaybackEngine`
-/// (via `@EnvironmentObject`, the same pattern `MixRow` already uses) —
-/// deliberately kept small and toolbar-free so its ~10Hz re-render during
-/// playback stays cheap and never touches `MyMixesView`'s own `body` or
-/// `.toolbar` (the 0.25.84 lesson). Reads `nowPlayingTitle`/`Artist`/
-/// `Artwork` off `PlaybackEngine` (added 2026-09-10) since this bar has no
+/// This is a small leaf under My Mixes — deliberately toolbar-free.
+/// **As of 2026-09-11 it no longer subscribes to `PlaybackEngine`** (was
+/// `@EnvironmentObject`) — everything it shows changes at most a few times
+/// a minute (track / paused / stopped), so it mirrors just those into
+/// local `@State` via `.onReceive` and reads a non-subscribing engine
+/// reference for the play/pause actions. Before this, it re-rendered
+/// ~10x/second during playback for `elapsedSeconds` it never reads — cheap
+/// on its own, but the churn could reach the pushed Hub's back button via
+/// `NavigationStack`'s shared nav-bar re-compositing (the 0.25.84 class of
+/// bug). Reads `nowPlayingTitle`/`Artist`/`Artwork` since this bar has no
 /// `[PlaylistDetailRow]` snapshot of its own to look a track up in.
 private struct MiniPlayerBar: View {
     let onOpen: (Int64) -> Void
 
-    @EnvironmentObject private var playbackEngine: PlaybackEngine
+    @Environment(\.playbackEngineRef) private var playbackEngine
+    private var engine: PlaybackEngine { playbackEngine! }
+
+    @State private var isPlaying = false
+    @State private var isPaused = false
+    @State private var currentPlaylistID: Int64?
+    @State private var title: String?
+    @State private var artist: String?
+    @State private var artworkImage: UIImage?
 
     var body: some View {
         Group {
-            if playbackEngine.isPlaying {
+            if isPlaying {
                 bar
             }
         }
+        .onReceive(engine.$isPlaying) { isPlaying = $0 }
+        .onReceive(engine.$isPaused) { isPaused = $0 }
+        .onReceive(engine.$currentPlaylistID) { currentPlaylistID = $0 }
+        .onReceive(engine.$nowPlayingTitle) { title = $0 }
+        .onReceive(engine.$nowPlayingArtist) { artist = $0 }
+        .onReceive(engine.$nowPlayingArtwork) { artworkImage = $0 }
     }
 
     private var bar: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
             artwork
             VStack(alignment: .leading, spacing: 1) {
-                Text(playbackEngine.nowPlayingTitle ?? "Playing")
+                Text(title ?? "Playing")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(DesignTokens.Color.textPrimary)
                     .lineLimit(1)
-                if let artist = playbackEngine.nowPlayingArtist, !artist.isEmpty {
+                if let artist, !artist.isEmpty {
                     Text(artist)
                         .font(.caption2)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
@@ -587,13 +621,13 @@ private struct MiniPlayerBar: View {
             }
             Spacer(minLength: DesignTokens.Spacing.sm)
             Button {
-                if playbackEngine.isPaused {
-                    playbackEngine.resume()
+                if isPaused {
+                    engine.resume()
                 } else {
-                    playbackEngine.pause()
+                    engine.pause()
                 }
             } label: {
-                Image(systemName: playbackEngine.isPaused ? "play.fill" : "pause.fill")
+                Image(systemName: isPaused ? "play.fill" : "pause.fill")
                     .font(.title3)
                     .foregroundStyle(DesignTokens.Color.primaryText)
                     .frame(width: DesignTokens.Size.tapTargetMin, height: DesignTokens.Size.tapTargetMin)
@@ -607,8 +641,8 @@ private struct MiniPlayerBar: View {
         .overlay(alignment: .top) { Divider() }
         .contentShape(Rectangle())
         .onTapGesture {
-            if let id = playbackEngine.currentPlaylistID {
-                onOpen(id)
+            if let currentPlaylistID {
+                onOpen(currentPlaylistID)
             }
         }
     }
@@ -619,8 +653,8 @@ private struct MiniPlayerBar: View {
             .fill(DesignTokens.Color.surfaceTint)
             .frame(width: 40, height: 40)
             .overlay {
-                if let image = playbackEngine.nowPlayingArtwork {
-                    Image(uiImage: image)
+                if let artworkImage {
+                    Image(uiImage: artworkImage)
                         .resizable()
                         .scaledToFill()
                         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Size.cornerRadiusSmall))
@@ -643,11 +677,15 @@ private struct NowPlayingLoader: View {
     let playlist: Playlist
     let store: PlaylistStore
 
-    @EnvironmentObject private var playbackEngine: PlaybackEngine
+    /// Non-subscribing (2026-09-11) — this bridge only forwards the engine
+    /// to `NowPlayingView` (which takes it as a plain `let`, per 0.25.84);
+    /// it reads no `@Published` state itself, so there's nothing to
+    /// subscribe to.
+    @Environment(\.playbackEngineRef) private var playbackEngine
     @StateObject private var viewModel = PlaylistDetailViewModel()
 
     var body: some View {
-        NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle, store: store, playbackEngine: playbackEngine)
+        NowPlayingView(rows: viewModel.rows, sourceCaption: viewModel.subtitle, store: store, playbackEngine: playbackEngine!)
             .task { viewModel.load(playlist: playlist, store: store) }
     }
 }
@@ -659,6 +697,8 @@ private struct NowPlayingLoader: View {
     // require it, as an `@EnvironmentObject`) would otherwise crash in the
     // preview canvas the same way it would at runtime with no injection
     // anywhere in the view hierarchy.
-    MyMixesView(store: PlaylistStore())
-        .environmentObject(PlaybackEngine())
+    let engine = PlaybackEngine()
+    return MyMixesView(store: PlaylistStore())
+        .environmentObject(engine)
+        .environment(\.playbackEngineRef, engine)
 }

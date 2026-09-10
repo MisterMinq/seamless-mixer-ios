@@ -95,6 +95,12 @@ struct SeamlessMixerApp: App {
             // `RootView`'s own doc comment.
             RootView(store: store)
                 .environmentObject(playbackEngine)
+                // **Non-subscribing reference, added 2026-09-11** — see
+                // `EnvironmentValues.playbackEngineRef`'s own doc comment.
+                // Screens with a `.toolbar` read *this* (no 10Hz re-render
+                // from playback ticks) plus narrow `.onReceive` mirrors,
+                // rather than `@EnvironmentObject`.
+                .environment(\.playbackEngineRef, playbackEngine)
                 .environmentObject(libraryScanner)
                 .preferredColorScheme(.light)
         }

@@ -1,6 +1,7 @@
 import AVFoundation
 import MediaPlayer
 import PlaylistCore
+import SwiftUI
 import UIKit
 
 /// The AVAudioEngine mixing engine, per CLAUDE.md's "Mixing Engine —
@@ -1714,5 +1715,39 @@ final class PlaybackEngine: ObservableObject {
             MainActor.assumeIsolated { self.seek(toSeconds: event.positionTime) }
             return .success
         }
+    }
+}
+
+// MARK: - Non-subscribing environment access
+
+private struct PlaybackEngineKey: EnvironmentKey {
+    static let defaultValue: PlaybackEngine? = nil
+}
+
+extension EnvironmentValues {
+    /// A **non-subscribing** reference to the app-wide `PlaybackEngine` —
+    /// read via `@Environment(\.playbackEngineRef)`, injected once by
+    /// `SeamlessMixerApp` alongside the existing `.environmentObject`.
+    ///
+    /// **Why this exists (2026-09-11):** `@EnvironmentObject`/`@ObservedObject`
+    /// re-invoke the *entire* `body` of the reading view — `.toolbar`
+    /// included — on *any* `@Published` change to the object, per-object not
+    /// per-property (the CLAUDE.md 0.25.84 lesson). `PlaybackEngine
+    /// .elapsedSeconds` is rewritten ~10x/second during playback, so every
+    /// screen that subscribed churned its `UIBarButtonItem` bridges at that
+    /// rate — the "the arrow highlights but doesn't fire, needs 4 taps"
+    /// symptom Andy hit on the Hub back button / Playlist Detail / Queue.
+    ///
+    /// A view reading `@Environment(\.playbackEngineRef)` only re-renders if
+    /// a *different engine* is injected (never), not when the engine
+    /// publishes. Views that need infrequent state (which track, paused,
+    /// which playlist) mirror just those specific `@Published` properties
+    /// into local `@State` via narrow `.onReceive` subscriptions. Views
+    /// that genuinely need tick-rate data (Now Playing's progress bar and
+    /// dynamic background) keep a full `@ObservedObject` subscription —
+    /// they have no `.toolbar`, so the 10Hz churn is harmless there.
+    var playbackEngineRef: PlaybackEngine? {
+        get { self[PlaybackEngineKey.self] }
+        set { self[PlaybackEngineKey.self] = newValue }
     }
 }

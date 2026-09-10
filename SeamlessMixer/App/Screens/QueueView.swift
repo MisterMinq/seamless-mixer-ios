@@ -65,8 +65,19 @@ struct QueueView: View {
     /// (still-deferred) menu actions.
     let store: PlaylistStore
 
-    @EnvironmentObject private var playbackEngine: PlaybackEngine
+    /// **Non-subscribing as of 2026-09-11** (was `@EnvironmentObject`) — see
+    /// `EnvironmentValues.playbackEngineRef`. This sheet's "Done" toolbar
+    /// button and its `List` were rebuilding ~10x/second during playback for
+    /// `elapsedSeconds` this screen never reads; the two values it does need
+    /// (`nowPlayingTrackID`, `isPaused`) change only on a track boundary /
+    /// pause and are mirrored into `@State` below.
+    @Environment(\.playbackEngineRef) private var playbackEngineRef
+    private var engine: PlaybackEngine { playbackEngineRef! }
     @Environment(\.dismiss) private var dismiss
+
+    @State private var engineNowPlayingTrackID: Int64?
+    @State private var enginePaused = false
+
     /// Local, optimistic overrides for the favorite toggle above — this
     /// screen receives `rows` as a plain snapshot (not an `@Published`
     /// array it owns, unlike `PlaylistDetailViewModel`), so a toggle here
@@ -79,7 +90,7 @@ struct QueueView: View {
     /// showing something playing — but handled defensively rather than
     /// force-unwrapped.
     private var nowPlayingIndex: Int? {
-        rows.firstIndex { $0.trackPersistentID == playbackEngine.nowPlayingTrackID }
+        rows.firstIndex { $0.trackPersistentID == engineNowPlayingTrackID }
     }
 
     /// The now-playing row plus everything after it, in order — tracks
@@ -113,6 +124,8 @@ struct QueueView: View {
                         .tint(DesignTokens.Color.primaryText)
                 }
             }
+            .onReceive(engine.$nowPlayingTrackID) { engineNowPlayingTrackID = $0 }
+            .onReceive(engine.$isPaused) { enginePaused = $0 }
         }
     }
 
@@ -187,7 +200,7 @@ struct QueueView: View {
                     // "this is the now-playing slot" -- same 2026-08-14 fix
                     // as `PlaylistDetailView`/`MyMixesView` (paused sessions
                     // were incorrectly still showing animated bars).
-                    if !playbackEngine.isPaused {
+                    if !enginePaused {
                         NowPlayingBarsView(color: DesignTokens.Color.primaryText, barWidth: 2.5, maxHeight: 12)
                             .frame(width: 20, alignment: .trailing)
                     } else {
@@ -330,7 +343,7 @@ struct QueueView: View {
     /// so it's always the right ID.
     private func play(startIndex: Int) {
         guard !rows.isEmpty else { return }
-        playbackEngine.play(
+        engine.play(
             queue: rows.map {
                 PlaybackEngine.QueuedTrack(
                     trackPersistentID: $0.trackPersistentID,
@@ -341,7 +354,7 @@ struct QueueView: View {
                 )
             },
             startIndex: startIndex,
-            playlistID: playbackEngine.currentPlaylistID
+            playlistID: engine.currentPlaylistID
         )
         dismiss()
     }
@@ -383,6 +396,8 @@ struct QueueView: View {
 }
 
 #Preview {
-    QueueView(rows: [], store: PlaylistStore())
-        .environmentObject(PlaybackEngine())
+    let engine = PlaybackEngine()
+    return QueueView(rows: [], store: PlaylistStore())
+        .environmentObject(engine)
+        .environment(\.playbackEngineRef, engine)
 }
