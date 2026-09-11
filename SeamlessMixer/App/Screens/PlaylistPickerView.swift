@@ -132,6 +132,22 @@ struct PlaylistPickerView: View {
     /// live Apple Music playlist, picking the "SM" row builds from the
     /// edited copy. Standalone customs (including "Duplicate" copies) come
     /// after, newest-edited first.
+    ///
+    /// **Real bug fixed 2026-09-11 (Testing 74) — an origin-linked copy
+    /// whose Apple Music playlist no longer exists used to vanish from this
+    /// grid entirely, silently.** Andy made an empty Apple Music playlist,
+    /// added a song to it in-app (creating a real "SM" copy via copy-on-
+    /// edit), then asked whether deleting that now-empty Apple playlist
+    /// from Apple Music would be the way to clean it out of this picker.
+    /// The old code below only ever emitted an origin-linked `custom` row
+    /// *alongside* the matching `apple` row it's keyed to — once that Apple
+    /// row stops being returned by `MPMediaQuery.playlists()` (deleted),
+    /// the copy was still a real row in the database, with real songs, but
+    /// this screen had no path left that would ever show it. Fixed by
+    /// tracking which origin-linked customs actually got matched to a live
+    /// Apple row, and folding any that didn't (their Apple original is
+    /// gone) in with the standalone group at the end — same place a
+    /// "Duplicate" copy or a fresh "New Playlist" already lands.
     private var mergedRows: [MergedRow] {
         var customByOrigin: [MPMediaEntityPersistentID: CustomPlaylist] = [:]
         var standaloneCustom: [CustomPlaylist] = []
@@ -144,24 +160,29 @@ struct PlaylistPickerView: View {
         }
 
         var rows: [MergedRow] = []
+        var matchedOrigins: Set<MPMediaEntityPersistentID> = []
         for apple in applePlaylists {
             rows.append(.apple(apple))
             if let custom = customByOrigin[apple.persistentID] {
-                rows.append(.custom(
-                    custom,
-                    songCount: customPlaylistSongCounts[custom.id ?? -1] ?? apple.songCount,
-                    artwork: customPlaylistArtwork[custom.id ?? -1]
-                ))
+                rows.append(customRow(for: custom))
+                matchedOrigins.insert(apple.persistentID)
             }
         }
-        for custom in standaloneCustom {
-            rows.append(.custom(
-                custom,
-                songCount: customPlaylistSongCounts[custom.id ?? -1] ?? 0,
-                artwork: customPlaylistArtwork[custom.id ?? -1]
-            ))
+        let orphanedOriginCustoms = customByOrigin
+            .filter { !matchedOrigins.contains($0.key) }
+            .map(\.value)
+        for custom in standaloneCustom + orphanedOriginCustoms {
+            rows.append(customRow(for: custom))
         }
         return rows
+    }
+
+    private func customRow(for custom: CustomPlaylist) -> MergedRow {
+        .custom(
+            custom,
+            songCount: customPlaylistSongCounts[custom.id ?? -1] ?? 0,
+            artwork: customPlaylistArtwork[custom.id ?? -1]
+        )
     }
 
     private let columns = [GridItem(.adaptive(minimum: 140), spacing: DesignTokens.Spacing.sm)]
@@ -409,10 +430,29 @@ struct PlaylistPickerView: View {
     /// sits at position 0, standing in for a cover a `CustomPlaylist` has no
     /// real one of its own, per Andy's own suggestion (see this file's
     /// `customPlaylistArtwork` doc comment).
+    ///
+    /// **Batched into one artwork pass, 2026-09-11 (Testing 74) — a real,
+    /// confirmed main-thread-stall bug, not a style cleanup.** This used to
+    /// call `ArtworkResolver.loadArtwork(forTrackPersistentID:)` (singular)
+    /// once per native playlist — and that singular overload runs its own
+    /// *full* `MPMediaQuery.songs()` scan every call (see that method's own
+    /// doc comment). With several "SM" playlists on the phone, that's N
+    /// full-library scans stacked on the main thread inside this one
+    /// function — which also runs again from `CustomPlaylistDetailView`'s
+    /// `onDisappear` every time that screen closes. This is very likely the
+    /// exact cause of Andy's Testing (74) reports: back-button taps queuing
+    /// behind main-thread work after visiting the Playlists picker /
+    /// pencil-editing a playlist, resolving on their own once that work
+    /// finally drains ("waiting after a bit and tapping then functions" is
+    /// the classic symptom of a main-thread backlog, not a churn/re-render
+    /// bug). Now collects every playlist's first-track ID first, then
+    /// resolves all of them in one single `MPMediaQuery` pass via the
+    /// plural `loadArtwork(forTrackPersistentIDs:)` — one scan total,
+    /// regardless of how many native playlists exist.
     private func loadCustomPlaylistSongCounts() {
         guard let db = store.db else { return }
         var counts: [Int64: Int] = [:]
-        var artwork: [Int64: UIImage] = [:]
+        var firstTrackIDs: [Int64: Int64] = [:]
         for playlist in viewModel.customPlaylists {
             guard let id = playlist.id else { continue }
             // `try?` on a throwing function that itself returns an Optional
@@ -423,11 +463,12 @@ struct PlaylistPickerView: View {
             let detail = try? db.loadCustomPlaylistDetail(customPlaylistID: id)
             counts[id] = detail?.tracks.count ?? 0
             if let firstTrackID = detail?.tracks.first?.track.persistentID {
-                artwork[id] = ArtworkResolver.loadArtwork(forTrackPersistentID: firstTrackID, size: CGSize(width: 140, height: 140))
+                firstTrackIDs[id] = firstTrackID
             }
         }
         customPlaylistSongCounts = counts
-        customPlaylistArtwork = artwork
+        let resolvedByTrack = ArtworkResolver.loadArtwork(forTrackPersistentIDs: Array(firstTrackIDs.values), size: CGSize(width: 140, height: 140))
+        customPlaylistArtwork = firstTrackIDs.compactMapValues { resolvedByTrack[$0] }
     }
 }
 

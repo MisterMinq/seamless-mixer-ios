@@ -27,6 +27,39 @@ struct ChangelogView: View {
 
     private static let entries: [Entry] = [
         Entry(
+            build: "Build 75",
+            title: "Playlists picker speed + a real bug fix",
+            changes: [
+                "Fixed a slowdown that could make the back arrows on the Hub and My Mixes need several taps after browsing the Playlists picker or editing a playlist.",
+                "Fixed a native/\"SM\" playlist disappearing from the Playlists picker if the Apple Music playlist it was copied from got deleted — it now still shows up."
+            ]
+        ),
+        Entry(
+            build: "Build 74",
+            title: "Faster arrows + Remove a Playlist",
+            changes: [
+                "Fixed the back arrow, star, and \"…\" needing several taps to respond on Playlist Detail, Up Next, and My Mixes while a mix is playing.",
+                "Added a way to remove a native/\"SM\" playlist you no longer want: open the Playlists picker, tap \"…\" at the top, then \"Remove a Playlist.\""
+            ]
+        ),
+        Entry(
+            build: "Build 73",
+            title: "Persistent mini-player",
+            changes: [
+                "A mini-player now shows on My Mixes whenever something's playing — artwork, title, artist, and a play/pause button. Tap it to jump back to Now Playing."
+            ]
+        ),
+        Entry(
+            build: "Build 72",
+            title: "This changelog, whole-library count, playlist Duplicate",
+            changes: [
+                "This \"What's New\" screen, in Settings.",
+                "The Hub now shows about how many of your library's songs are actually ready to mix, not just the raw song count.",
+                "The Playlists picker now shows both the original Apple Music playlist and its edited \"SM\" copy, instead of hiding the original once it's been edited.",
+                "\"Duplicate\" a playlist from its \"…\" menu — keeps the original untouched and makes a separate, independent copy."
+            ]
+        ),
+        Entry(
             build: "Build 71",
             title: "Crossfade rework",
             changes: [

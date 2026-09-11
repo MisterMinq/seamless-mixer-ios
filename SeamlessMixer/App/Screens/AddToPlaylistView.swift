@@ -110,6 +110,22 @@ struct AddToPlaylistView: View {
         }
     }
 
+    /// **Aligned with `PlaylistPickerView.mergedRows` 2026-09-11 (Testing
+    /// 74), two real bugs fixed together, not one:** this screen was built
+    /// a round before `PlaylistPickerView`'s 2026-09-10 "show both, don't
+    /// replace" revision and never picked it up (the same "built the round
+    /// before, never ported over" gap already flagged once for artwork on
+    /// this file's own top-of-file doc comment) — it was still *replacing*
+    /// an edited Apple Music playlist's row with its "SM" copy instead of
+    /// showing both, so a song couldn't be added to the original from here
+    /// once it had ever been edited. Separately, an origin-linked copy
+    /// whose Apple Music playlist has since been deleted used to vanish
+    /// from this grid entirely (it was only ever emitted alongside its
+    /// matching Apple row) — real data with no way to reach it. Both fixed
+    /// the same way `PlaylistPickerView` now is: the Apple row is always
+    /// kept, a matched copy is added right after it (not instead), and any
+    /// origin-linked copy that no longer matches a live Apple row folds
+    /// into the standalone group instead of disappearing.
     private var mergedRows: [MergedRow] {
         var customByOrigin: [MPMediaEntityPersistentID: CustomPlaylist] = [:]
         var standaloneCustom: [CustomPlaylist] = []
@@ -121,16 +137,30 @@ struct AddToPlaylistView: View {
             }
         }
 
-        var rows: [MergedRow] = applePlaylists.map { apple in
+        var rows: [MergedRow] = []
+        var matchedOrigins: Set<MPMediaEntityPersistentID> = []
+        for apple in applePlaylists {
+            rows.append(.apple(apple))
             if let custom = customByOrigin[apple.persistentID] {
-                return .custom(custom, songCount: customSongCounts[custom.id ?? -1] ?? apple.songCount, artwork: customArtwork[custom.id ?? -1])
+                rows.append(customRow(for: custom))
+                matchedOrigins.insert(apple.persistentID)
             }
-            return .apple(apple)
         }
-        for custom in standaloneCustom {
-            rows.append(.custom(custom, songCount: customSongCounts[custom.id ?? -1] ?? 0, artwork: customArtwork[custom.id ?? -1]))
+        let orphanedOriginCustoms = customByOrigin
+            .filter { !matchedOrigins.contains($0.key) }
+            .map(\.value)
+        for custom in standaloneCustom + orphanedOriginCustoms {
+            rows.append(customRow(for: custom))
         }
         return rows
+    }
+
+    private func customRow(for custom: CustomPlaylist) -> MergedRow {
+        .custom(
+            custom,
+            songCount: customSongCounts[custom.id ?? -1] ?? 0,
+            artwork: customArtwork[custom.id ?? -1]
+        )
     }
 
     private let columns = [GridItem(.adaptive(minimum: 140), spacing: DesignTokens.Spacing.sm)]
@@ -259,17 +289,24 @@ struct AddToPlaylistView: View {
         guard let db = store.db else { return }
         customPlaylists = (try? db.loadCustomPlaylists()) ?? []
         var counts: [Int64: Int] = [:]
-        var artwork: [Int64: UIImage] = [:]
+        var firstTrackIDs: [Int64: Int64] = [:]
         for playlist in customPlaylists {
             guard let id = playlist.id else { continue }
             let detail = try? db.loadCustomPlaylistDetail(customPlaylistID: id)
             counts[id] = detail?.tracks.count ?? 0
             if let firstTrackID = detail?.tracks.first?.track.persistentID {
-                artwork[id] = ArtworkResolver.loadArtwork(forTrackPersistentID: firstTrackID, size: CGSize(width: 140, height: 140))
+                firstTrackIDs[id] = firstTrackID
             }
         }
         customSongCounts = counts
-        customArtwork = artwork
+        // **Batched into one artwork pass, 2026-09-11 (Testing 74)** — see
+        // `PlaylistPickerView.loadCustomPlaylistSongCounts`'s own doc
+        // comment for the full diagnosis. This screen had the identical
+        // per-playlist full-library-scan pattern, and sits right behind Now
+        // Playing's "..." menu — the leading cause of Andy's report that
+        // Now Playing's "..." glitches after visiting this sheet.
+        let resolvedByTrack = ArtworkResolver.loadArtwork(forTrackPersistentIDs: Array(firstTrackIDs.values), size: CGSize(width: 140, height: 140))
+        customArtwork = firstTrackIDs.compactMapValues { resolvedByTrack[$0] }
     }
 
     /// A `.custom` row already has a real `CustomPlaylist` id to add
