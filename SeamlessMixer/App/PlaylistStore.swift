@@ -68,37 +68,74 @@ final class PlaylistStore: ObservableObject {
     /// than surfacing a `loadError` — a missing thumbnail isn't worth
     /// blocking the whole screen's data over, unlike a failure to load the
     /// playlists themselves.
+    ///
+    /// **Moved off the main thread, 2026-09-24 — a real, confirmed launch
+    /// crash, not a lag/polish issue.** This used to run synchronously,
+    /// right inside `PlaylistStore.init()` -> `refresh()`, which
+    /// `SeamlessMixerApp` calls while constructing its root `@StateObject`
+    /// — i.e. before the app's very first frame can render. Andy reported a
+    /// real crash matching this exactly: added songs to his library via a
+    /// third-party sync tool (CopyTrans-style), then launched the app —
+    /// nothing rendered, then the OS's "app quit unexpectedly" crash dialog
+    /// appeared; the same launch then worked after two failed attempts.
+    /// That "blank screen, then killed, self-resolves after a couple of
+    /// tries" pattern is the signature of iOS's own launch watchdog (apps
+    /// that don't get their first frame on screen within its time budget
+    /// are terminated outright) — and `ArtworkResolver.loadArtwork`'s
+    /// underlying full-library `MPMediaQuery.songs()` scan is real,
+    /// well-documented as measurably *slower* than usual for a short window
+    /// right after new tracks are synced in by anything other than the
+    /// Music app itself, while iOS's own media database is still
+    /// re-indexing them — long enough, on a large-enough library, to blow
+    /// through that launch budget. Once the index caught up (a couple of
+    /// launch attempts later), the same scan ran fast enough not to matter,
+    /// exactly matching Andy's "continues to work after 2 crashes."
+    /// Fixed by moving the whole thing into a detached `Task` — `playlists`
+    /// is snapshotted before the hop (this function's own read of it must
+    /// happen on the main actor), and `DatabaseManager`/GRDB's
+    /// `DatabaseQueue` are already safe to use off it (GRDB's queue
+    /// serializes access internally; nothing here is `@MainActor`-isolated
+    /// except this class itself, hopped back into only to publish the
+    /// final result). My Mixes now renders immediately with plain
+    /// placeholder tiles and the real collages fill in a moment later,
+    /// instead of the whole app being unable to show anything at all until
+    /// this scan finishes.
     private func loadCollages() {
         guard let db else { return }
-        do {
-            var trackIDsByPlaylist: [Int64: [Int64]] = [:]
-            var allTrackIDs: [Int64] = []
-            for playlist in playlists {
-                guard let id = playlist.id else { continue }
-                let detail = try db.loadPlaylistDetail(playlistID: id)
-                let ids = detail.tracks.map(\.track.persistentID)
-                trackIDsByPlaylist[id] = ids
-                allTrackIDs.append(contentsOf: ids)
-            }
+        let snapshot = playlists
+        Task.detached(priority: .userInitiated) {
+            do {
+                var trackIDsByPlaylist: [Int64: [Int64]] = [:]
+                var allTrackIDs: [Int64] = []
+                for playlist in snapshot {
+                    guard let id = playlist.id else { continue }
+                    let detail = try db.loadPlaylistDetail(playlistID: id)
+                    let ids = detail.tracks.map(\.track.persistentID)
+                    trackIDsByPlaylist[id] = ids
+                    allTrackIDs.append(contentsOf: ids)
+                }
 
-            // One combined resolution pass across every playlist's tracks
-            // -- not one `ArtworkResolver` call per playlist -- so this
-            // does a single full-library `MPMediaQuery` scan regardless of
-            // how many mixes exist.
-            let artworkByTrack = ArtworkResolver.loadArtwork(
-                forTrackPersistentIDs: allTrackIDs, size: CGSize(width: 110, height: 110)
-            )
+                // One combined resolution pass across every playlist's
+                // tracks -- not one `ArtworkResolver` call per playlist --
+                // so this does a single full-library `MPMediaQuery` scan
+                // regardless of how many mixes exist.
+                let artworkByTrack = ArtworkResolver.loadArtwork(
+                    forTrackPersistentIDs: allTrackIDs, size: CGSize(width: 110, height: 110)
+                )
 
-            var result: [Int64: [UIImage]] = [:]
-            for (playlistID, trackIDs) in trackIDsByPlaylist {
-                let artworkInOrder = trackIDs.map { artworkByTrack[$0] }
-                result[playlistID] = ArtworkResolver.distinctAlbumImages(from: artworkInOrder, limit: 4)
+                var result: [Int64: [UIImage]] = [:]
+                for (playlistID, trackIDs) in trackIDsByPlaylist {
+                    let artworkInOrder = trackIDs.map { artworkByTrack[$0] }
+                    result[playlistID] = ArtworkResolver.distinctAlbumImages(from: artworkInOrder, limit: 4)
+                }
+                await MainActor.run { [weak self] in
+                    self?.collagesByPlaylistID = result
+                }
+            } catch {
+                // Best-effort, per this function's own doc comment -- leave
+                // whatever collages were already loaded (or none) rather
+                // than clearing them out on a transient failure.
             }
-            collagesByPlaylistID = result
-        } catch {
-            // Best-effort, per this function's own doc comment -- leave
-            // whatever collages were already loaded (or none) rather than
-            // clearing them out on a transient failure.
         }
     }
 
