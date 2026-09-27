@@ -69,41 +69,54 @@ final class PlaylistStore: ObservableObject {
     /// blocking the whole screen's data over, unlike a failure to load the
     /// playlists themselves.
     ///
-    /// **Moved off the main thread, 2026-09-24 — a real, confirmed launch
-    /// crash, not a lag/polish issue.** This used to run synchronously,
-    /// right inside `PlaylistStore.init()` -> `refresh()`, which
-    /// `SeamlessMixerApp` calls while constructing its root `@StateObject`
-    /// — i.e. before the app's very first frame can render. Andy reported a
-    /// real crash matching this exactly: added songs to his library via a
-    /// third-party sync tool (CopyTrans-style), then launched the app —
-    /// nothing rendered, then the OS's "app quit unexpectedly" crash dialog
-    /// appeared; the same launch then worked after two failed attempts.
-    /// That "blank screen, then killed, self-resolves after a couple of
-    /// tries" pattern is the signature of iOS's own launch watchdog (apps
-    /// that don't get their first frame on screen within its time budget
-    /// are terminated outright) — and `ArtworkResolver.loadArtwork`'s
-    /// underlying full-library `MPMediaQuery.songs()` scan is real,
-    /// well-documented as measurably *slower* than usual for a short window
-    /// right after new tracks are synced in by anything other than the
-    /// Music app itself, while iOS's own media database is still
-    /// re-indexing them — long enough, on a large-enough library, to blow
-    /// through that launch budget. Once the index caught up (a couple of
-    /// launch attempts later), the same scan ran fast enough not to matter,
-    /// exactly matching Andy's "continues to work after 2 crashes."
-    /// Fixed by moving the whole thing into a detached `Task` — `playlists`
-    /// is snapshotted before the hop (this function's own read of it must
-    /// happen on the main actor), and `DatabaseManager`/GRDB's
-    /// `DatabaseQueue` are already safe to use off it (GRDB's queue
-    /// serializes access internally; nothing here is `@MainActor`-isolated
-    /// except this class itself, hopped back into only to publish the
-    /// final result). My Mixes now renders immediately with plain
-    /// placeholder tiles and the real collages fill in a moment later,
-    /// instead of the whole app being unable to show anything at all until
-    /// this scan finishes.
+    /// **Moved off the main thread at 0.25.92 (2026-09-24) to fix a real
+    /// launch crash, then moved back ON the main thread at 0.25.94
+    /// (2026-09-26) after that fix caused a real, confirmed regression —
+    /// the collage art vanished entirely (both playlists on My Mixes showed
+    /// the flat placeholder tile, screenshot-confirmed). 0.25.92's own doc
+    /// comment had already flagged the risk here: running
+    /// `ArtworkResolver.loadArtwork`'s `MPMediaQuery.songs()` scan inside a
+    /// `Task.detached` was "the one real unverified assumption" in that
+    /// fix, reasoned as "a standard, reasonable assumption" but never
+    /// actually confirmed against a real device — and real-device evidence
+    /// now says it was wrong. Researched, not re-guessed: MediaPlayer is an
+    /// older, partly Objective-C-backed framework, and several independent
+    /// developer reports describe exactly this class of behavior —
+    /// `MPMediaItemArtwork.image(at:)`/`MPMediaQuery` work reliably on the
+    /// main thread (100% of this codebase's prior MediaPlayer call sites,
+    /// across every screen, have only ever run there) but misbehave —
+    /// silently returning nothing rather than throwing or crashing — when
+    /// run on Swift concurrency's raw cooperative-pool threads via
+    /// `Task.detached`, which don't carry the main thread's run-loop
+    /// semantics some older frameworks implicitly depend on.
+    ///
+    /// **Fixed properly this time — defer past the first frame, but stay on
+    /// the main actor, rather than leaving the main actor at all.** The
+    /// original crash was never really about *which thread* ran this scan;
+    /// it was about it running *synchronously inside `init()`, before
+    /// SwiftUI's first frame could be committed*. Moving it off-thread was
+    /// the wrong tool for that problem and introduced a new one (this
+    /// regression) by taking `MPMediaQuery` somewhere it's never been
+    /// proven safe. The actual fix: stay on `@MainActor` (where every other
+    /// `MPMediaQuery` call in this app already lives, safely) but hop to a
+    /// *later* turn of the main run loop first, via a brief `Task.sleep`
+    /// inside a plain (non-detached) `Task` — this returns control to
+    /// SwiftUI immediately, letting the first frame render, and only then
+    /// runs the real scan, still on the main thread throughout. `playlists`
+    /// is still snapshotted up front (its own read must happen
+    /// synchronously, before any suspension) for the same reason as before.
     private func loadCollages() {
         guard let db else { return }
         let snapshot = playlists
-        Task.detached(priority: .userInitiated) {
+        Task { @MainActor [weak self] in
+            // Deliberately short and not meant to be precise -- just enough
+            // to let this task suspend and hand control back to the main
+            // run loop so the current render pass (and SwiftUI's first
+            // frame, on a cold launch) can actually happen before this
+            // resumes, rather than one giant synchronous block competing
+            // with it. See this function's own doc comment above.
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard self != nil else { return }
             do {
                 var trackIDsByPlaylist: [Int64: [Int64]] = [:]
                 var allTrackIDs: [Int64] = []
@@ -118,7 +131,10 @@ final class PlaylistStore: ObservableObject {
                 // One combined resolution pass across every playlist's
                 // tracks -- not one `ArtworkResolver` call per playlist --
                 // so this does a single full-library `MPMediaQuery` scan
-                // regardless of how many mixes exist.
+                // regardless of how many mixes exist. Back on the main
+                // actor now (see this function's own doc comment), same as
+                // every other `MPMediaQuery`/`ArtworkResolver` call site in
+                // this app.
                 let artworkByTrack = ArtworkResolver.loadArtwork(
                     forTrackPersistentIDs: allTrackIDs, size: CGSize(width: 110, height: 110)
                 )
@@ -128,9 +144,7 @@ final class PlaylistStore: ObservableObject {
                     let artworkInOrder = trackIDs.map { artworkByTrack[$0] }
                     result[playlistID] = ArtworkResolver.distinctAlbumImages(from: artworkInOrder, limit: 4)
                 }
-                await MainActor.run { [weak self] in
-                    self?.collagesByPlaylistID = result
-                }
+                self?.collagesByPlaylistID = result
             } catch {
                 // Best-effort, per this function's own doc comment -- leave
                 // whatever collages were already loaded (or none) rather
