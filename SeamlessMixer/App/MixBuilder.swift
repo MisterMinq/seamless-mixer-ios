@@ -507,7 +507,12 @@ final class MixBuilder: ObservableObject {
     /// `.customPlaylist` joined the same group 2026-09-07 (Batch 2) — its
     /// "persistentID" is really a `CustomPlaylist` row id bit-cast into the
     /// same field, but the round-trip through a string is identical.
-    private func selectedSource(from playlistSource: PlaylistSource) -> SelectedSource? {
+    ///
+    /// **Not `private` since 2026-09-28** — `MixBackup`'s restore-from-file
+    /// flow needs this exact reconstruction too (a backed-up mix "recipe"
+    /// is really just a portable `PlaylistSource` array), and duplicating
+    /// this switch a second time would risk the two silently drifting apart.
+    func selectedSource(from playlistSource: PlaylistSource) -> SelectedSource? {
         switch playlistSource.sourceType {
         case .genre:
             var source = SelectedSource(id: "genre:\(playlistSource.sourceValue)", type: .genre, label: playlistSource.sourceLabel)

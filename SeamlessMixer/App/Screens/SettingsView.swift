@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// First real slice of the Settings screen — deliberately deferred since
 /// Phase 3 status, per CLAUDE.md ("first-run analysis/DRM-exclusion/Settings
@@ -34,6 +35,16 @@ import SwiftUI
 /// a tester can see which fixes landed in which build without digging
 /// through chat.
 ///
+/// **Extended 2026-09-28 with a "Backup" section** — export/import for
+/// Seamless Mixes, per Andy's direct request: deleting and reinstalling the
+/// app wipes the local database entirely, and there was no way to get a
+/// hand-picked mix back except remembering exactly what was selected and
+/// rebuilding it by hand. See `MixBackup`'s own doc comment for the full
+/// design (only the "recipe" is saved, not the actual track list — the same
+/// thing "Refresh" already recomputes for an existing mix). Native
+/// "Add to Playlist" lists aren't covered, per Andy's own confirmed scope
+/// ("Just Seamless Mixes for now").
+///
 /// Everything else a real Settings screen would eventually hold
 /// (DRM-exclusion overrides) is still out of scope for this slice on
 /// purpose.
@@ -48,6 +59,22 @@ struct SettingsView: View {
     /// this exists — real duplicate library entries were clustering
     /// back-to-back in whole-library mixes.
     @State private var includeDuplicateTracks = AppSettings.includeDuplicateTracks
+
+    /// **Added 2026-09-28** — backup/restore state. `mixBuilder` is this
+    /// screen's own instance (not the app-wide `PlaybackEngine`-style
+    /// singleton) since restoring only ever happens from here, one-shot,
+    /// not something any other screen needs to observe.
+    @StateObject private var mixBuilder = MixBuilder()
+    @State private var exportedFile: ExportedFile?
+    @State private var backupError: String?
+    @State private var isRestoring = false
+    @State private var showImporter = false
+    @State private var restoreSummary: MixBackup.RestoreSummary?
+
+    private struct ExportedFile: Identifiable {
+        let url: URL
+        var id: String { url.path }
+    }
 
     private var versionString: String {
         let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -106,6 +133,35 @@ struct SettingsView: View {
                 } footer: {
                     Text("Off by default: when the same song appears more than once in your library (title, artist, and length all matching), only one copy is used per mix, so it doesn't end up playing back-to-back. Turn this on to include every copy instead.")
                 }
+
+                Section {
+                    Button {
+                        do {
+                            exportedFile = ExportedFile(url: try MixBackup.makeFile(store: store))
+                        } catch {
+                            backupError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                        }
+                    } label: {
+                        Text("Back up my mixes")
+                            .foregroundStyle(DesignTokens.Color.textPrimary)
+                    }
+
+                    Button {
+                        showImporter = true
+                    } label: {
+                        HStack {
+                            Text("Restore mixes from backup")
+                                .foregroundStyle(DesignTokens.Color.textPrimary)
+                            if isRestoring {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isRestoring)
+                } footer: {
+                    Text("Backs up which sources each Seamless Mix was built from, not the audio itself — so it survives deleting and reinstalling the app. Restoring rebuilds each mix fresh from your current library, the same way \"Refresh\" already does.")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -116,6 +172,36 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showLibraryScan) {
                 LibraryScanView(store: store)
+            }
+            .sheet(item: $exportedFile) { file in
+                ActivityShareSheet(items: [file.url])
+            }
+            .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+                switch result {
+                case .success(let url):
+                    Task {
+                        do {
+                            let recipes = try MixBackup.loadRecipes(from: url)
+                            isRestoring = true
+                            restoreSummary = await MixBackup.restore(recipes: recipes, store: store, mixBuilder: mixBuilder)
+                            isRestoring = false
+                        } catch {
+                            backupError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                        }
+                    }
+                case .failure(let error):
+                    backupError = error.localizedDescription
+                }
+            }
+            .alert("Couldn't do that", isPresented: Binding(get: { backupError != nil }, set: { if !$0 { backupError = nil } })) {
+                Button("OK") { backupError = nil }
+            } message: {
+                Text(backupError ?? "")
+            }
+            .alert("Restore complete", isPresented: Binding(get: { restoreSummary != nil }, set: { if !$0 { restoreSummary = nil } })) {
+                Button("OK") { restoreSummary = nil }
+            } message: {
+                Text(restoreSummary?.summaryText ?? "")
             }
         }
     }
