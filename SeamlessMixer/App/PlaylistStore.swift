@@ -17,13 +17,15 @@ final class PlaylistStore: ObservableObject {
     /// **Added 2026-08-20** — up to 4 distinct-album collage images per
     /// playlist (per Andy's direct request to reuse Playlist Detail's new
     /// collage as My Mixes' own row thumbnails), keyed by `Playlist.id`.
-    /// Loaded in one batch across *every* playlist, not one query per row
-    /// — `ArtworkResolver.loadArtwork` does a full-library `MPMediaQuery`
-    /// scan internally, and doing that once per row on this, the app's
-    /// root screen, would scale badly with playlist count. Missing from
-    /// this dictionary (not yet loaded, or a playlist with no resolvable
-    /// artwork) is treated as "no collage" by callers, same as an empty
-    /// array.
+    /// Resolved in one combined pass across every playlist together (see
+    /// `loadCollages`'s own doc comment — briefly split apart per-playlist
+    /// on 2026-09-28, which turned out to be a severe performance
+    /// regression, reverted the next day), but still assigned into this
+    /// dictionary per playlist rather than replaced wholesale, so one
+    /// playlist's own data failing to load can't blank out the rest.
+    /// Missing from this dictionary (not yet loaded, or a playlist with no
+    /// resolvable artwork) is treated as "no collage" by callers, same as
+    /// an empty array.
     @Published private(set) var collagesByPlaylistID: [Int64: [UIImage]] = [:]
 
     /// Internal (not private) so `MixBuilder` — the "Build Mix" pipeline —
@@ -105,6 +107,40 @@ final class PlaylistStore: ObservableObject {
     /// runs the real scan, still on the main thread throughout. `playlists`
     /// is still snapshotted up front (its own read must happen
     /// synchronously, before any suspension) for the same reason as before.
+    ///
+    /// **Rewritten a third time, 2026-09-29 — the 0.25.98 "resolve each
+    /// playlist separately" fix was itself the cause of a severe new
+    /// regression, found from real-device evidence, not guessed at.** Andy
+    /// reported artwork never appearing on a cold launch or after a
+    /// re-scan, but reliably reappearing for *every* mix at once after
+    /// some unrelated action (playing a track, running Refresh) had time
+    /// to run — a pattern pointing at *timing*, not a resolution bug: doing
+    /// something else first gave a slow background task enough real time to
+    /// finish, and only then did its results land.
+    ///
+    /// Root cause: `ArtworkResolver.loadArtwork` does a full-library
+    /// `MPMediaQuery.songs()` scan internally every time it's called.
+    /// 0.25.98's per-playlist loop called it once *per playlist* — with
+    /// several saved mixes, that's several full scans of Andy's ~2,700-song
+    /// library stacked back to back on the main thread, easily taking
+    /// minutes rather than seconds. 0.25.98's actual, real fix (isolating
+    /// one playlist's `loadPlaylistDetail` failure so it can't blank every
+    /// other playlist) never needed splitting the *artwork resolution*
+    /// itself apart too — that was an unnecessary, much costlier change
+    /// bundled in alongside it, and combining every playlist's tracks
+    /// barely adds work over resolving a single large "Whole Library" mix
+    /// anyway, since that one mix's own pool is already close to the whole
+    /// library.
+    ///
+    /// Back to one combined `ArtworkResolver` pass across every playlist's
+    /// tracks together (matching the original design, and how long this
+    /// screen's artwork took to load for the many rounds before 0.25.92's
+    /// unrelated crash fix started this whole chain) — but keeping both of
+    /// 0.25.98's genuinely correct pieces: each playlist's own
+    /// `loadPlaylistDetail` call is still isolated behind its own `try?`
+    /// (one bad playlist's data still can't blank the others), and results
+    /// still merge into `collagesByPlaylistID` per playlist rather than
+    /// being replaced wholesale.
     private func loadCollages() {
         guard let db else { return }
         let snapshot = playlists
@@ -117,38 +153,40 @@ final class PlaylistStore: ObservableObject {
             // with it. See this function's own doc comment above.
             try? await Task.sleep(nanoseconds: 100_000_000)
             guard self != nil else { return }
-            do {
-                var trackIDsByPlaylist: [Int64: [Int64]] = [:]
-                var allTrackIDs: [Int64] = []
-                for playlist in snapshot {
-                    guard let id = playlist.id else { continue }
-                    let detail = try db.loadPlaylistDetail(playlistID: id)
-                    let ids = detail.tracks.map(\.track.persistentID)
-                    trackIDsByPlaylist[id] = ids
-                    allTrackIDs.append(contentsOf: ids)
-                }
 
-                // One combined resolution pass across every playlist's
-                // tracks -- not one `ArtworkResolver` call per playlist --
-                // so this does a single full-library `MPMediaQuery` scan
-                // regardless of how many mixes exist. Back on the main
-                // actor now (see this function's own doc comment), same as
-                // every other `MPMediaQuery`/`ArtworkResolver` call site in
-                // this app.
-                let artworkByTrack = ArtworkResolver.loadArtwork(
-                    forTrackPersistentIDs: allTrackIDs, size: CGSize(width: 110, height: 110)
-                )
-
-                var result: [Int64: [UIImage]] = [:]
-                for (playlistID, trackIDs) in trackIDsByPlaylist {
-                    let artworkInOrder = trackIDs.map { artworkByTrack[$0] }
-                    result[playlistID] = ArtworkResolver.distinctAlbumImages(from: artworkInOrder, limit: 4)
+            var trackIDsByPlaylist: [Int64: [Int64]] = [:]
+            var allTrackIDs: [Int64] = []
+            var tracksByID: [Int64: Track] = [:]
+            for playlist in snapshot {
+                guard let id = playlist.id else { continue }
+                guard let detail = try? db.loadPlaylistDetail(playlistID: id) else { continue }
+                let ids = detail.tracks.map(\.track.persistentID)
+                trackIDsByPlaylist[id] = ids
+                allTrackIDs.append(contentsOf: ids)
+                for entry in detail.tracks {
+                    tracksByID[entry.track.persistentID] = entry.track
                 }
-                self?.collagesByPlaylistID = result
-            } catch {
-                // Best-effort, per this function's own doc comment -- leave
-                // whatever collages were already loaded (or none) rather
-                // than clearing them out on a transient failure.
+            }
+
+            // The one, single full-library scan every playlist below shares.
+            var artworkByTrack = ArtworkResolver.loadArtwork(
+                forTrackPersistentIDs: allTrackIDs, size: CGSize(width: 110, height: 110)
+            )
+
+            // Fills any local gap from whatever a prior library scan
+            // already found online (see `RemoteArtworkLookup`'s own doc
+            // comment) — network-free, a disk-cache read only.
+            for (trackID, track) in tracksByID where artworkByTrack[trackID] == nil {
+                if let cached = RemoteArtworkLookup.cachedImage(artist: track.artist, album: track.album) {
+                    artworkByTrack[trackID] = cached
+                }
+            }
+
+            for (playlistID, trackIDs) in trackIDsByPlaylist {
+                let artworkInOrder = trackIDs.map { artworkByTrack[$0] }
+                let images = ArtworkResolver.distinctAlbumImages(from: artworkInOrder, limit: 4)
+                guard !images.isEmpty else { continue }
+                self?.collagesByPlaylistID[playlistID] = images
             }
         }
     }

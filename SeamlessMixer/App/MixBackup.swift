@@ -67,10 +67,14 @@ enum MixBackup {
     /// not silently dropped, and doesn't stop the rest of the restore.
     struct RestoreSummary {
         var succeeded: [String]
+        var skipped: [String]
         var failed: [(name: String, reason: String)]
 
         var summaryText: String {
-            var lines = ["Restored \(succeeded.count) of \(succeeded.count + failed.count) mixes."]
+            var lines = ["Restored \(succeeded.count) of \(succeeded.count + skipped.count + failed.count) mixes."]
+            if !skipped.isEmpty {
+                lines.append("\(skipped.count) already existed and were left as-is: \(skipped.joined(separator: ", "))")
+            }
             for failure in failed {
                 lines.append("• \(failure.name): \(failure.reason)")
             }
@@ -153,11 +157,14 @@ enum MixBackup {
     /// resolve to, rather than silently guessing and trimming to some
     /// invented length, is the honest choice here.
     ///
-    /// **Restoring always creates new mixes, never replaces/merges with
-    /// existing ones** — importing the same backup twice produces two
-    /// copies, the same way tapping Build Mix twice with identical sources
-    /// would. Acceptable for the primary use case (restoring into an empty,
-    /// freshly-reinstalled library), not de-duplicated in this first pass.
+    /// **Skips a recipe outright if a mix with that exact name already
+    /// exists** (added 2026-09-29, after a real accidental double-restore
+    /// produced two full copies of every mix — see the loop's own comment
+    /// below) — restoring never replaces or updates an existing mix, only
+    /// fills in ones that are genuinely missing. A name match is an
+    /// imperfect signal (two truly different recipes could coincidentally
+    /// share a name), but simple and predictable, and directly closes the
+    /// gap that mattered in practice.
     ///
     /// After each successful build, renames the result to the recipe's
     /// original `name` — `MixBuilder.persist` would otherwise regenerate an
@@ -166,9 +173,26 @@ enum MixBackup {
     @MainActor
     static func restore(recipes: [MixRecipe], store: PlaylistStore, mixBuilder: MixBuilder) async -> RestoreSummary {
         var succeeded: [String] = []
+        var skipped: [String] = []
         var failed: [(name: String, reason: String)] = []
 
         for recipe in recipes {
+            // **Added 2026-09-29** — real, direct duplicate protection, not
+            // just the "acceptable trade-off" this function's own doc
+            // comment used to describe. A missing progress indicator on
+            // the Restore button (fixed separately in `SettingsView`) led
+            // to a real accidental double-restore, producing two full
+            // copies of every mix — this closes the gap for real, not just
+            // the UI trigger that made it easy to hit. Matches by exact
+            // name against whatever's already in `store.playlists`, which
+            // `MixBuilder.build` keeps current via its own `store.refresh()`
+            // call after each successful build in this same loop, so this
+            // also catches duplicate names *within* one restore pass.
+            if store.playlists.contains(where: { $0.name == recipe.name }) {
+                skipped.append(recipe.name)
+                continue
+            }
+
             let playlistSources = recipe.sources.map { s in
                 PlaylistSource(
                     playlistID: 0, sourceType: SourceType(rawValue: s.sourceType) ?? .genre,
@@ -199,7 +223,7 @@ enum MixBackup {
             }
         }
 
-        return RestoreSummary(succeeded: succeeded, failed: failed)
+        return RestoreSummary(succeeded: succeeded, skipped: skipped, failed: failed)
     }
 
     private static let fileNameDateFormatter: DateFormatter = {

@@ -147,10 +147,21 @@ struct SettingsView: View {
                     }
 
                     Button {
+                        // **Set the instant this is tapped, not partway
+                        // through the async flow below — 2026-09-29 fix.**
+                        // Andy tapped this a second time after seeing no
+                        // visible progress indicator, before the file
+                        // picker had even been dismissed, producing two
+                        // full copies of every restored mix. The button's
+                        // own `.disabled` now covers the entire window from
+                        // this tap through the restore actually finishing,
+                        // closing that gap outright rather than relying on
+                        // the spinner alone to be noticed in time.
+                        isRestoring = true
                         showImporter = true
                     } label: {
                         HStack {
-                            Text("Restore mixes from backup")
+                            Text(isRestoring ? "Restoring…" : "Restore mixes from backup")
                                 .foregroundStyle(DesignTokens.Color.textPrimary)
                             if isRestoring {
                                 Spacer()
@@ -177,20 +188,30 @@ struct SettingsView: View {
                 ActivityShareSheet(items: [file.url])
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
+                // `isRestoring` was already set `true` the instant the
+                // button was tapped (see that Button's own comment) — every
+                // path out of this closure, including a cancelled picker,
+                // must reset it back to `false`, or the button stays
+                // permanently disabled until the app relaunches.
                 switch result {
                 case .success(let url):
                     Task {
                         do {
                             let recipes = try MixBackup.loadRecipes(from: url)
-                            isRestoring = true
                             restoreSummary = await MixBackup.restore(recipes: recipes, store: store, mixBuilder: mixBuilder)
-                            isRestoring = false
                         } catch {
                             backupError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         }
+                        isRestoring = false
                     }
                 case .failure(let error):
-                    backupError = error.localizedDescription
+                    // Also reached if the user just cancels the picker
+                    // without choosing a file, not only on a real error.
+                    let cancelled = (error as NSError).code == NSUserCancelledError
+                    if !cancelled {
+                        backupError = error.localizedDescription
+                    }
+                    isRestoring = false
                 }
             }
             .alert("Couldn't do that", isPresented: Binding(get: { backupError != nil }, set: { if !$0 { backupError = nil } })) {
