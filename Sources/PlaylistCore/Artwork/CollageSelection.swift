@@ -54,11 +54,21 @@ public enum CollageSelection {
     /// never needs to import `UIKit`/`MediaPlayer` at all; the app target
     /// supplies the real `(Int64) -> UIImage?` resolver, tests supply a
     /// cheap stand-in.
-    public static func select<Image>(
-        from candidates: [CollageCandidate],
+    ///
+    /// Generic over `Candidates: Sequence` rather than concretely
+    /// `[CollageCandidate]` — added 2026-10-02, alongside a real, confirmed
+    /// regression fix in `ArtworkResolver.loadCollage` (its own doc comment
+    /// has the full story): a caller building its candidates via
+    /// `.lazy.compactMap` needs that laziness preserved all the way through
+    /// this function's own early-exit loop, not force-materialized into an
+    /// array the moment it's passed in here. A plain `[CollageCandidate]`
+    /// (as every existing test already passes) still works unchanged, since
+    /// `Array` conforms to `Sequence`.
+    public static func select<Candidates: Sequence, Image>(
+        from candidates: Candidates,
         limit: Int,
         resolve: (Int64) -> Image?
-    ) -> [Image] {
+    ) -> [Image] where Candidates.Element == CollageCandidate {
         guard limit > 0 else { return [] }
         var images: [Image] = []
         var seenAlbums = Set<UInt64>()

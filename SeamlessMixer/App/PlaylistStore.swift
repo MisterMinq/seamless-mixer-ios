@@ -167,6 +167,32 @@ final class PlaylistStore: ObservableObject {
     /// always the per-album image *decode*, not the `MPMediaQuery` scan
     /// itself, and that decode was being redone from scratch on every single
     /// call, session after session, with nothing ever reused.
+    ///
+    /// **Rewritten again 2026-10-02 — the batch `ArtworkResolver.loadCollages`
+    /// call this used to make was itself a real, structural bug: a plain
+    /// synchronous function, no yield point anywhere in its own loop over
+    /// playlists, so once this `Task` resumed and called it, EVERY
+    /// playlist's resolution ran as one uninterrupted block before anything
+    /// got published to `collagesByPlaylistID` at all.** Surfaced by Andy's
+    /// own precise real-device report: artwork never appeared after a quick
+    /// "Playlist Detail, straight back" round-trip, but reliably appeared
+    /// for every playlist at once after the longer "Playlist Detail -> Play
+    /// -> Now Playing -> back" round-trip — pointing at wall-clock time, not
+    /// a resolution bug. A short round-trip simply didn't give that one
+    /// giant block long enough to finish; a longer one incidentally did.
+    ///
+    /// Now orchestrates per-playlist resolution itself: builds the shared
+    /// library lookup once (`ArtworkResolver.allSongsByPersistentID()`, the
+    /// same "one `MPMediaQuery` scan, not N" principle as before), then
+    /// calls `ArtworkResolver.loadCollage(orderedTrackIDs:itemsByID:)` one
+    /// playlist at a time, publishing each playlist's result into
+    /// `collagesByPlaylistID` the moment *it's* ready (not after the whole
+    /// batch), and `await Task.yield()`-ing after each one so a long batch
+    /// (many playlists, many never-before-cached albums) can never
+    /// monopolize the main actor as one indivisible chunk the way the old
+    /// batch call could — real UI work (navigation, rendering) gets a fair
+    /// chance to interleave between playlists instead of queuing up behind
+    /// the whole thing.
     private func loadCollages() {
         guard let db else { return }
         let snapshot = playlists
@@ -183,35 +209,26 @@ final class PlaylistStore: ObservableObject {
 
             defer { self?.isLoadingCollages = false }
 
-            // **Rebuilt 2026-10-01 — the `collagePrefixCount` cap added here
-            // earlier the same day was a real, confirmed mistake (see
-            // `ArtworkResolver.loadCollages`'s own doc comment for the full
-            // story: Andy's own direct question, "why does Playlist Detail
-            // have artwork and My Mixes doesn't, when it's clearly there,"
-            // is what surfaced it). That cap tried to bound cost by
-            // shrinking the ID set handed to `loadArtwork` — but
-            // `loadArtwork` already does exactly one `MPMediaQuery` scan
-            // per *call* regardless of set size, so the cap bought nothing
-            // and just excluded real, resolvable tracks.
-            //
-            // The actual, avoidable cost was never the scan — it's
-            // decoding every matched track's artwork before throwing away
-            // all but 4 per playlist. This now calls the right-sized tool
-            // for the job: `ArtworkResolver.loadCollages`, which shares one
-            // scan across every playlist (same "one call, not N" principle
-            // 0.26.2 already established) but stops resolving a given
-            // playlist's own tracks the moment it has 4 distinct albums,
-            // so a hundreds-of-songs mix costs the same as a 4-song one.
-            var trackIDsByPlaylist: [Int64: [Int64]] = [:]
+            var trackIDsByPlaylist: [(id: Int64, trackIDs: [Int64])] = []
             for playlist in snapshot {
                 guard let id = playlist.id else { continue }
                 guard let detail = try? db.loadPlaylistDetail(playlistID: id) else { continue }
-                trackIDsByPlaylist[id] = detail.tracks.map(\.track.persistentID)
+                trackIDsByPlaylist.append((id: id, trackIDs: detail.tracks.map(\.track.persistentID)))
             }
 
-            let collages = ArtworkResolver.loadCollages(orderedTrackIDsByPlaylist: trackIDsByPlaylist, limit: 4)
-            for (playlistID, images) in collages {
-                self?.collagesByPlaylistID[playlistID] = images
+            let itemsByID = ArtworkResolver.allSongsByPersistentID()
+
+            for entry in trackIDsByPlaylist {
+                let images = ArtworkResolver.loadCollage(orderedTrackIDs: entry.trackIDs, itemsByID: itemsByID, limit: 4)
+                if !images.isEmpty {
+                    self?.collagesByPlaylistID[entry.id] = images
+                }
+                // See this function's own doc comment above -- this is the
+                // real fix: without a yield here, resolving every playlist
+                // would run as one uninterrupted block, exactly the bug
+                // Andy's round-trip-timing report surfaced.
+                await Task.yield()
+                guard self != nil else { return }
             }
         }
     }
