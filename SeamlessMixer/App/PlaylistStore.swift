@@ -183,55 +183,34 @@ final class PlaylistStore: ObservableObject {
 
             defer { self?.isLoadingCollages = false }
 
-            // **Capped to each playlist's first `collagePrefixCount` tracks,
-            // 2026-09-29 — a real, previously-missed structural bug, not
-            // another scheduling/caching tweak.** A collage only ever shows
-            // `distinctAlbumImages(..., limit: 4)` images (below), but this
-            // loop used to hand *every* track in *every* playlist into one
-            // shared resolution pass regardless — for a small mix that's
-            // harmless, but for a "Whole Library" mix (or any large one),
-            // that's potentially thousands of tracks resolved just to use 4
-            // of them, and since every playlist's collage shares this one
-            // combined pass, that single oversized mix could dominate the
-            // whole thing's runtime even though its own collage needs the
-            // same 4 images as everyone else's. 16 is a deliberate safety
-            // margin over 4 — enough slack for a few tracks sharing an
-            // album, missing artwork, or a track that no longer resolves,
-            // while still keeping the resolved set bounded by playlist
-            // *count*, not total library size.
-            let collagePrefixCount = 16
+            // **Rebuilt 2026-10-01 — the `collagePrefixCount` cap added here
+            // earlier the same day was a real, confirmed mistake (see
+            // `ArtworkResolver.loadCollages`'s own doc comment for the full
+            // story: Andy's own direct question, "why does Playlist Detail
+            // have artwork and My Mixes doesn't, when it's clearly there,"
+            // is what surfaced it). That cap tried to bound cost by
+            // shrinking the ID set handed to `loadArtwork` — but
+            // `loadArtwork` already does exactly one `MPMediaQuery` scan
+            // per *call* regardless of set size, so the cap bought nothing
+            // and just excluded real, resolvable tracks.
+            //
+            // The actual, avoidable cost was never the scan — it's
+            // decoding every matched track's artwork before throwing away
+            // all but 4 per playlist. This now calls the right-sized tool
+            // for the job: `ArtworkResolver.loadCollages`, which shares one
+            // scan across every playlist (same "one call, not N" principle
+            // 0.26.2 already established) but stops resolving a given
+            // playlist's own tracks the moment it has 4 distinct albums,
+            // so a hundreds-of-songs mix costs the same as a 4-song one.
             var trackIDsByPlaylist: [Int64: [Int64]] = [:]
-            var allTrackIDs: [Int64] = []
-            var tracksByID: [Int64: Track] = [:]
             for playlist in snapshot {
                 guard let id = playlist.id else { continue }
                 guard let detail = try? db.loadPlaylistDetail(playlistID: id) else { continue }
-                let ids = detail.tracks.prefix(collagePrefixCount).map(\.track.persistentID)
-                trackIDsByPlaylist[id] = ids
-                allTrackIDs.append(contentsOf: ids)
-                for entry in detail.tracks.prefix(collagePrefixCount) {
-                    tracksByID[entry.track.persistentID] = entry.track
-                }
+                trackIDsByPlaylist[id] = detail.tracks.map(\.track.persistentID)
             }
 
-            // The one, single full-library scan every playlist below shares.
-            var artworkByTrack = ArtworkResolver.loadArtwork(
-                forTrackPersistentIDs: allTrackIDs, size: CGSize(width: 110, height: 110)
-            )
-
-            // Fills any local gap from whatever a prior library scan
-            // already found online (see `RemoteArtworkLookup`'s own doc
-            // comment) — network-free, a disk-cache read only.
-            for (trackID, track) in tracksByID where artworkByTrack[trackID] == nil {
-                if let cached = RemoteArtworkLookup.cachedImage(artist: track.artist, album: track.album) {
-                    artworkByTrack[trackID] = cached
-                }
-            }
-
-            for (playlistID, trackIDs) in trackIDsByPlaylist {
-                let artworkInOrder = trackIDs.map { artworkByTrack[$0] }
-                let images = ArtworkResolver.distinctAlbumImages(from: artworkInOrder, limit: 4)
-                guard !images.isEmpty else { continue }
+            let collages = ArtworkResolver.loadCollages(orderedTrackIDsByPlaylist: trackIDsByPlaylist, limit: 4)
+            for (playlistID, images) in collages {
                 self?.collagesByPlaylistID[playlistID] = images
             }
         }

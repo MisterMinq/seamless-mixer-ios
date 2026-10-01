@@ -1,4 +1,5 @@
 import MediaPlayer
+import PlaylistCore
 import UIKit
 
 /// Resolves real album artwork for one or more tracks by their own
@@ -94,36 +95,104 @@ enum ArtworkResolver {
         try? data.write(to: diskCacheURL(albumID: albumID))
     }
 
+    /// The cache-first resolve for one item (memory → disk → fresh decode,
+    /// caching a fresh decode both ways) — factored out 2026-10-01 so
+    /// `loadArtwork` and the new `loadCollages` below share one definition
+    /// of "how to get this item's picture" instead of two copies that could
+    /// silently drift apart.
+    private static func resolvedImage(for item: MPMediaItem, albumID: MPMediaEntityPersistentID) -> UIImage? {
+        if albumID != 0, let cached = albumArtworkCache[albumID] { return cached }
+        if albumID != 0, let onDisk = loadFromDisk(albumID: albumID) {
+            albumArtworkCache[albumID] = onDisk
+            return onDisk
+        }
+        if let rendered = item.artwork?.image(at: canonicalSize) {
+            if albumID != 0 {
+                albumArtworkCache[albumID] = rendered
+                saveToDisk(albumID: albumID, image: rendered)
+            }
+            return rendered
+        }
+        return nil
+    }
+
     /// Resolves artwork for every track ID given, in one full-library pass.
     /// A track no longer in the library (deleted since this playlist was
-    /// built) is simply absent from the result, not an error.
+    /// built) is simply absent from the result, not an error. For a full
+    /// per-track need (every row needs its own thumbnail, e.g. Playlist
+    /// Detail) — if all you need is a handful of distinct-album collage
+    /// images, use `loadCollages` instead, which doesn't pay to resolve
+    /// tracks it will never show.
     static func loadArtwork(forTrackPersistentIDs trackIDs: [Int64], size: CGSize) -> [Int64: UIImage] {
         guard !trackIDs.isEmpty else { return [:] }
         let wanted = Set(trackIDs.map { UInt64(bitPattern: $0) })
         let allSongs = MPMediaQuery.songs().items ?? []
 
         var result: [Int64: UIImage] = [:]
-
         for item in allSongs where wanted.contains(item.persistentID) {
-            let albumID = item.albumPersistentID
-            let image: UIImage?
-            if albumID != 0, let cached = albumArtworkCache[albumID] {
-                image = cached
-            } else if albumID != 0, let onDisk = loadFromDisk(albumID: albumID) {
-                albumArtworkCache[albumID] = onDisk
-                image = onDisk
-            } else if let rendered = item.artwork?.image(at: canonicalSize) {
-                if albumID != 0 {
-                    albumArtworkCache[albumID] = rendered
-                    saveToDisk(albumID: albumID, image: rendered)
-                }
-                image = rendered
-            } else {
-                image = nil
-            }
-            if let image {
+            if let image = resolvedImage(for: item, albumID: item.albumPersistentID) {
                 result[Int64(bitPattern: item.persistentID)] = image
             }
+        }
+        return result
+    }
+
+    /// Up to `limit` distinct-album collage images per playlist, in ONE
+    /// shared `MPMediaQuery` scan across every playlist given — but, unlike
+    /// `loadArtwork`, stops resolving a given playlist's own tracks the
+    /// moment it already has `limit` distinct albums, instead of resolving
+    /// every track first and throwing away all but a handful afterward.
+    ///
+    /// Added 2026-10-01, replacing the `collagePrefixCount` truncation this
+    /// same day's earlier fix tried and got wrong (see `PlaylistStore
+    /// .loadCollages`'s own doc comment for the full story — Andy's own
+    /// direct question, "why does Playlist Detail have artwork and My
+    /// Mixes doesn't, when it's clearly there," is what surfaced this).
+    /// My Mixes never needs more than this — it only ever shows a 4-image
+    /// collage, never a per-track thumbnail — so resolving, and *decoding*,
+    /// every track of a hundreds-of-songs playlist just to keep 4 was real,
+    /// avoidable waste on a cold run. Playlist Detail genuinely needs every
+    /// track resolved for its own row thumbnails regardless, so it keeps
+    /// calling `loadArtwork` directly and its own collage stays a free
+    /// by-product of that already-necessary work (see
+    /// `PlaylistDetailViewModel.collageImages`) — this isn't a second,
+    /// competing mechanism for the same picture, it's the right-sized tool
+    /// for a caller that only needs the summary, not the detail.
+    ///
+    /// `orderedTrackIDsByPlaylist`: each playlist's own track IDs in
+    /// playlist position order — the "first N distinct albums" decision is
+    /// made in that order, the same semantics `distinctAlbumImages` already
+    /// uses. Falls back to a cached (network-free) online lookup for a
+    /// track with no local artwork, same as every other artwork call site
+    /// in this app.
+    static func loadCollages(orderedTrackIDsByPlaylist: [Int64: [Int64]], limit: Int = 4) -> [Int64: [UIImage]] {
+        guard !orderedTrackIDsByPlaylist.isEmpty else { return [:] }
+        let allSongs = MPMediaQuery.songs().items ?? []
+        var itemsByID: [UInt64: MPMediaItem] = [:]
+        itemsByID.reserveCapacity(allSongs.count)
+        for item in allSongs { itemsByID[item.persistentID] = item }
+
+        // The actual dedup/early-exit *decision* lives in `PlaylistCore`'s
+        // `CollageSelection` now (extracted 2026-10-01, see its own doc
+        // comment) — real, unit-tested coverage for the part of this that
+        // doesn't need `MediaPlayer`/`UIKit` to reason about. This function
+        // stays the thin, untestable shell: build the candidate list, and
+        // supply the real (expensive) per-track resolve.
+        var result: [Int64: [UIImage]] = [:]
+        for (playlistID, trackIDs) in orderedTrackIDsByPlaylist {
+            let candidates = trackIDs.compactMap { trackID -> CollageCandidate? in
+                guard let item = itemsByID[UInt64(bitPattern: trackID)] else { return nil }
+                return CollageCandidate(trackID: trackID, albumID: item.albumPersistentID)
+            }
+            let images = CollageSelection.select(from: candidates, limit: limit) { trackID in
+                guard let item = itemsByID[UInt64(bitPattern: trackID)] else { return nil }
+                let albumID = item.albumPersistentID
+                if let image = resolvedImage(for: item, albumID: albumID) {
+                    return image
+                }
+                return RemoteArtworkLookup.cachedImage(artist: item.artist ?? "", album: item.albumTitle ?? "")
+            }
+            if !images.isEmpty { result[playlistID] = images }
         }
         return result
     }
