@@ -28,6 +28,16 @@ final class PlaylistStore: ObservableObject {
     /// an empty array.
     @Published private(set) var collagesByPlaylistID: [Int64: [UIImage]] = [:]
 
+    /// **Added 2026-09-29** — real, honest loading-state, replacing what
+    /// used to be silent ambiguity: a blank placeholder tile always looked
+    /// the same whether the scan was still genuinely running or had already
+    /// finished and simply found nothing. `MyMixesView` shows a small
+    /// "Loading artwork…" indicator while this is true, which also doubles
+    /// as a diagnostic — if artwork is still missing once this flips back to
+    /// `false`, that's a different bug (resolution vs. rendering) than if
+    /// it's still `true` after several minutes (genuine slowness).
+    @Published private(set) var isLoadingCollages = false
+
     /// Internal (not private) so `MixBuilder` — the "Build Mix" pipeline —
     /// can read/write tracks and playlists directly rather than every
     /// operation needing its own method here. Still not exposed outside the
@@ -141,10 +151,27 @@ final class PlaylistStore: ObservableObject {
     /// (one bad playlist's data still can't blank the others), and results
     /// still merge into `collagesByPlaylistID` per playlist rather than
     /// being replaced wholesale.
+    ///
+    /// **Revised again 2026-09-29 (Testing 78) — still reported missing for
+    /// minutes even with the combined pass, two real fixes, not another
+    /// guess at scheduling.** (1) `Task(priority: .userInitiated)`, not a
+    /// plain unprioritized `Task {}` — an unstructured `Task` created here,
+    /// with no natural parent task to inherit priority from, defaults to
+    /// medium; on a real device, that's genuinely low enough to keep losing
+    /// the scheduler's attention to whatever higher-priority, user-driven
+    /// work is running while Andy is actively navigating/testing, which
+    /// would explain artwork only ever finishing once things settled (e.g.
+    /// once he stopped interacting to start playback) rather than shortly
+    /// after launch. (2) `ArtworkResolver` itself now keeps a cross-call
+    /// cache (see its own doc comment) — the real, dominant cost here was
+    /// always the per-album image *decode*, not the `MPMediaQuery` scan
+    /// itself, and that decode was being redone from scratch on every single
+    /// call, session after session, with nothing ever reused.
     private func loadCollages() {
         guard let db else { return }
         let snapshot = playlists
-        Task { @MainActor [weak self] in
+        isLoadingCollages = true
+        Task(priority: .userInitiated) { @MainActor [weak self] in
             // Deliberately short and not meant to be precise -- just enough
             // to let this task suspend and hand control back to the main
             // run loop so the current render pass (and SwiftUI's first
@@ -154,16 +181,35 @@ final class PlaylistStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 100_000_000)
             guard self != nil else { return }
 
+            defer { self?.isLoadingCollages = false }
+
+            // **Capped to each playlist's first `collagePrefixCount` tracks,
+            // 2026-09-29 — a real, previously-missed structural bug, not
+            // another scheduling/caching tweak.** A collage only ever shows
+            // `distinctAlbumImages(..., limit: 4)` images (below), but this
+            // loop used to hand *every* track in *every* playlist into one
+            // shared resolution pass regardless — for a small mix that's
+            // harmless, but for a "Whole Library" mix (or any large one),
+            // that's potentially thousands of tracks resolved just to use 4
+            // of them, and since every playlist's collage shares this one
+            // combined pass, that single oversized mix could dominate the
+            // whole thing's runtime even though its own collage needs the
+            // same 4 images as everyone else's. 16 is a deliberate safety
+            // margin over 4 — enough slack for a few tracks sharing an
+            // album, missing artwork, or a track that no longer resolves,
+            // while still keeping the resolved set bounded by playlist
+            // *count*, not total library size.
+            let collagePrefixCount = 16
             var trackIDsByPlaylist: [Int64: [Int64]] = [:]
             var allTrackIDs: [Int64] = []
             var tracksByID: [Int64: Track] = [:]
             for playlist in snapshot {
                 guard let id = playlist.id else { continue }
                 guard let detail = try? db.loadPlaylistDetail(playlistID: id) else { continue }
-                let ids = detail.tracks.map(\.track.persistentID)
+                let ids = detail.tracks.prefix(collagePrefixCount).map(\.track.persistentID)
                 trackIDsByPlaylist[id] = ids
                 allTrackIDs.append(contentsOf: ids)
-                for entry in detail.tracks {
+                for entry in detail.tracks.prefix(collagePrefixCount) {
                     tracksByID[entry.track.persistentID] = entry.track
                 }
             }
