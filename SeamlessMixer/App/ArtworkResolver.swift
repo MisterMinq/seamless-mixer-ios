@@ -184,7 +184,7 @@ enum ArtworkResolver {
                 guard let item = itemsByID[UInt64(bitPattern: trackID)] else { return nil }
                 return CollageCandidate(trackID: trackID, albumID: item.albumPersistentID)
             }
-            let images = CollageSelection.select(from: candidates, limit: limit) { trackID in
+            let images = CollageSelection.select(from: candidates, limit: limit) { (trackID: Int64) -> UIImage? in
                 guard let item = itemsByID[UInt64(bitPattern: trackID)] else { return nil }
                 let albumID = item.albumPersistentID
                 if let image = resolvedImage(for: item, albumID: albumID) {
