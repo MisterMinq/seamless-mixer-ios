@@ -273,6 +273,23 @@ struct MyMixesView: View {
                 ForEach(store.playlists) { playlist in
                     MixRow(playlist: playlist, store: store)
                 }
+            } footer: {
+                // **Added 2026-09-29** — real, honest loading state instead
+                // of silent ambiguity, per `PlaylistStore.isLoadingCollages`'s
+                // own doc comment: a blank collage tile always looked the
+                // same whether artwork resolution was still genuinely
+                // running or had already finished. This also doubles as a
+                // diagnostic for whether a future report of missing artwork
+                // is genuine slowness (this still shows) or something else
+                // (it's gone, but tiles are still blank).
+                if store.isLoadingCollages {
+                    HStack(spacing: DesignTokens.Spacing.xs) {
+                        ProgressView()
+                        Text("Loading artwork…")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                }
             }
         }
         .listStyle(.plain)
@@ -381,7 +398,21 @@ struct MyMixesView: View {
 /// is the real, actionable part of the ask regardless.
 private struct MixRow: View {
     let playlist: Playlist
-    let store: PlaylistStore
+    /// **`@ObservedObject`, not a plain `let` — fixed 2026-10-04, the real
+    /// root cause of the collage-artwork bug that 0.26.2–0.26.18 chased
+    /// without success.** This row reads `store.collagesByPlaylistID` in
+    /// `collageImages` below, but as a plain `let` SwiftUI had no idea the
+    /// row depended on the store at all. When `loadCollages()` published
+    /// artwork a moment after first render, `MyMixesView` re-evaluated and
+    /// rebuilt `MixRow(playlist:store:)` with the *same* `playlist` value and
+    /// the *same* `store` reference — SwiftUI diffed the unchanged inputs
+    /// and skipped this row's `body`, so the loaded artwork was never read.
+    /// The row only re-rendered when one of its own `@State` values changed,
+    /// which is exactly what starting playback does (`engine.$isPlaying`
+    /// below) — hence "artwork appears for every mix at once after
+    /// Play -> Now Playing -> back," and never after a plain Playlist
+    /// Detail round trip. The data was loading correctly the whole time.
+    @ObservedObject var store: PlaylistStore
 
     /// **Non-subscribing, 2026-09-11** — see `EnvironmentValues
     /// .playbackEngineRef`. This row was re-rendering ~10x/second during
@@ -515,7 +546,9 @@ private struct MixRow: View {
 
 private struct FavoriteCard: View {
     let playlist: Playlist
-    let store: PlaylistStore
+    /// `@ObservedObject` for the same reason as `MixRow.store` above —
+    /// reads `collagesByPlaylistID`, so it must actually observe the store.
+    @ObservedObject var store: PlaylistStore
 
     /// Same collage lookup `MixRow` uses -- see `PlaylistStore
     /// .collagesByPlaylistID`'s own doc comment. No now-playing overlay
