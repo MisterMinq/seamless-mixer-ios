@@ -14,8 +14,10 @@ import UIKit
 /// `artwork` added 2026-08-18 — real per-track thumbnails, per Andy's
 /// confirmed request (see `ArtworkResolver`'s own doc comment for how
 /// this is resolved reliably and cheaply). `nil` when the track has no
-/// artwork or isn't found in the library any more; the view falls back to
-/// a flat placeholder tile in that case, same as `SongPickerView`.
+/// local artwork and no cached online fallback either (see
+/// `RemoteArtworkLookup.cachedImage`, checked in `load()` below) or isn't
+/// found in the library any more; the view falls back to a flat
+/// placeholder tile in that case, same as `SongPickerView`.
 struct PlaylistDetailRow: Identifiable {
     let id: Int64
     let position: Int
@@ -76,7 +78,13 @@ final class PlaylistDetailViewModel: ObservableObject {
             )
 
             rows = detail.tracks.map { entry in
-                PlaylistDetailRow(
+                // Falls back to whatever a prior library scan already found
+                // online, if the track has no artwork embedded on-device --
+                // a network-free cache read, never a live lookup. See
+                // `RemoteArtworkLookup`'s own doc comment.
+                let artwork = artworkByTrack[entry.track.persistentID]
+                    ?? RemoteArtworkLookup.cachedImage(artist: entry.track.artist, album: entry.track.album)
+                return PlaylistDetailRow(
                     id: entry.id,
                     position: entry.position,
                     title: entry.track.title,
@@ -86,7 +94,7 @@ final class PlaylistDetailViewModel: ObservableObject {
                     crossfadeStartOffsetSec: entry.crossfadeStartOffsetSec,
                     crossfadeDurationSec: entry.crossfadeDurationSec,
                     playableStartSec: entry.track.playableStartSec ?? 0,
-                    artwork: artworkByTrack[entry.track.persistentID],
+                    artwork: artwork,
                     bpm: entry.track.bpm,
                     isFavorite: entry.track.isFavorite
                 )

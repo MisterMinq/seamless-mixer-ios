@@ -324,6 +324,14 @@ final class MixBuilder: ObservableObject {
 
         do {
             try await performRefresh(playlist: playlist, store: store)
+            // Push A (2026-10-20): a Refresh re-picks the mix's songs, so its
+            // saved collage is redrawn now (the one moment a redraw is
+            // wanted — see `MixCollageStore`). A brand-new mix in `build`
+            // above needs nothing extra: it has no saved collage yet, so
+            // `store.refresh()` draws and saves it.
+            if let playlistID = playlist.id {
+                store.invalidateCollage(playlistID: playlistID)
+            }
             store.refresh()
             return true
         } catch {

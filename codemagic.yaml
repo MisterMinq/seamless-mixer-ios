@@ -346,7 +346,16 @@ workflows:
         # required once real people outside the App Store Connect team are
         # meant to install a build, unlike internal delivery (see the
         # removed-`beta_groups` history below), which never needed it.
-        submit_to_testflight: true
+        #
+        # **Set back to `false`, 2026-10-04** — build 86 was added to the
+        # external group by hand and approved by Apple (public link to be
+        # shared in person). `false` means a normal run uploads the build and
+        # stops: internal delivery to Andy is unchanged (no review needed),
+        # but nothing new is submitted to external Beta App Review. To get a
+        # newer build to external testers, add it to the "SeamlessDJ External
+        # Testers" group by hand in App Store Connect, as was done for 86 —
+        # each new external build needs its own Apple review.
+        submit_to_testflight: false
         # **Re-added 2026-09-26, this time pointing at a real *external*
         # group, not the internal one that failed every build from
         # 2026-08-14 to 2026-09-07 (see that history preserved below —
@@ -365,8 +374,14 @@ workflows:
         # below — if Andy creates it under a different name, update this
         # line to match exactly, or the same class of "group not found"
         # failure repeats.
-        beta_groups:
-          - SeamlessDJ External Testers
+        # **Commented out 2026-10-04**, alongside `submit_to_testflight:
+        # false` above: the group now exists, but left active this would add
+        # every new build to the external group without submitting it for
+        # review, an untested state. External builds are added by hand
+        # instead. Restore these two lines (and set submit_to_testflight back
+        # to true) if automatic external delivery is wanted again.
+        # beta_groups:
+        #   - SeamlessDJ External Testers
         # **History, preserved 2026-09-07 → 2026-09-26**: this field
         # previously held `[SeamlessDJ Testers]` (added 2026-08-14) and
         # failed on every single build, confirmed directly from a real

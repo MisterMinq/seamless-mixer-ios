@@ -38,6 +38,19 @@ final class PlaylistStore: ObservableObject {
     /// it's still `true` after several minutes (genuine slowness).
     @Published private(set) var isLoadingCollages = false
 
+    /// **Added 2026-10-20 (Push A).** IDs of playlists whose collage state is
+    /// already known — either read from `MixCollageStore` (saved earlier,
+    /// including the saved "no artwork at all" marker) or freshly drawn this
+    /// session. Only playlists NOT in this set ever trigger the expensive
+    /// library scan in `loadCollages()`, which is what makes a normal launch
+    /// scan-free. See `MixCollageStore`'s doc comment for the full design.
+    private var resolvedCollageIDs: Set<Int64> = []
+
+    /// Set when `refresh()` is called while a collage draw is still running
+    /// (e.g. a mix is built mid-draw), so the new mix gets drawn right after
+    /// the current pass instead of being skipped or drawn concurrently.
+    private var collageRedrawRequested = false
+
     /// Internal (not private) so `MixBuilder` — the "Build Mix" pipeline —
     /// can read/write tracks and playlists directly rather than every
     /// operation needing its own method here. Still not exposed outside the
@@ -70,7 +83,36 @@ final class PlaylistStore: ObservableObject {
         } catch {
             loadError = "Couldn't load playlists: \(error.localizedDescription)"
         }
+        loadStoredCollages()
         loadCollages()
+    }
+
+    /// **Added 2026-10-20 (Push A).** Reads every not-yet-resolved mix's
+    /// saved collage from `MixCollageStore` — plain disk reads of a few small
+    /// JPEGs, synchronous and safe before the first frame (no `MediaPlayer`
+    /// involved), so covers are on screen from the very first render.
+    private func loadStoredCollages() {
+        for playlist in playlists {
+            guard let id = playlist.id, !resolvedCollageIDs.contains(id) else { continue }
+            guard let stored = MixCollageStore.load(playlistID: id) else { continue }
+            resolvedCollageIDs.insert(id)
+            if !stored.isEmpty { collagesByPlaylistID[id] = stored }
+        }
+    }
+
+    /// Forgets one mix's saved collage so the next `refresh()` redraws it
+    /// from the mix's current songs. Called after Build Mix's Refresh. Keeps
+    /// the old images on screen until the new ones are ready.
+    func invalidateCollage(playlistID: Int64) {
+        MixCollageStore.delete(playlistID: playlistID)
+        resolvedCollageIDs.remove(playlistID)
+    }
+
+    /// Same, for every mix — used after a library re-scan that found new
+    /// covers, so mixes redraw once with them.
+    func invalidateAllCollages() {
+        MixCollageStore.deleteAll()
+        resolvedCollageIDs.removeAll()
     }
 
     /// See `collagesByPlaylistID`'s own doc comment for why this batches
@@ -193,9 +235,27 @@ final class PlaylistStore: ObservableObject {
     /// batch call could — real UI work (navigation, rendering) gets a fair
     /// chance to interleave between playlists instead of queuing up behind
     /// the whole thing.
+    ///
+    /// **Rewritten 2026-10-20 (Push A) — draw once, then just read.** This now
+    /// only ever draws playlists that have NO saved collage yet
+    /// (`resolvedCollageIDs`): a brand-new mix, a Refreshed mix, a mix that
+    /// existed before this change (drawn once on the first launch after the
+    /// update), or everything after a library re-scan that found new covers.
+    /// Each drawn collage is saved via `MixCollageStore` so the next launch
+    /// reads it from disk instead of repeating this whole scan. When nothing
+    /// is missing it returns immediately — no library scan, no "Loading
+    /// artwork…" indicator. Overlapping calls are queued, not run concurrently.
     private func loadCollages() {
         guard let db else { return }
-        let snapshot = playlists
+        if isLoadingCollages {
+            collageRedrawRequested = true
+            return
+        }
+        let snapshot = playlists.filter { playlist in
+            guard let id = playlist.id else { return false }
+            return !resolvedCollageIDs.contains(id)
+        }
+        guard !snapshot.isEmpty else { return }
         isLoadingCollages = true
         Task(priority: .userInitiated) { @MainActor [weak self] in
             // Deliberately short and not meant to be precise -- just enough
@@ -207,7 +267,15 @@ final class PlaylistStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 100_000_000)
             guard self != nil else { return }
 
-            defer { self?.isLoadingCollages = false }
+            defer {
+                if let store = self {
+                    store.isLoadingCollages = false
+                    if store.collageRedrawRequested {
+                        store.collageRedrawRequested = false
+                        store.loadCollages()
+                    }
+                }
+            }
 
             var trackIDsByPlaylist: [(id: Int64, trackIDs: [Int64])] = []
             for playlist in snapshot {
@@ -220,7 +288,26 @@ final class PlaylistStore: ObservableObject {
 
             for entry in trackIDsByPlaylist {
                 let images = ArtworkResolver.loadCollage(orderedTrackIDs: entry.trackIDs, itemsByID: itemsByID, limit: 4)
-                if !images.isEmpty {
+                // An empty result is saved too, as the "no artwork at all"
+                // marker, so such a mix isn't re-scanned every launch — BUT
+                // only when the library genuinely answered: if the song
+                // lookup came back empty or contains none of this mix's
+                // songs (library still re-indexing after a sync, access not
+                // granted yet), "empty" would be a false answer saved
+                // forever. In that case save nothing; it retries next launch.
+                if images.isEmpty {
+                    let libraryAnswered = entry.trackIDs.contains { itemsByID[UInt64(bitPattern: $0)] != nil }
+                    if !libraryAnswered {
+                        await Task.yield()
+                        guard self != nil else { return }
+                        continue
+                    }
+                }
+                MixCollageStore.save(images: images, playlistID: entry.id)
+                self?.resolvedCollageIDs.insert(entry.id)
+                if images.isEmpty {
+                    self?.collagesByPlaylistID.removeValue(forKey: entry.id)
+                } else {
                     self?.collagesByPlaylistID[entry.id] = images
                 }
                 // See this function's own doc comment above -- this is the
@@ -289,6 +376,10 @@ final class PlaylistStore: ObservableObject {
                     try playlist.delete(conn)
                 }
             }
+            // Push A (2026-10-20): the deleted mix's saved collage goes too.
+            MixCollageStore.delete(playlistID: playlistID)
+            resolvedCollageIDs.remove(playlistID)
+            collagesByPlaylistID.removeValue(forKey: playlistID)
             refresh()
         } catch {
             loadError = "Couldn't delete mix: \(error.localizedDescription)"

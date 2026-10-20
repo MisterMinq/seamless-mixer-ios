@@ -42,6 +42,12 @@ import BackgroundTasks
 /// right about the mechanism being the same one already proven, though
 /// "Use the whole library" itself was never actually wired up in Build Mix
 /// until this same round (see `MixBuilder`'s own updated doc comment).
+///
+/// **Also the one and only place this app looks up missing artwork
+/// online, added 2026-09-28** — see `RemoteArtworkLookup`'s own doc
+/// comment. Per Andy's direct request, this happens once here, during a
+/// scan the user already understands "may take a while," rather than
+/// scattered across ordinary browsing.
 @MainActor
 final class LibraryScanner: ObservableObject {
     @Published private(set) var isScanning = false
@@ -123,6 +129,7 @@ final class LibraryScanner: ObservableObject {
         totalCount = items.count
         analyzedCount = 0
         notDownloadedCount = 0
+        var foundMissingCovers = false
 
         for item in items {
             // **Added 2026-08-21**, alongside background continuation --
@@ -149,7 +156,34 @@ final class LibraryScanner: ObservableObject {
                 // over a single bad track.
                 scanError = "Some songs couldn't be analyzed and were skipped. You can try again later."
             }
+
+            // **Added 2026-09-28** — the one and only place this app is
+            // allowed to look up missing artwork online, per Andy's direct
+            // request: "does not make constant search for artwork online
+            // but maybe just once while it is scanning the library." See
+            // `RemoteArtworkLookup`'s own doc comment for the full design —
+            // every display screen (Playlist Detail, My Mixes) only ever
+            // reads whatever gets cached here, via the network-free
+            // `cachedImage`, never triggering a lookup of their own. A
+            // no-op cost for a track that already has real local artwork
+            // (a single nil check); `RemoteArtworkLookup` handles its own
+            // caching, so re-scanning doesn't redo network work for an
+            // already-resolved or already-confirmed-missing album either.
+            if item.artwork == nil, let artist = item.artist, let album = item.albumTitle {
+                if await RemoteArtworkLookup.image(artist: artist, album: album) != nil {
+                    foundMissingCovers = true
+                }
+            }
+
             analyzedCount += 1
+        }
+
+        // Push A (2026-10-20): if this scan found covers for songs that had
+        // none, the saved My Mixes collages are stale (drawn without them) —
+        // clear them so every mix redraws once, now including the new covers.
+        if foundMissingCovers {
+            store.invalidateAllCollages()
+            store.refresh()
         }
 
         UserDefaults.standard.set(Date(), forKey: Self.completedKey)
