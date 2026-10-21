@@ -149,6 +149,15 @@ final class PlaybackEngine: ObservableObject {
         /// drive the tempo nudge; every earlier `QueuedTrack` construction
         /// site predates this field.
         let bpm: Double?
+        /// **Added 2026-10-21 (external-music import).** Title/artist for the
+        /// lock screen / mini-player. Normally looked up from the Music
+        /// library by id (`refreshNowPlayingMetadata`), but an imported song
+        /// isn't in that library, so the caller passes what it already knows
+        /// (every `PlaylistDetailRow` has both). Optional with a `nil` default
+        /// so the single-track convenience and any older call site compile
+        /// unchanged.
+        var title: String? = nil
+        var artist: String? = nil
     }
 
     @Published private(set) var isPlaying = false
@@ -591,6 +600,15 @@ final class PlaybackEngine: ObservableObject {
     /// than throwing — surfaces as the same "couldn't find a playable file"
     /// error `playTrackAtCurrentIndex` already handles, not a crash.
     private func resolveFileURL(trackPersistentID: Int64) -> URL? {
+        // **Imported songs first, 2026-10-21 (external-music import).** A
+        // song imported from outside the Music library lives in the app's own
+        // `ImportedMusic` folder under a name derived from its id, so it is
+        // found by a small directory listing — no `MPMediaQuery` needed (and
+        // it would find nothing anyway). Checked before the library scan so an
+        // imported track never pays for it.
+        if let importedURL = ImportedMusicStore.url(forTrackID: trackPersistentID) {
+            return importedURL
+        }
         // **Fixed 2026-08-17** — was `MPMediaPropertyPredicate(value:
         // forProperty: MPMediaItemPropertyPersistentID)`, the same pattern
         // `MixBuilder.requeryItem` had — see that function's own doc
@@ -1578,6 +1596,22 @@ final class PlaybackEngine: ObservableObject {
         let mediaID = UInt64(bitPattern: trackID)
         query.addFilterPredicate(MPMediaPropertyPredicate(value: mediaID, forProperty: MPMediaItemPropertyPersistentID))
         guard let item = query.items?.first else {
+            // Not in the Music library. An imported song (2026-10-21) still
+            // gets its title/artist on the lock screen, from what the caller
+            // put in the queue; artwork stays empty (v1 shows a placeholder
+            // for imported songs).
+            if ImportedMusicStore.url(forTrackID: trackID) != nil,
+               let queued = queue.first(where: { $0.trackPersistentID == trackID }),
+               let title = queued.title {
+                var info: [String: Any] = [MPMediaItemPropertyTitle: title]
+                if let artist = queued.artist { info[MPMediaItemPropertyArtist] = artist }
+                nowPlayingMetadata = info
+                nowPlayingTitle = title
+                nowPlayingArtist = queued.artist
+                nowPlayingArtwork = nil
+                publishNowPlayingPlaybackState()
+                return
+            }
             nowPlayingMetadata = [:]
             nowPlayingTitle = nil
             nowPlayingArtist = nil

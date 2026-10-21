@@ -58,6 +58,15 @@ public enum SourceType: String, Codable, CaseIterable, Hashable, DatabaseValueCo
     /// as "Customplaylist," not "CustomPlaylist") — a space gives it two
     /// real words to capitalize, producing "Custom Playlist" instead.
     case customPlaylist = "custom playlist"
+    /// **Added 2026-10-21 (external-music import).** One song the user
+    /// imported from outside the Music library, picked from the Hub's
+    /// "Imported songs" row. `sourceValue` carries the track's content-hash
+    /// id (an `Int64`, bit-cast into the same `MPMediaEntityPersistentID`
+    /// field every other persistentID-based source uses). Resolved from this
+    /// app's own `tracks` table, never `MediaPlayer`. Raw value is two words
+    /// ("imported song") so `PlaylistNaming.subtitle`'s `.rawValue
+    /// .capitalized` gives "Imported Song" / "Imported Songs".
+    case importedSong = "imported song"
 }
 
 public struct PlaylistSource: Codable, Equatable, Identifiable {

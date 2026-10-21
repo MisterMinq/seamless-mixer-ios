@@ -277,11 +277,18 @@ final class PlaylistStore: ObservableObject {
                 }
             }
 
-            var trackIDsByPlaylist: [(id: Int64, trackIDs: [Int64])] = []
+            var trackIDsByPlaylist: [(id: Int64, trackIDs: [Int64], allImported: Bool)] = []
             for playlist in snapshot {
                 guard let id = playlist.id else { continue }
                 guard let detail = try? db.loadPlaylistDetail(playlistID: id) else { continue }
-                trackIDsByPlaylist.append((id: id, trackIDs: detail.tracks.map(\.track.persistentID)))
+                // `allImported` (2026-10-21): a mix made only of songs imported
+                // from outside the Music library has nothing for the library
+                // lookup to find, so "library didn't answer" below must not
+                // apply to it or it would be re-scanned every launch.
+                trackIDsByPlaylist.append((
+                    id: id, trackIDs: detail.tracks.map(\.track.persistentID),
+                    allImported: !detail.tracks.isEmpty && detail.tracks.allSatisfy { $0.track.isImported }
+                ))
             }
 
             let itemsByID = ArtworkResolver.allSongsByPersistentID()
@@ -296,7 +303,7 @@ final class PlaylistStore: ObservableObject {
                 // granted yet), "empty" would be a false answer saved
                 // forever. In that case save nothing; it retries next launch.
                 if images.isEmpty {
-                    let libraryAnswered = entry.trackIDs.contains { itemsByID[UInt64(bitPattern: $0)] != nil }
+                    let libraryAnswered = entry.allImported || entry.trackIDs.contains { itemsByID[UInt64(bitPattern: $0)] != nil }
                     if !libraryAnswered {
                         await Task.yield()
                         guard self != nil else { return }
@@ -511,6 +518,16 @@ final class PlaylistStore: ObservableObject {
     /// elsewhere (see `MediaLibraryResolver`'s own doc comments) — then
     /// delegates to the real implementation above.
     func addToCustomPlaylist(trackPersistentID: Int64, customPlaylistID: Int64) {
+        // **Imported songs (2026-10-21)** have a `tracks` row but no
+        // `MPMediaItem`, so they are added straight from the database.
+        if let db, let existing = try? db.importedTracks(withIDs: [trackPersistentID]), !existing.isEmpty {
+            do {
+                try db.addTrack(trackPersistentID: trackPersistentID, toCustomPlaylistID: customPlaylistID)
+            } catch {
+                loadError = "Couldn't add song: \(error.localizedDescription)"
+            }
+            return
+        }
         let targetID = MPMediaEntityPersistentID(bitPattern: trackPersistentID)
         guard let item = MPMediaQuery.songs().items?.first(where: { $0.persistentID == targetID }) else {
             loadError = "Couldn't find that song in your library."

@@ -190,6 +190,12 @@ final class MixBuilder: ObservableObject {
 
         progressText = "Finding songs…"
         let items: [MPMediaItem]
+        // **Imported songs, added 2026-10-21** — already analysed at import
+        // time, so they join the pool directly below, after the Music-library
+        // items have been analysed. "Whole library" means the Music library
+        // only (the Hub disables the Imported songs row in that mode), so
+        // this stays empty there.
+        var importedPool: [Track] = []
         if useWholeLibrary {
             // **Exclusion mode, added 2026-09-09** — per Andy's direct
             // request, `selectedSources` here means "leave these out of the
@@ -208,8 +214,9 @@ final class MixBuilder: ObservableObject {
             }
         } else {
             items = MediaLibraryResolver.resolveItems(for: selectedSources, db: db)
+            importedPool = checkedImportedTracks(MediaLibraryResolver.importedTracks(for: selectedSources, db: db))
         }
-        guard !items.isEmpty else { throw BuildError.emptyPool }
+        guard !items.isEmpty || !importedPool.isEmpty else { throw BuildError.emptyPool }
 
         var pool: [Track] = []
         for (index, item) in items.enumerated() {
@@ -217,6 +224,7 @@ final class MixBuilder: ObservableObject {
             let track = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
             pool.append(track)
         }
+        pool.append(contentsOf: importedPool)
 
         // **Duplicate-song dedup, added 2026-09-05** — see `DuplicateFilter`'s
         // own doc comment for why real duplicate library entries cluster
@@ -362,13 +370,15 @@ final class MixBuilder: ObservableObject {
 
         progressText = "Finding songs…"
         let items: [MPMediaItem]
+        var importedPool: [Track] = []
         if isWholeLibrary {
             let exclusionSources = allSelectedSources.filter(\.isExclusion)
             items = resolveWholeLibraryPool(excluding: exclusionSources, db: db)
         } else {
             items = MediaLibraryResolver.resolveItems(for: allSelectedSources, db: db)
+            importedPool = checkedImportedTracks(MediaLibraryResolver.importedTracks(for: allSelectedSources, db: db))
         }
-        guard !items.isEmpty else { throw BuildError.emptyPool }
+        guard !items.isEmpty || !importedPool.isEmpty else { throw BuildError.emptyPool }
 
         // Same safety valve as `performBuild`'s whole-library path -- a
         // Refresh reconstructs and re-resolves the exact same way a fresh
@@ -388,6 +398,7 @@ final class MixBuilder: ObservableObject {
             let track = try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db)
             pool.append(track)
         }
+        pool.append(contentsOf: importedPool)
 
         let currentDuration = detail.tracks.reduce(0) { $0 + $1.track.durationSec }
         let targetSeconds = currentDuration > 0 ? currentDuration : 30 * 60
@@ -398,6 +409,22 @@ final class MixBuilder: ObservableObject {
 
         progressText = "Saving…"
         try replaceTracks(playlistID: playlistID, sequenced: sequenced, extraCrossfadeSec: playlist.extraCrossfadeSec, db: db)
+    }
+
+    /// **Added 2026-10-21 (external-music import).** An imported song whose
+    /// stored copy has gone missing from the app's folder can't be played, so
+    /// it is marked as having no audio access for this build — `Sequencer`
+    /// then leaves it out and the existing "N couldn't be included" message
+    /// accounts for it, instead of the mix failing later at playback time.
+    /// Only the in-memory copy is changed; the saved `tracks` row is not.
+    private func checkedImportedTracks(_ tracks: [Track]) -> [Track] {
+        tracks.map { track in
+            var checked = track
+            if ImportedMusicStore.url(forTrackID: track.persistentID) == nil {
+                checked.hasRawAudioAccess = false
+            }
+            return checked
+        }
     }
 
     /// **Added 2026-08-20, fixed the same day — a real bug, not a tuning
@@ -530,7 +557,7 @@ final class MixBuilder: ObservableObject {
             // own default), so this is a no-op for any pre-existing row.
             source.isExclusion = playlistSource.isExclusion
             return source
-        case .artist, .album, .playlist, .songs, .customPlaylist:
+        case .artist, .album, .playlist, .songs, .customPlaylist, .importedSong:
             guard let persistentID = MPMediaEntityPersistentID(playlistSource.sourceValue) else { return nil }
             var source = SelectedSource(
                 id: "\(playlistSource.sourceType.rawValue):\(persistentID)", type: playlistSource.sourceType,

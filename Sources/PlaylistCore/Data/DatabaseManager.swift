@@ -206,6 +206,18 @@ public final class DatabaseManager {
             }
         }
 
+        // Added 2026-10-21 — external-music import. A song imported from
+        // outside the Music library is a normal `tracks` row whose
+        // `persistent_id` is a content hash (not an Apple ID) and whose
+        // `imported_file_name` names the copy the app keeps in its own
+        // storage. Nullable, so every existing row stays "from the Music
+        // library" with no backfill needed. See `Track.importedFileName`.
+        migrator.registerMigration("v7_imported_tracks") { db in
+            try db.alter(table: "tracks") { t in
+                t.add(column: "imported_file_name", .text)
+            }
+        }
+
         return migrator
     }
 }

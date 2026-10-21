@@ -125,6 +125,20 @@ final class SourceSelectionViewModel: ObservableObject {
     func attach(store: PlaylistStore) {
         self.store = store
         loadCustomPlaylists()
+        refreshImportedSongsCount()
+    }
+
+    /// **Added 2026-10-21 (external-music import)** — how many songs the user
+    /// has imported from outside the Music library, shown on the Hub's
+    /// "Imported songs" row. Reads this app's own database, not `MediaPlayer`.
+    @Published private(set) var importedSongsCount: Int = 0
+
+    func refreshImportedSongsCount() {
+        guard let db = store?.db else { return }
+        let count: Int? = try? db.dbQueue.read { conn in
+            try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM tracks WHERE imported_file_name IS NOT NULL")
+        }
+        importedSongsCount = count ?? 0
     }
 
     /// **Added 2026-09-07, Batch 2** — every saved `CustomPlaylist` (the new
@@ -330,8 +344,13 @@ final class SourceSelectionViewModel: ObservableObject {
         } else {
             items = MediaLibraryResolver.resolveItems(for: selectedSources, db: store?.db)
         }
-        previewSongCount = items.count
-        let totalSeconds = items.reduce(0.0) { $0 + $1.playbackDuration }
+        // Imported songs (2026-10-21) aren't Music-library items, so they're
+        // counted separately; "whole library" never includes them.
+        let imported = useWholeLibrary ? [] : MediaLibraryResolver.importedTracks(for: selectedSources, db: store?.db)
+        previewSongCount = items.count + imported.count
+        let librarySeconds = items.reduce(0.0) { $0 + $1.playbackDuration }
+        let importedSeconds = imported.reduce(0.0) { $0 + $1.durationSec }
+        let totalSeconds = librarySeconds + importedSeconds
         previewTotalMinutes = Int((totalSeconds / 60).rounded())
     }
 

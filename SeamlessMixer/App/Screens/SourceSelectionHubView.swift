@@ -303,6 +303,9 @@ struct SourceSelectionHubView: View {
         // differentiated by the "SM" badge on the picker's own cells, not
         // by a different icon here.
         case .customPlaylist: return "music.note.list"
+        // Imported songs aren't a Hub search-result type either (search is
+        // Music-library only); here only to keep the switch exhaustive.
+        case .importedSong: return "square.and.arrow.down"
         }
     }
 
@@ -316,6 +319,7 @@ struct SourceSelectionHubView: View {
         case .wholeLibrary: return "Library"
         case .favoriteSongs: return "Favourites"
         case .customPlaylist: return "Playlist"
+        case .importedSong: return "Imported song"
         }
     }
 
@@ -461,6 +465,23 @@ struct SourceSelectionHubView: View {
             // borrowed.
             categoryRow(title: "Songs", icon: "music.note", count: viewModel.songCount, type: .songs) {
                 SongPickerView(viewModel: viewModel)
+            }
+            // **Sixth row, added 2026-10-21 (external-music import)** — songs
+            // the user imported from Files/iCloud Drive/AirDrop rather than
+            // from the Music library. They aren't part of "the whole library"
+            // (which means the Music library), so the row is greyed out while
+            // that mode is on, with the reason stated underneath.
+            categoryRow(title: "Imported songs", icon: "square.and.arrow.down", count: viewModel.importedSongsCount, type: .importedSong) {
+                ImportedSongsPickerView(viewModel: viewModel, store: store)
+            }
+            .disabled(viewModel.useWholeLibrary)
+            .opacity(viewModel.useWholeLibrary ? 0.5 : 1)
+            if viewModel.useWholeLibrary {
+                Text("Imported songs aren't part of your Music library, so they can't be combined with \u{201c}Use your whole library\u{201d}.")
+                    .font(.caption2)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, DesignTokens.Spacing.sm)
             }
         }
     }

@@ -350,7 +350,9 @@ struct QueueView: View {
                     crossfadeStartOffsetSec: $0.crossfadeStartOffsetSec,
                     crossfadeDurationSec: $0.crossfadeDurationSec,
                     playableStartSec: $0.playableStartSec,
-                    bpm: $0.bpm
+                    bpm: $0.bpm,
+                    title: $0.title,
+                    artist: $0.artist
                 )
             },
             startIndex: startIndex,

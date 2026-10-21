@@ -163,9 +163,58 @@ enum MediaLibraryResolver {
                 guard !trackIDs.isEmpty else { continue }
                 let trackIDSet = Set(trackIDs)
                 add(MPMediaQuery.songs().items?.filter { trackIDSet.contains(Int64(bitPattern: $0.persistentID)) })
+
+            case .importedSong:
+                // **Added 2026-10-21 (external-music import).** An imported
+                // song is not in the Music library at all, so there is no
+                // `MPMediaItem` to return for it. These are resolved
+                // separately, straight from this app's own `tracks` table,
+                // by `importedTracks(for:db:)` below; `MixBuilder` calls both
+                // and merges the results.
+                continue
             }
         }
         return items
+    }
+
+    /// **Added 2026-10-21 (external-music import)** — the imported-song
+    /// counterpart of `resolveItems`: the already-analysed `Track` rows for
+    /// every `.importedSong` pick, plus (when `.favoriteSongs` is among the
+    /// sources) the imported songs marked favourite, since the Music-library
+    /// side of Favourites cannot see them. Returns `[]` for a nil `db`.
+    /// De-duplicated by track id, in pick order.
+    static func importedTracks(for sources: [SelectedSource], db: DatabaseManager?) -> [Track] {
+        guard let db else { return [] }
+        var ids: [Int64] = []
+        var seen = Set<Int64>()
+        func add(_ id: Int64) {
+            if seen.insert(id).inserted { ids.append(id) }
+        }
+        for source in sources {
+            switch source.type {
+            case .importedSong:
+                if let persistentID = source.persistentID { add(Int64(bitPattern: persistentID)) }
+            case .favoriteSongs:
+                for id in (try? db.importedFavoriteTrackIDs()) ?? [] { add(id) }
+            case .customPlaylist:
+                // Imported songs a native playlist holds (the Music-library
+                // members of the same playlist are resolved by `resolveItems`).
+                guard let persistentID = source.persistentID else { continue }
+                let members: [Int64] = (try? db.dbQueue.read { conn in
+                    try Int64.fetchAll(
+                        conn, sql: "SELECT track_persistent_id FROM custom_playlist_tracks WHERE custom_playlist_id = ? ORDER BY position",
+                        arguments: [Int64(bitPattern: persistentID)]
+                    )
+                }) ?? []
+                for id in members { add(id) }
+            default:
+                break
+            }
+        }
+        guard !ids.isEmpty else { return [] }
+        let found = (try? db.importedTracks(withIDs: ids)) ?? []
+        let byID = Dictionary(uniqueKeysWithValues: found.map { ($0.persistentID, $0) })
+        return ids.compactMap { byID[$0] }
     }
 
     /// **Added 2026-08-20** — every song in the library, with no filter at

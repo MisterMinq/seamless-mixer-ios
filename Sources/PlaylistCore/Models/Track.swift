@@ -63,7 +63,20 @@ public struct Track: Codable, Equatable, Identifiable {
     /// backfills as "not favorited" once this column lands, not nil/unknown.
     public var isFavorite: Bool
 
+    /// **Added 2026-10-21 (external-music import).** `nil` for every track
+    /// that comes from the Music library (the vast majority). For a song the
+    /// user imported from outside the Music library (Files, iCloud Drive,
+    /// AirDrop...), this is the name of the file the app copied into its own
+    /// storage (`ImportedTrackIdentity.fileName(forTrackID:fileExtension:)`),
+    /// so a row can be recognised as "imported" without any `MediaPlayer`
+    /// lookup, and so the picker can list exactly the imported songs. For such
+    /// a row `persistentID` is not an Apple ID but a content hash of the file
+    /// (`ImportedTrackIdentity.trackID(forFileAt:)`).
+    public var importedFileName: String?
+
     public var id: Int64 { persistentID }
+
+    public var isImported: Bool { importedFileName != nil }
 
     public init(
         persistentID: Int64,
@@ -80,7 +93,8 @@ public struct Track: Codable, Equatable, Identifiable {
         analyzedAt: Date? = nil,
         playableStartSec: Double? = nil,
         playableDurationSec: Double? = nil,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        importedFileName: String? = nil
     ) {
         self.persistentID = persistentID
         self.title = title
@@ -97,6 +111,7 @@ public struct Track: Codable, Equatable, Identifiable {
         self.playableStartSec = playableStartSec
         self.playableDurationSec = playableDurationSec
         self.isFavorite = isFavorite
+        self.importedFileName = importedFileName
     }
 
     /// True once every analysis field the sequencer *and* the mixing engine
@@ -134,6 +149,7 @@ extension Track: FetchableRecord, PersistableRecord {
         case playableStartSec = "playable_start_sec"
         case playableDurationSec = "playable_duration_sec"
         case isFavorite = "is_favorite"
+        case importedFileName = "imported_file_name"
     }
 
     public init(row: Row) throws {
@@ -152,6 +168,7 @@ extension Track: FetchableRecord, PersistableRecord {
         playableStartSec = row[Columns.playableStartSec]
         playableDurationSec = row[Columns.playableDurationSec]
         isFavorite = row[Columns.isFavorite]
+        importedFileName = row[Columns.importedFileName]
     }
 
     public func encode(to container: inout PersistenceContainer) {
@@ -170,5 +187,6 @@ extension Track: FetchableRecord, PersistableRecord {
         container[Columns.playableStartSec] = playableStartSec
         container[Columns.playableDurationSec] = playableDurationSec
         container[Columns.isFavorite] = isFavorite
+        container[Columns.importedFileName] = importedFileName
     }
 }
