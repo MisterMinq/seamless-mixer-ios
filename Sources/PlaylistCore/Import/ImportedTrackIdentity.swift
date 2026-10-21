@@ -84,6 +84,9 @@ public enum ImportedTrackIdentity {
     /// without its extension.
     public static func fallbackTitle(fromOriginalFileName name: String) -> String {
         let stem = (name as NSString).deletingPathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
-        return stem.isEmpty ? "Unknown" : stem
+        // A name that is only an extension (".mp3") is a dotfile as far as
+        // `deletingPathExtension` is concerned and comes back unchanged, so
+        // a leading dot is treated as "no real title" too.
+        return (stem.isEmpty || stem.hasPrefix(".")) ? "Unknown" : stem
     }
 }
