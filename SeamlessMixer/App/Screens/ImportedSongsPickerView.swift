@@ -24,6 +24,15 @@ struct ImportedSongsPickerView: View {
     @State private var tracks: [Track] = []
     @State private var searchText = ""
     @State private var showImporter = false
+    /// What the single `.fileImporter` below is currently for — individual
+    /// audio files, or a folder to search for missing songs. One importer with
+    /// a mode, not two `.fileImporter`s: stacking several on one view is a
+    /// known SwiftUI gotcha (only one reliably presents).
+    private enum ImportMode { case files, folder }
+    @State private var importMode: ImportMode = .files
+    /// Songs the backup record says were imported once but aren't in the app
+    /// now (added 2026-10-21, imported-songs backup record).
+    @State private var missing: [ImportedSongRecord] = []
     @State private var pendingRemoval: Track?
     @State private var pendingRemovalMixCount = 0
     @State private var errorMessage: String?
@@ -38,7 +47,7 @@ struct ImportedSongsPickerView: View {
     var body: some View {
         VStack(spacing: 0) {
             InlineSearchField(text: $searchText, prompt: "Search imported songs")
-            if tracks.isEmpty {
+            if tracks.isEmpty && missing.isEmpty {
                 Spacer()
                 VStack(spacing: DesignTokens.Spacing.md) {
                     Text("No imported songs yet.\nAdd MP3, M4A, WAV, AIFF or FLAC files from the Files app, iCloud Drive or AirDrop — they'll be mixed and blended just like songs from your Music library.")
@@ -46,6 +55,7 @@ struct ImportedSongsPickerView: View {
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .multilineTextAlignment(.center)
                     Button {
+                        importMode = .files
                         showImporter = true
                     } label: {
                         Label("Import songs", systemImage: "square.and.arrow.down")
@@ -62,6 +72,9 @@ struct ImportedSongsPickerView: View {
                 Spacer()
             } else {
                 List {
+                    if !missing.isEmpty {
+                        missingSection
+                    }
                     ForEach(filteredTracks) { track in
                         row(for: track)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -76,6 +89,11 @@ struct ImportedSongsPickerView: View {
                         Text("Swipe a song left to remove it from the app. Imported songs are copies kept inside the app; your original files are untouched.")
                             .font(.caption)
                             .foregroundStyle(DesignTokens.Color.textSecondary)
+                        if AppSettings.importedSongsNeedBackup(importedSongCount: tracks.count) {
+                            Text("You've imported songs since your last backup. Settings → \u{201c}Back up my mixes\u{201d} saves a record of them outside the app, so after deleting and reinstalling you can bring them back with one folder pick instead of re-choosing each song.")
+                                .font(.caption)
+                                .foregroundStyle(DesignTokens.Color.warning)
+                        }
                     }
                 }
                 .listStyle(.plain)
@@ -87,6 +105,7 @@ struct ImportedSongsPickerView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
+                    importMode = .files
                     showImporter = true
                 } label: {
                     Image(systemName: "plus")
@@ -113,11 +132,19 @@ struct ImportedSongsPickerView: View {
                 }
             }
         }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.audio], allowsMultipleSelection: true) { result in
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: importMode == .folder ? [.folder] : [.audio],
+            allowsMultipleSelection: true
+        ) { result in
             switch result {
             case .success(let urls):
                 Task {
-                    await importer.importFiles(urls, store: store)
+                    if importMode == .folder {
+                        await importer.reimportMissing(fromFolders: urls, missing: missing, store: store)
+                    } else {
+                        await importer.importFiles(urls, store: store)
+                    }
                     reload()
                 }
             case .failure(let error):
@@ -156,6 +183,53 @@ struct ImportedSongsPickerView: View {
             Text(errorMessage ?? "")
         }
         .onAppear(perform: reload)
+    }
+
+    /// "Missing from this phone" — songs the restored backup says were
+    /// imported once but aren't in the app. One button re-imports whichever of
+    /// them it finds in a folder the user picks; a swipe forgets one the user
+    /// no longer wants back (Rule 8).
+    private var missingSection: some View {
+        Section {
+            Text("These songs were imported before your backup but aren't on this phone. Pick the folder you originally imported them from — Seamless DJ finds just these songs in it and re-imports them (everything else in the folder is ignored).")
+                .font(.caption)
+                .foregroundStyle(DesignTokens.Color.textSecondary)
+            Button {
+                importMode = .folder
+                showImporter = true
+            } label: {
+                Label("Re-import from folder…", systemImage: "folder")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(DesignTokens.Color.primaryText)
+            }
+            .disabled(importer.isImporting)
+            ForEach(missing.prefix(40)) { record in
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+                    Text(record.title)
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                        .lineLimit(1)
+                    Text(record.artist)
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                        .lineLimit(1)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        ImportedSongsRecordStore.remove(trackID: record.trackID)
+                        reload()
+                    } label: {
+                        Label("Forget", systemImage: "xmark.bin")
+                    }
+                }
+            }
+            if missing.count > 40 {
+                Text("…and \(missing.count - 40) more")
+                    .font(.footnote)
+                    .foregroundStyle(DesignTokens.Color.textSecondary)
+            }
+        } header: {
+            Text("Missing from this phone (\(missing.count))")
+        }
     }
 
     private func row(for track: Track) -> some View {
@@ -214,6 +288,7 @@ struct ImportedSongsPickerView: View {
 
     private func reload() {
         tracks = (try? store.db?.loadImportedTracks()) ?? []
+        missing = ImportedSongsRecordStore.missing(db: store.db)
         viewModel.refreshImportedSongsCount()
     }
 
@@ -232,6 +307,9 @@ struct ImportedSongsPickerView: View {
             if let fileName = try db.deleteImportedTrack(trackID: track.persistentID) {
                 ImportedMusicStore.removeFile(named: fileName)
             }
+            // Removed on purpose — don't let a stale backup record bring it
+            // back as "missing".
+            ImportedSongsRecordStore.remove(trackID: track.persistentID)
             store.refresh()
         } catch {
             errorMessage = error.localizedDescription

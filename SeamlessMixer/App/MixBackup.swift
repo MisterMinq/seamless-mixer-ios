@@ -42,6 +42,17 @@ struct MixRecipe: Codable {
 private struct MixBackupFile: Codable {
     var exportedAt: Date
     var mixes: [MixRecipe]
+    /// **Added 2026-10-21 (imported-songs backup record).** Optional so a
+    /// backup file written before this existed still decodes; see
+    /// `ImportedSongRecord` for what this is for.
+    var importedSongs: [ImportedSongRecord]?
+}
+
+/// What a backup file contains once read back — the mix recipes plus the
+/// imported-songs record (empty for a file made before imported songs existed).
+struct LoadedBackup {
+    var mixes: [MixRecipe]
+    var importedSongs: [ImportedSongRecord]
 }
 
 enum MixBackup {
@@ -53,7 +64,7 @@ enum MixBackup {
 
         var errorDescription: String? {
             switch self {
-            case .noMixesToExport: return "There are no Seamless Mixes to back up yet."
+            case .noMixesToExport: return "There are no Seamless Mixes or imported songs to back up yet."
             case .writeFailed: return "Couldn't write the backup file."
             case .readFailed: return "Couldn't read that backup file — make sure it's a Seamless DJ mix backup."
             case .emptyFile: return "That backup file doesn't contain any mixes."
@@ -69,14 +80,29 @@ enum MixBackup {
         var succeeded: [String]
         var skipped: [String]
         var failed: [(name: String, reason: String)]
+        /// How many imported songs the backup recorded, and how many of those
+        /// aren't in the app yet (**added 2026-10-21**).
+        var recordedImportedSongs = 0
+        var missingImportedSongs = 0
 
         var summaryText: String {
-            var lines = ["Restored \(succeeded.count) of \(succeeded.count + skipped.count + failed.count) mixes."]
+            var lines: [String] = []
+            let mixTotal = succeeded.count + skipped.count + failed.count
+            if mixTotal > 0 {
+                lines.append("Restored \(succeeded.count) of \(mixTotal) mixes.")
+            }
             if !skipped.isEmpty {
                 lines.append("\(skipped.count) already existed and were left as-is: \(skipped.joined(separator: ", "))")
             }
             for failure in failed {
                 lines.append("• \(failure.name): \(failure.reason)")
+            }
+            if recordedImportedSongs > 0 {
+                if missingImportedSongs > 0 {
+                    lines.append("\(recordedImportedSongs) imported song\(recordedImportedSongs == 1 ? "" : "s") recorded; \(missingImportedSongs) not in the app yet. On My Mixes tap Build Mix → Imported songs → \"Re-import from folder…\", pick the folder you originally imported from, then restore again to rebuild any mixes that were waiting.")
+                } else {
+                    lines.append("All \(recordedImportedSongs) recorded imported song\(recordedImportedSongs == 1 ? " is" : "s are") in the app.")
+                }
             }
             return lines.joined(separator: "\n")
         }
@@ -89,7 +115,11 @@ enum MixBackup {
     @MainActor
     static func makeFile(store: PlaylistStore) throws -> URL {
         guard let db = store.db else { throw BackupError.writeFailed }
-        guard !store.playlists.isEmpty else { throw BackupError.noMixesToExport }
+
+        // **Imported-songs record, added 2026-10-21** — see
+        // `ImportedSongRecord`. Included even when there are no mixes yet.
+        let importedRecords = ImportedSongsRecordStore.recordsForBackup(db: db)
+        guard !store.playlists.isEmpty || !importedRecords.isEmpty else { throw BackupError.noMixesToExport }
 
         var recipes: [MixRecipe] = []
         for playlist in store.playlists {
@@ -110,9 +140,9 @@ enum MixBackup {
                 extraCrossfadeSec: playlist.extraCrossfadeSec, sources: sources
             ))
         }
-        guard !recipes.isEmpty else { throw BackupError.noMixesToExport }
+        guard !recipes.isEmpty || !importedRecords.isEmpty else { throw BackupError.noMixesToExport }
 
-        let file = MixBackupFile(exportedAt: Date(), mixes: recipes)
+        let file = MixBackupFile(exportedAt: Date(), mixes: recipes, importedSongs: importedRecords)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -125,6 +155,10 @@ enum MixBackup {
         } catch {
             throw BackupError.writeFailed
         }
+        // Counts as "backed up" for the Settings reminder from the moment the
+        // file exists (whether the user then saves it from the share sheet is
+        // theirs to do — the app can't tell).
+        AppSettings.lastBackupDate = Date()
         return url
     }
 
@@ -133,7 +167,7 @@ enum MixBackup {
     /// what actually rebuilds anything. Wraps the read in the security-
     /// scoped-resource dance `.fileImporter` results require (the URL
     /// points outside this app's own sandbox).
-    static func loadRecipes(from url: URL) throws -> [MixRecipe] {
+    static func loadBackup(from url: URL) throws -> LoadedBackup {
         let didStartAccessing = url.startAccessingSecurityScopedResource()
         defer { if didStartAccessing { url.stopAccessingSecurityScopedResource() } }
 
@@ -141,8 +175,9 @@ enum MixBackup {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let file = try? decoder.decode(MixBackupFile.self, from: data) else { throw BackupError.readFailed }
-        guard !file.mixes.isEmpty else { throw BackupError.emptyFile }
-        return file.mixes
+        let importedSongs = file.importedSongs ?? []
+        guard !file.mixes.isEmpty || !importedSongs.isEmpty else { throw BackupError.emptyFile }
+        return LoadedBackup(mixes: file.mixes, importedSongs: importedSongs)
     }
 
     /// Rebuilds every recipe as a brand-new Seamless Mix, through the exact
@@ -171,6 +206,22 @@ enum MixBackup {
     /// auto-name from the sources, which may not match a mix the user had
     /// since renamed by hand.
     @MainActor
+    static func restore(backup: LoadedBackup, store: PlaylistStore, mixBuilder: MixBuilder) async -> RestoreSummary {
+        // **Imported songs first (2026-10-21)** — remember what the backup says
+        // was imported, so the Imported songs screen can list whatever isn't in
+        // the app yet, and so the mix loop below can tell which recipes depend
+        // on songs that still need re-importing.
+        ImportedSongsRecordStore.merge(backup.importedSongs)
+
+        var summary = await restore(recipes: backup.mixes, store: store, mixBuilder: mixBuilder)
+        summary.recordedImportedSongs = backup.importedSongs.count
+        summary.missingImportedSongs = ImportedSongsRecordStore.missing(db: store.db)
+            .filter { record in backup.importedSongs.contains { $0.trackID == record.trackID } }
+            .count
+        return summary
+    }
+
+    @MainActor
     static func restore(recipes: [MixRecipe], store: PlaylistStore, mixBuilder: MixBuilder) async -> RestoreSummary {
         var succeeded: [String] = []
         var skipped: [String] = []
@@ -191,6 +242,26 @@ enum MixBackup {
             if store.playlists.contains(where: { $0.name == recipe.name }) {
                 skipped.append(recipe.name)
                 continue
+            }
+
+            // **Waiting-for-imported-songs check, added 2026-10-21.** A recipe
+            // that names imported songs can't be rebuilt faithfully until
+            // those songs are back in the app: building it now would quietly
+            // produce a mix without them (and a recipe made only of them
+            // would fail outright). Leave it unbuilt, say why, and let a
+            // second restore — after "Re-import from folder…" — fill it in
+            // (restore never touches a mix that already exists).
+            let neededImportedIDs: [Int64] = recipe.sources.compactMap { s in
+                guard s.sourceType == SourceType.importedSong.rawValue, let raw = UInt64(s.sourceValue) else { return nil }
+                return Int64(bitPattern: raw)
+            }
+            if !neededImportedIDs.isEmpty, let db = store.db {
+                let presentIDs = Set(((try? db.importedTracks(withIDs: neededImportedIDs)) ?? []).map(\.persistentID))
+                let missingCount = neededImportedIDs.filter { !presentIDs.contains($0) }.count
+                if missingCount > 0 {
+                    failed.append((recipe.name, "Waiting for \(missingCount) imported song\(missingCount == 1 ? "" : "s") that aren't in the app yet — re-import them, then restore again."))
+                    continue
+                }
             }
 
             let playlistSources = recipe.sources.map { s in

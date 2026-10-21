@@ -65,7 +65,101 @@ final class ImportedMusicImporter: ObservableObject {
         store.refresh()
     }
 
-    private func importOne(_ url: URL, db: DatabaseManager) async -> Outcome {
+    /// **Re-import from folder, added 2026-10-21 (imported-songs backup
+    /// record).** After a delete + reinstall + restore, `missing` lists the
+    /// songs the backup says were imported once. Walks the chosen folder(s)
+    /// (recursively), and for each audio file computes the same content hash
+    /// an import would, importing only those whose hash is one of the missing
+    /// songs — everything else in the folder is ignored, so pointing at a big
+    /// music folder is fine. Before hashing (which reads the whole file), a
+    /// file whose size matches none of the missing songs is skipped unread.
+    /// A re-imported song takes its title/artist/etc. from the record (what
+    /// the user saw before), and gets its favourite flag back.
+    func reimportMissing(fromFolders folders: [URL], missing: [ImportedSongRecord], store: PlaylistStore) async {
+        guard !isImporting, !folders.isEmpty, !missing.isEmpty else { return }
+        guard let db = store.db else {
+            summaryMessage = "Couldn't open the library database."
+            return
+        }
+        isImporting = true
+        defer { isImporting = false; progressText = "" }
+
+        let wanted = Dictionary(missing.map { ($0.trackID, $0) }, uniquingKeysWith: { first, _ in first })
+        let sizes = ImportedSongRecord.candidateSizes(for: missing)
+        var restoredIDs = Set<Int64>()
+        var failures: [String] = []
+        var filesChecked = 0
+
+        for folder in folders {
+            // Files inside a picked folder are readable only while the
+            // folder's own security scope is open.
+            let scoped = folder.startAccessingSecurityScopedResource()
+            defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+
+            progressText = "Looking through “\(folder.lastPathComponent)”…"
+            let candidates: [URL] = await Task.detached(priority: .userInitiated) {
+                ImportedMusicImporter.audioFiles(in: folder, matchingSizes: sizes)
+            }.value
+
+            for (index, url) in candidates.enumerated() {
+                if restoredIDs.count == wanted.count { break }
+                progressText = "Checking \(index + 1) of \(candidates.count) in “\(folder.lastPathComponent)”…"
+                filesChecked += 1
+                guard let id = try? await Task.detached(priority: .userInitiated, operation: {
+                    try ImportedTrackIdentity.trackID(forFileAt: url)
+                }).value else { continue }
+                guard let record = wanted[id], !restoredIDs.contains(id) else { continue }
+
+                switch await importOne(url, db: db, record: record) {
+                case .imported, .alreadyImported:
+                    restoredIDs.insert(id)
+                case .failed(let reason):
+                    failures.append("\(record.title) — \(reason)")
+                }
+            }
+            if restoredIDs.count == wanted.count { break }
+        }
+
+        var lines: [String] = []
+        lines.append("Restored \(restoredIDs.count) of \(wanted.count) missing song\(wanted.count == 1 ? "" : "s").")
+        let stillMissing = wanted.count - restoredIDs.count
+        if stillMissing > 0 {
+            lines.append("\(stillMissing) not found in the folder you chose (checked \(filesChecked) audio file\(filesChecked == 1 ? "" : "s")). Try another folder, or a song may be in iCloud Drive and not downloaded yet.")
+        }
+        if !failures.isEmpty {
+            lines.append("Couldn't import:")
+            lines.append(contentsOf: failures.prefix(8))
+        }
+        if restoredIDs.count > 0 {
+            lines.append("Any mixes that were waiting for these songs can now be rebuilt: Settings → Restore mixes from backup.")
+        }
+        summaryMessage = lines.joined(separator: "\n")
+        store.refresh()
+    }
+
+    /// Every supported audio file under `folder` (recursively, hidden files
+    /// skipped), optionally narrowed to files whose size is in `sizes`.
+    /// Synchronous and `nonisolated` so it can run off the main actor.
+    nonisolated private static func audioFiles(in folder: URL, matchingSizes sizes: Set<Int64>?) -> [URL] {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var result: [URL] = []
+        for case let url as URL in enumerator {
+            guard ImportedTrackIdentity.isSupported(fileExtension: url.pathExtension) else { continue }
+            guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
+            if let sizes {
+                guard let size = values.fileSize, sizes.contains(Int64(size)) else { continue }
+            }
+            result.append(url)
+        }
+        return result
+    }
+
+    /// - Parameter record: set only when re-importing a song the backup
+    ///   recorded; its description is used instead of the file's own tags.
+    private func importOne(_ url: URL, db: DatabaseManager, record: ImportedSongRecord? = nil) async -> Outcome {
         // Files picked through `.fileImporter` live outside the app's sandbox;
         // reading them needs this scope open for the whole function.
         let scoped = url.startAccessingSecurityScopedResource()
@@ -76,12 +170,16 @@ final class ImportedMusicImporter: ObservableObject {
         }
 
         let trackID: Int64
-        do {
-            trackID = try await Task.detached(priority: .userInitiated) {
-                try ImportedTrackIdentity.trackID(forFileAt: url)
-            }.value
-        } catch {
-            return .failed("couldn't be read")
+        if let record {
+            trackID = record.trackID
+        } else {
+            do {
+                trackID = try await Task.detached(priority: .userInitiated) {
+                    try ImportedTrackIdentity.trackID(forFileAt: url)
+                }.value
+            } catch {
+                return .failed("couldn't be read")
+            }
         }
 
         let existing: Track? = try? await db.dbQueue.read { conn in
@@ -126,14 +224,27 @@ final class ImportedMusicImporter: ObservableObject {
             duration = features.playableDurationSec
         }
 
-        var track = existing ?? Track(
-            persistentID: trackID,
-            title: tags.title ?? ImportedTrackIdentity.fallbackTitle(fromOriginalFileName: url.lastPathComponent),
-            artist: tags.artist ?? "Unknown",
-            album: tags.album ?? "Unknown",
-            genre: tags.genre ?? "Unknown",
-            durationSec: duration
-        )
+        var track: Track
+        if let existing {
+            track = existing
+        } else if let record {
+            // Re-importing a song the backup recorded: keep exactly what the
+            // user saw before (and its favourite flag), not whatever the
+            // file's tags happen to say.
+            track = Track(
+                persistentID: trackID, title: record.title, artist: record.artist, album: record.album,
+                genre: record.genre, durationSec: duration, isFavorite: record.isFavorite
+            )
+        } else {
+            track = Track(
+                persistentID: trackID,
+                title: tags.title ?? ImportedTrackIdentity.fallbackTitle(fromOriginalFileName: url.lastPathComponent),
+                artist: tags.artist ?? "Unknown",
+                album: tags.album ?? "Unknown",
+                genre: tags.genre ?? "Unknown",
+                durationSec: duration
+            )
+        }
         track.durationSec = duration
         track.hasRawAudioAccess = true
         track.importedFileName = storedName
@@ -153,6 +264,11 @@ final class ImportedMusicImporter: ObservableObject {
         } catch {
             ImportedMusicStore.removeFile(named: storedName)
             return .failed("couldn't be saved")
+        }
+        // A record's own re-import isn't a *new* import as far as the backup
+        // reminder goes — the backup already knows about this song.
+        if record == nil {
+            AppSettings.lastImportDate = Date()
         }
         return .imported
     }

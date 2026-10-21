@@ -70,6 +70,9 @@ struct SettingsView: View {
     @State private var isRestoring = false
     @State private var showImporter = false
     @State private var restoreSummary: MixBackup.RestoreSummary?
+    /// How many songs are imported right now — only used to decide whether to
+    /// show the "back up your imported songs" reminder (2026-10-21).
+    @State private var importedSongCount = 0
 
     private struct ExportedFile: Identifiable {
         let url: URL
@@ -171,11 +174,24 @@ struct SettingsView: View {
                     }
                     .disabled(isRestoring)
                 } footer: {
-                    Text("Backs up which sources each Seamless Mix was built from, not the audio itself — so it survives deleting and reinstalling the app. Restoring rebuilds each mix fresh from your current library, the same way \"Refresh\" already does.")
+                    VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                        Text("Backs up which sources each Seamless Mix was built from, plus a list of the songs you imported from outside your Music library — not the audio itself — so it survives deleting and reinstalling the app. Restoring rebuilds each mix fresh from your current library, the same way \"Refresh\" already does, and lists any imported songs to re-import from the folder you originally used.")
+                        if AppSettings.importedSongsNeedBackup(importedSongCount: importedSongCount) {
+                            Text("You've imported songs since your last backup — back up now so they can be brought back after a reinstall.")
+                                .foregroundStyle(DesignTokens.Color.warning)
+                        }
+                    }
                 }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                importedSongCount = (try? store.db?.loadImportedTracks().count) ?? 0
+            }
+            .onChange(of: exportedFile?.id) { _, _ in
+                // A backup was just made — refresh so the reminder clears.
+                importedSongCount = (try? store.db?.loadImportedTracks().count) ?? 0
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -197,8 +213,8 @@ struct SettingsView: View {
                 case .success(let url):
                     Task {
                         do {
-                            let recipes = try MixBackup.loadRecipes(from: url)
-                            restoreSummary = await MixBackup.restore(recipes: recipes, store: store, mixBuilder: mixBuilder)
+                            let backup = try MixBackup.loadBackup(from: url)
+                            restoreSummary = await MixBackup.restore(backup: backup, store: store, mixBuilder: mixBuilder)
                         } catch {
                             backupError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         }
