@@ -230,4 +230,15 @@ enum MediaLibraryResolver {
     static func allSongs() -> [MPMediaItem] {
         MPMediaQuery.songs().items ?? []
     }
+
+    /// Every song in the library as the minimal id/title/artist triple, for
+    /// matching a backup's favourites back to real songs
+    /// (`FavoriteSongRecord.resolve`). Added 2026-10-22.
+    static func librarySongs() -> [FavoriteSongRecord.LibrarySong] {
+        allSongs().map {
+            FavoriteSongRecord.LibrarySong(
+                id: Int64(bitPattern: $0.persistentID), title: $0.title ?? "", artist: $0.artist ?? ""
+            )
+        }
+    }
 }

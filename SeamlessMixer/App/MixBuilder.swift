@@ -530,8 +530,15 @@ final class MixBuilder: ObservableObject {
     /// then leaves it out and the existing "N couldn't be included" message
     /// accounts for it, instead of the mix failing later at playback time.
     /// Only the in-memory copy is changed; the saved `tracks` row is not.
+    ///
+    /// **Only imported tracks are checked (fixed 2026-10-22).** `addSources`
+    /// passes a mix's whole existing track list through here, and a Music-library
+    /// song never has a stored copy in the imported folder — without this guard
+    /// every library song was marked "no audio" and dropped by `Sequencer`,
+    /// leaving a mix with only the songs just added (Andy's Testing (90)).
     private func checkedImportedTracks(_ tracks: [Track]) -> [Track] {
         tracks.map { track in
+            guard track.isImported else { return track }
             var checked = track
             if ImportedMusicStore.url(forTrackID: track.persistentID) == nil {
                 checked.hasRawAudioAccess = false

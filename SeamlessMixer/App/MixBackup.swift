@@ -46,13 +46,19 @@ private struct MixBackupFile: Codable {
     /// backup file written before this existed still decodes; see
     /// `ImportedSongRecord` for what this is for.
     var importedSongs: [ImportedSongRecord]?
+    /// **Added 2026-10-22.** The Music-library songs marked as favourites
+    /// (imported-song favourites ride in `importedSongs`). Optional so older
+    /// backup files still decode.
+    var favoriteSongs: [FavoriteSongRecord]?
 }
 
 /// What a backup file contains once read back — the mix recipes plus the
-/// imported-songs record (empty for a file made before imported songs existed).
+/// imported-songs record (empty for a file made before imported songs existed)
+/// and the favourite songs (empty for a file made before 2026-10-22).
 struct LoadedBackup {
     var mixes: [MixRecipe]
     var importedSongs: [ImportedSongRecord]
+    var favoriteSongs: [FavoriteSongRecord] = []
 }
 
 enum MixBackup {
@@ -84,12 +90,23 @@ enum MixBackup {
         /// aren't in the app yet (**added 2026-10-21**).
         var recordedImportedSongs = 0
         var missingImportedSongs = 0
+        /// Favourite Music-library songs the backup listed, how many were
+        /// marked again, and how many couldn't be found in the library.
+        var recordedFavorites = 0
+        var restoredFavorites = 0
 
         var summaryText: String {
             var lines: [String] = []
             let mixTotal = succeeded.count + skipped.count + failed.count
             if mixTotal > 0 {
                 lines.append("Restored \(succeeded.count) of \(mixTotal) mixes.")
+            }
+            if recordedFavorites > 0 {
+                var line = "Favourites: \(restoredFavorites) of \(recordedFavorites) song\(recordedFavorites == 1 ? "" : "s") marked again."
+                if restoredFavorites < recordedFavorites {
+                    line += " The rest weren't found in your library."
+                }
+                lines.append(line)
             }
             if !skipped.isEmpty {
                 lines.append("\(skipped.count) already existed and were left as-is: \(skipped.joined(separator: ", "))")
@@ -119,7 +136,10 @@ enum MixBackup {
         // **Imported-songs record, added 2026-10-21** — see
         // `ImportedSongRecord`. Included even when there are no mixes yet.
         let importedRecords = ImportedSongsRecordStore.recordsForBackup(db: db)
-        guard !store.playlists.isEmpty || !importedRecords.isEmpty else { throw BackupError.noMixesToExport }
+        // **Favourites, added 2026-10-22** — which Music-library songs are
+        // marked favourite is a choice only this app's database holds.
+        let favoriteRecords = ((try? db.loadLibraryFavoriteTracks()) ?? []).map(FavoriteSongRecord.init(track:))
+        guard !store.playlists.isEmpty || !importedRecords.isEmpty || !favoriteRecords.isEmpty else { throw BackupError.noMixesToExport }
 
         var recipes: [MixRecipe] = []
         for playlist in store.playlists {
@@ -140,9 +160,9 @@ enum MixBackup {
                 extraCrossfadeSec: playlist.extraCrossfadeSec, sources: sources
             ))
         }
-        guard !recipes.isEmpty || !importedRecords.isEmpty else { throw BackupError.noMixesToExport }
+        guard !recipes.isEmpty || !importedRecords.isEmpty || !favoriteRecords.isEmpty else { throw BackupError.noMixesToExport }
 
-        let file = MixBackupFile(exportedAt: Date(), mixes: recipes, importedSongs: importedRecords)
+        let file = MixBackupFile(exportedAt: Date(), mixes: recipes, importedSongs: importedRecords, favoriteSongs: favoriteRecords)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -176,8 +196,9 @@ enum MixBackup {
         decoder.dateDecodingStrategy = .iso8601
         guard let file = try? decoder.decode(MixBackupFile.self, from: data) else { throw BackupError.readFailed }
         let importedSongs = file.importedSongs ?? []
-        guard !file.mixes.isEmpty || !importedSongs.isEmpty else { throw BackupError.emptyFile }
-        return LoadedBackup(mixes: file.mixes, importedSongs: importedSongs)
+        let favoriteSongs = file.favoriteSongs ?? []
+        guard !file.mixes.isEmpty || !importedSongs.isEmpty || !favoriteSongs.isEmpty else { throw BackupError.emptyFile }
+        return LoadedBackup(mixes: file.mixes, importedSongs: importedSongs, favoriteSongs: favoriteSongs)
     }
 
     /// Rebuilds every recipe as a brand-new Seamless Mix, through the exact
@@ -213,7 +234,18 @@ enum MixBackup {
         // on songs that still need re-importing.
         ImportedSongsRecordStore.merge(backup.importedSongs)
 
+        // **Favourites (2026-10-22)** — mark them again before the mixes are
+        // rebuilt. Each is found in the current library by id, then by
+        // title + artist; ones that can't be found are counted, not guessed.
+        var restoredFavorites = 0
+        if !backup.favoriteSongs.isEmpty, let db = store.db {
+            let resolution = FavoriteSongRecord.resolve(backup.favoriteSongs, in: MediaLibraryResolver.librarySongs())
+            restoredFavorites = (try? db.applyLibraryFavorites(resolution.matches)) ?? 0
+        }
+
         var summary = await restore(recipes: backup.mixes, store: store, mixBuilder: mixBuilder)
+        summary.recordedFavorites = backup.favoriteSongs.count
+        summary.restoredFavorites = restoredFavorites
         summary.recordedImportedSongs = backup.importedSongs.count
         summary.missingImportedSongs = ImportedSongsRecordStore.missing(db: store.db)
             .filter { record in backup.importedSongs.contains { $0.trackID == record.trackID } }

@@ -175,7 +175,7 @@ struct SettingsView: View {
                     .disabled(isRestoring)
                 } footer: {
                     VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
-                        Text("Backs up which sources each Seamless Mix was built from, plus a list of the songs you imported from outside your Music library — not the audio itself — so it survives deleting and reinstalling the app. Restoring rebuilds each mix fresh from your current library, the same way \"Refresh\" already does, and lists any imported songs to re-import from the folder you originally used.")
+                        Text("Backs up which sources each Seamless Mix was built from, plus your favourite songs and a list of the songs you imported from outside your Music library — not the audio itself — so it survives deleting and reinstalling the app. Restoring rebuilds each mix fresh from your current library, the same way \"Refresh\" already does, and lists any imported songs to re-import from the folder you originally used.")
                         if AppSettings.importedSongsNeedBackup(importedSongCount: importedSongCount) {
                             Text("You've imported songs since your last backup — back up now so they can be brought back after a reinstall.")
                                 .foregroundStyle(DesignTokens.Color.warning)
