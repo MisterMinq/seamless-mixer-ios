@@ -66,7 +66,16 @@ struct SourceSelectionHubView: View {
     /// `DuplicateFilter`'s own doc comment. See this file's own doc comment
     /// for why navigation moved up to the caller (`MyMixesView`) instead of
     /// happening here.
-    let onBuilt: (Playlist, String?, [Track], [[Track]]) -> Void
+    var onBuilt: (Playlist, String?, [Track], [[Track]]) -> Void = { _, _, _, _ in }
+    /// **"Add songs to this mix" mode, added 2026-10-21.** When set, this same
+    /// Hub is used to pick extra sources for an existing mix: "Use your whole
+    /// library", Mode, Crossfade length and Include everything are hidden
+    /// (the mix keeps its own), the bottom button reads "Add to mix", and it
+    /// calls `MixBuilder.addSources` instead of `build`. `onAdded` is called
+    /// on success with any "some songs couldn't be added" message; the caller
+    /// (Playlist Detail) pops this screen and reloads.
+    var addingTo: Playlist? = nil
+    var onAdded: ((String?) -> Void)? = nil
 
     @StateObject private var viewModel = SourceSelectionViewModel()
     @StateObject private var mixBuilder = MixBuilder()
@@ -109,7 +118,7 @@ struct SourceSelectionHubView: View {
             }
         }
         .background(DesignTokens.Color.background)
-        .navigationTitle("New Seamless Mix")
+        .navigationTitle(addingTo == nil ? "New Seamless Mix" : "Add songs")
         .navigationBarTitleDisplayMode(.inline)
         // **Custom back button, added 2026-08-22** -- the default system
         // back button can't be intercepted with a confirmation, so it's
@@ -132,7 +141,9 @@ struct SourceSelectionHubView: View {
             Button("Cancel", role: .cancel) {}
             Button("OK", role: .destructive) { dismiss() }
         } message: {
-            Text("Going back will lose everything selected for this mix so far.")
+            Text(addingTo == nil
+                 ? "Going back will lose everything selected for this mix so far."
+                 : "Going back will lose what you picked to add.")
         }
         .onAppear {
             // **Added 2026-09-07** — `viewModel` had no database access at
@@ -204,11 +215,19 @@ struct SourceSelectionHubView: View {
     private var hubContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.lg) {
-                allSongsRow
+                if let addingTo {
+                    Text("Pick songs, albums, artists, genres or playlists to add to “\(addingTo.name)”. Everything already in the mix stays, and the whole mix is re-sequenced so the new songs blend in.")
+                        .font(.footnote)
+                        .foregroundStyle(DesignTokens.Color.textSecondary)
+                } else {
+                    allSongsRow
+                }
                 categoryRows
                 chipRow
-                modePicker
-                durationControl
+                if addingTo == nil {
+                    modePicker
+                    durationControl
+                }
                 // Bottom padding so the sticky Build Mix bar doesn't cover
                 // the last row.
                 Color.clear.frame(height: DesignTokens.Size.buttonHeightStandard + DesignTokens.Spacing.lg)
@@ -758,6 +777,13 @@ struct SourceSelectionHubView: View {
                 }
                 Spacer()
                 Button {
+                    if let addingTo {
+                        Task {
+                            let ok = await mixBuilder.addSources(viewModel.selectedSources, to: addingTo, store: store)
+                            if ok { onAdded?(mixBuilder.lastBuildExclusionMessage) }
+                        }
+                        return
+                    }
                     Task {
                         let playlist = await mixBuilder.build(
                             selectedSources: viewModel.selectedSources,
@@ -778,7 +804,7 @@ struct SourceSelectionHubView: View {
                         }
                     }
                 } label: {
-                    Text("Build Mix")
+                    Text(addingTo == nil ? "Build Mix" : "Add to mix")
                         .frame(minHeight: DesignTokens.Size.buttonHeightStandard)
                         .padding(.horizontal, DesignTokens.Spacing.lg)
                 }

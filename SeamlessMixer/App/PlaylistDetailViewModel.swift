@@ -47,6 +47,9 @@ final class PlaylistDetailViewModel: ObservableObject {
     @Published private(set) var subtitle: String = ""
     @Published private(set) var footerText: String = ""
     @Published private(set) var isLoading = true
+    /// True when this mix was built from "Use your whole library" -- such a
+    /// mix already contains everything, so "Add songs" isn't offered.
+    @Published private(set) var isWholeLibraryMix = false
 
     /// **Added 2026-08-20** — up to 4 distinct-album images for the
     /// auto-generated collage header, per Andy's direct request. A
@@ -100,6 +103,7 @@ final class PlaylistDetailViewModel: ObservableObject {
                 )
             }
 
+            isWholeLibraryMix = detail.sources.contains { $0.sourceType == .wholeLibrary }
             let totalDuration = detail.tracks.reduce(0) { $0 + $1.track.durationSec }
             subtitle = PlaylistNaming.subtitle(
                 for: detail.sources, mode: playlist.mode,

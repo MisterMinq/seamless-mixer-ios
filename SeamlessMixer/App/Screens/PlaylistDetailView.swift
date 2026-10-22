@@ -171,6 +171,12 @@ struct PlaylistDetailView: View {
     /// re-reading `playlist` after the fact.
     @State private var displayName: String
     @State private var showOverflow = false
+    /// "Add songs to this mix" (2026-10-21): set by the overflow sheet, acted
+    /// on in the sheet's `onDismiss`; `showAddSongs` drives the Hub push;
+    /// `addSongsMessage` carries any "some picks couldn't be used" note.
+    @State private var pendingAddSongs = false
+    @State private var showAddSongs = false
+    @State private var addSongsMessage: String?
     @Environment(\.dismiss) private var dismiss
 
     /// True when the session currently loaded in `PlaybackEngine` is *this*
@@ -363,12 +369,42 @@ struct PlaylistDetailView: View {
         // "did anything actually change" flag back out of the sheet.
         .sheet(isPresented: $showOverflow, onDismiss: {
             viewModel.load(playlist: playlist, store: store)
+            // "Add songs to this mix" pushes the Hub only once the sheet is
+            // fully gone -- a sheet dismissal and a navigation push in the
+            // same tick is the race this project has already hit twice.
+            if pendingAddSongs {
+                pendingAddSongs = false
+                showAddSongs = true
+            }
         }) {
             PlaylistOverflowSheet(
                 playlist: playlist, store: store,
                 onRenamed: { displayName = $0 },
-                onDeleted: { dismiss() }
+                onDeleted: { dismiss() },
+                // A whole-library mix already contains everything.
+                onAddSongs: addSongsAction
             )
+        }
+        // **"Add songs to this mix", added 2026-10-21** -- the Hub in its add
+        // mode. On success it pops itself and this screen reloads; a note
+        // about picks that couldn't be used (if any) shows as an alert.
+        .navigationDestination(isPresented: $showAddSongs) {
+            SourceSelectionHubView(
+                store: store, addingTo: playlist,
+                onAdded: { message in
+                    showAddSongs = false
+                    viewModel.load(playlist: playlist, store: store)
+                    addSongsMessage = message
+                }
+            )
+        }
+        .alert("Songs added", isPresented: Binding(
+            get: { addSongsMessage != nil },
+            set: { if !$0 { addSongsMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(addSongsMessage ?? "")
         }
         // Moved here from `MyMixesView` 2026-08-14 -- see `showExclusionAlert`'s
         // own doc comment for why presenting this alongside a navigation
@@ -434,6 +470,15 @@ struct PlaylistDetailView: View {
         } message: {
             Text("We suggested a name — change it if you'd like.")
         }
+    }
+
+    /// The overflow sheet's "Add songs to this mix" action, or `nil` for a
+    /// whole-library mix (it already contains everything). Written as an
+    /// explicit `if` rather than a ternary of `nil` and a closure, which
+    /// Swift's type checker can refuse to infer.
+    private var addSongsAction: (() -> Void)? {
+        if viewModel.isWholeLibraryMix { return nil }
+        return { pendingAddSongs = true }
     }
 
     /// Shows the duplicates alert only if there's anything to show — called

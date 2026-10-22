@@ -30,6 +30,12 @@ struct PlaylistOverflowSheet: View {
     /// playlist's own detail screen can navigate away. My Mixes passes
     /// `nil` since its list already updates itself via `store.refresh()`.
     var onDeleted: (() -> Void)?
+    /// **Added 2026-10-21 ("Add songs to this mix").** When non-nil an "Add
+    /// songs to this mix" row appears; the sheet closes itself first, then
+    /// calls this so the caller can push the Hub in add mode. Left `nil`
+    /// where that isn't offered (My Mixes rows, and whole-library mixes —
+    /// which already contain everything).
+    var onAddSongs: (() -> Void)?
 
     @Environment(\.dismiss) private var dismissSheet
     @StateObject private var mixBuilder = MixBuilder()
@@ -40,12 +46,14 @@ struct PlaylistOverflowSheet: View {
 
     init(
         playlist: Playlist, store: PlaylistStore,
-        onRenamed: ((String) -> Void)? = nil, onDeleted: (() -> Void)? = nil
+        onRenamed: ((String) -> Void)? = nil, onDeleted: (() -> Void)? = nil,
+        onAddSongs: (() -> Void)? = nil
     ) {
         self.playlist = playlist
         self.store = store
         self.onRenamed = onRenamed
         self.onDeleted = onDeleted
+        self.onAddSongs = onAddSongs
         _isFavorite = State(initialValue: playlist.isFavorite)
         _newName = State(initialValue: playlist.name)
     }
@@ -69,6 +77,12 @@ struct PlaylistOverflowSheet: View {
 
             List {
                 actionRow(icon: "text.badge.plus", title: "Play Next", isDisabled: true) {}
+                if let onAddSongs {
+                    actionRow(icon: "plus.circle", title: "Add songs to this mix") {
+                        dismissSheet()
+                        onAddSongs()
+                    }
+                }
                 actionRow(icon: "pencil", title: "Rename") {
                     newName = playlist.name
                     showRenameAlert = true

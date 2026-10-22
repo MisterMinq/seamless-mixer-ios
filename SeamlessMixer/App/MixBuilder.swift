@@ -46,6 +46,9 @@ final class MixBuilder: ObservableObject {
         case emptyPool
         case allExcluded
         case databaseUnavailable
+        /// **Added 2026-10-21 ("Add songs to this mix")** — everything picked
+        /// was already in the mix, or none of it could be used.
+        case nothingNewToAdd
         /// **Added 2026-08-20**, alongside "whole library" finally getting
         /// wired up — see `wholeLibraryInlineAnalyzeThreshold`'s own doc
         /// comment for what "too many" means and why.
@@ -73,6 +76,8 @@ final class MixBuilder: ObservableObject {
                 return "None of the songs in this selection can be used for seamless mixing right now. Downloading them in the Music app can help, but some older purchases are permanently protected and won't ever work — try a different source instead."
             case .databaseUnavailable:
                 return "Couldn't open the library database."
+            case .nothingNewToAdd:
+                return "Nothing new could be added — the songs you picked are already in this mix, or can't be used for seamless mixing."
             }
         }
     }
@@ -345,6 +350,114 @@ final class MixBuilder: ObservableObject {
         } catch {
             buildError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return false
+        }
+    }
+
+    /// **"Add songs to this mix", added 2026-10-21** — Andy's real gap
+    /// (Rule 8): "I either buy new songs that fit well in that mix but have
+    /// absolutely no way of adding them, sequencing them together." Picks
+    /// from the Hub (any source type except whole library) are resolved and
+    /// analysed like a normal build, then **joined to every song the mix
+    /// already has** and the whole set is re-sequenced with `keepAll: true`
+    /// — nothing existing is trimmed, the order is recomputed so the new
+    /// songs blend in rather than being tacked on the end. The new picks are
+    /// also saved as extra `playlist_sources`, so a later Refresh still
+    /// includes them. The mix keeps its name, mode and crossfade setting.
+    ///
+    /// Songs already in the mix are skipped; with duplicate-filtering on
+    /// (the default) a new song that duplicates one already in the mix is
+    /// skipped too. Returns `false` and sets `buildError` on failure;
+    /// `lastBuildExclusionMessage` describes any picks that couldn't be used.
+    @discardableResult
+    func addSources(_ newSources: [SelectedSource], to playlist: Playlist, store: PlaylistStore) async -> Bool {
+        guard !isBuilding else { return false }
+        isBuilding = true
+        buildError = nil
+        lastBuildExclusionMessage = nil
+        lastExcludedTracks = []
+        lastDuplicateGroups = []
+        defer { isBuilding = false; progressText = "" }
+
+        do {
+            try await performAddSources(newSources, to: playlist, store: store)
+            if let playlistID = playlist.id {
+                store.invalidateCollage(playlistID: playlistID)
+            }
+            store.refresh()
+            return true
+        } catch {
+            buildError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return false
+        }
+    }
+
+    private func performAddSources(_ newSources: [SelectedSource], to playlist: Playlist, store: PlaylistStore) async throws {
+        guard let db = store.db, let playlistID = playlist.id else { throw BuildError.databaseUnavailable }
+        guard !newSources.isEmpty else { throw BuildError.noSupportedSources }
+
+        let detail = try db.loadPlaylistDetail(playlistID: playlistID)
+        let existingTracks = checkedImportedTracks(detail.tracks.map(\.track))
+        let existingIDs = Set(existingTracks.map(\.persistentID))
+
+        progressText = "Finding songs…"
+        let items = MediaLibraryResolver.resolveItems(for: newSources, db: db)
+        let importedPool = checkedImportedTracks(MediaLibraryResolver.importedTracks(for: newSources, db: db))
+        guard !items.isEmpty || !importedPool.isEmpty else { throw BuildError.emptyPool }
+
+        var candidates: [Track] = []
+        let freshItems = items.filter { !existingIDs.contains(Int64(bitPattern: $0.persistentID)) }
+        for (index, item) in freshItems.enumerated() {
+            progressText = "Analyzing \(index + 1) of \(freshItems.count)…"
+            candidates.append(try await TrackAnalysisCoordinator.upsertAndAnalyzeIfNeeded(item: item, db: db))
+        }
+        candidates.append(contentsOf: importedPool.filter { !existingIDs.contains($0.persistentID) })
+
+        // A new song that duplicates one the mix already has is dropped (the
+        // existing copy comes first in the pool, so it is the one kept).
+        if !AppSettings.includeDuplicateTracks {
+            let summary = DuplicateFilter.summarize(pool: existingTracks + candidates)
+            let keptIDs = Set(summary.uniqueTracks.map(\.persistentID))
+            let before = candidates.count
+            candidates = candidates.filter { keptIDs.contains($0.persistentID) }
+            if candidates.count < before {
+                lastDuplicateGroups = summary.duplicateGroups
+            }
+        }
+
+        let exclusionSummary = DRMExclusionSummary.summarize(pool: candidates)
+        lastBuildExclusionMessage = exclusionSummary.message
+        lastExcludedTracks = exclusionSummary.excludedTracks
+        let usable = candidates.filter { $0.isAnalyzed && $0.hasRawAudioAccess }
+        guard !usable.isEmpty else { throw BuildError.nothingNewToAdd }
+
+        progressText = "Sequencing…"
+        let sequenced = Sequencer.sequence(
+            tracks: existingTracks + usable, targetSeconds: 0,
+            mode: sequencingMode(for: playlist.mode), keepAll: true
+        )
+        guard !sequenced.isEmpty else { throw BuildError.emptyPool }
+
+        progressText = "Saving…"
+        try replaceTracks(playlistID: playlistID, sequenced: sequenced, extraCrossfadeSec: playlist.extraCrossfadeSec, db: db)
+        try insertSources(newSources, playlistID: playlistID, alreadySaved: detail.sources, db: db)
+    }
+
+    /// Saves extra `playlist_sources` rows for an existing mix, skipping any
+    /// source it already has. Same `sourceValue` encoding as `persist`.
+    private func insertSources(_ sources: [SelectedSource], playlistID: Int64, alreadySaved: [PlaylistSource], db: DatabaseManager) throws {
+        let have = Set(alreadySaved.map { "\($0.sourceType.rawValue)|\($0.sourceValue)" })
+        try db.dbQueue.write { conn in
+            for source in sources {
+                let sourceValue = source.type == .genre
+                    ? source.label
+                    : source.persistentID.map(String.init) ?? source.label
+                guard !have.contains("\(source.type.rawValue)|\(sourceValue)") else { continue }
+                var row = PlaylistSource(
+                    playlistID: playlistID, sourceType: source.type,
+                    sourceValue: sourceValue, sourceLabel: source.label, isExclusion: false
+                )
+                try row.insert(conn)
+            }
         }
     }
 
