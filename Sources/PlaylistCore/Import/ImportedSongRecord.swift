@@ -30,12 +30,19 @@ public struct ImportedSongRecord: Codable, Equatable, Hashable, Identifiable {
     /// Size of the stored copy in bytes (identical to the original file's
     /// size); `nil` if it couldn't be read when the record was made.
     public var fileSizeBytes: Int64?
+    /// Where the song was imported from, as a readable note such as
+    /// `On My iPhone › Music` (`ImportSourceHint`). `nil` for songs imported
+    /// before this existed, or when the folder couldn't be worked out. Optional
+    /// so a backup file written before 2026-10-24 still decodes. Added so that,
+    /// after a restore, the app can tell the user which folder to pick.
+    public var sourceFolder: String?
 
     public var id: Int64 { trackID }
 
     public init(
         trackID: Int64, title: String, artist: String, album: String, genre: String,
-        durationSec: Double, isFavorite: Bool = false, fileSizeBytes: Int64? = nil
+        durationSec: Double, isFavorite: Bool = false, fileSizeBytes: Int64? = nil,
+        sourceFolder: String? = nil
     ) {
         self.trackID = trackID
         self.title = title
@@ -45,14 +52,39 @@ public struct ImportedSongRecord: Codable, Equatable, Hashable, Identifiable {
         self.durationSec = durationSec
         self.isFavorite = isFavorite
         self.fileSizeBytes = fileSizeBytes
+        self.sourceFolder = sourceFolder
     }
 
-    public init(track: Track, fileSizeBytes: Int64?) {
+    public init(track: Track, fileSizeBytes: Int64?, sourceFolder: String? = nil) {
         self.init(
             trackID: track.persistentID, title: track.title, artist: track.artist, album: track.album,
             genre: track.genre, durationSec: track.durationSec, isFavorite: track.isFavorite,
-            fileSizeBytes: fileSizeBytes
+            fileSizeBytes: fileSizeBytes, sourceFolder: sourceFolder
         )
+    }
+
+    /// One place songs came from, and how many of the given songs came from it.
+    public struct SourceFolderCount: Equatable {
+        public var folder: String
+        public var count: Int
+        public init(folder: String, count: Int) {
+            self.folder = folder
+            self.count = count
+        }
+    }
+
+    /// The distinct source folders among `records`, most songs first (ties
+    /// alphabetical). Songs with no known folder are left out; the result is
+    /// empty when none of them has one.
+    public static func sourceFolderCounts(of records: [ImportedSongRecord]) -> [SourceFolderCount] {
+        var counts: [String: Int] = [:]
+        for record in records {
+            guard let folder = record.sourceFolder, !folder.isEmpty else { continue }
+            counts[folder, default: 0] += 1
+        }
+        return counts
+            .map { SourceFolderCount(folder: $0.key, count: $0.value) }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0.folder < $1.folder }
     }
 
     /// The records whose song is not currently in the app, alphabetical by
@@ -68,14 +100,23 @@ public struct ImportedSongRecord: Codable, Equatable, Hashable, Identifiable {
     }
 
     /// Union by `trackID`; where both sides have the same song, `incoming`
-    /// wins (it is the fresher description). Order: `existing`'s order first,
-    /// then genuinely new ids in `incoming`'s order.
+    /// wins (it is the fresher description) — except that a known
+    /// `sourceFolder` is never lost: if `incoming` doesn't know where the song
+    /// came from but `existing` does, the existing note is kept (a record
+    /// rebuilt from the database knows nothing about the original folder).
+    /// Order: `existing`'s order first, then genuinely new ids in `incoming`'s
+    /// order.
     public static func merged(existing: [ImportedSongRecord], incoming: [ImportedSongRecord]) -> [ImportedSongRecord] {
         let incomingByID = Dictionary(incoming.map { ($0.trackID, $0) }, uniquingKeysWith: { _, last in last })
         var result: [ImportedSongRecord] = []
         var seen = Set<Int64>()
         for record in existing where seen.insert(record.trackID).inserted {
-            result.append(incomingByID[record.trackID] ?? record)
+            guard var fresher = incomingByID[record.trackID] else {
+                result.append(record)
+                continue
+            }
+            if fresher.sourceFolder == nil { fresher.sourceFolder = record.sourceFolder }
+            result.append(fresher)
         }
         for record in incoming where seen.insert(record.trackID).inserted {
             result.append(incomingByID[record.trackID] ?? record)

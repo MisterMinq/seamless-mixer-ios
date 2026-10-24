@@ -33,6 +33,14 @@ struct ImportedSongsPickerView: View {
     /// Songs the backup record says were imported once but aren't in the app
     /// now (added 2026-10-21, imported-songs backup record).
     @State private var missing: [ImportedSongRecord] = []
+    /// Mixes a restore held back because they need songs that aren't in the app
+    /// yet; built automatically after an import once their songs are back
+    /// (2026-10-24, CLAUDE.md 0.26.40).
+    @State private var waitingMixNames: [String] = []
+    /// Where each imported song came from (`ImportSourceHint` note), by song id.
+    @State private var sourceFolders: [Int64: String] = [:]
+    @StateObject private var mixBuilder = MixBuilder()
+    @State private var isRebuilding = false
     @State private var pendingRemoval: Track?
     @State private var pendingRemovalMixCount = 0
     @State private var errorMessage: String?
@@ -47,7 +55,7 @@ struct ImportedSongsPickerView: View {
     var body: some View {
         VStack(spacing: 0) {
             InlineSearchField(text: $searchText, prompt: "Search imported songs")
-            if tracks.isEmpty && missing.isEmpty {
+            if tracks.isEmpty && missing.isEmpty && waitingMixNames.isEmpty {
                 Spacer()
                 VStack(spacing: DesignTokens.Spacing.md) {
                     Text("No imported songs yet.\nAdd MP3, M4A, WAV, AIFF or FLAC files from the Files app, iCloud Drive or AirDrop — they'll be mixed and blended just like songs from your Music library.")
@@ -74,6 +82,9 @@ struct ImportedSongsPickerView: View {
                 List {
                     if !missing.isEmpty {
                         missingSection
+                    }
+                    if !waitingMixNames.isEmpty {
+                        waitingMixesSection
                     }
                     ForEach(filteredTracks) { track in
                         row(for: track)
@@ -110,19 +121,19 @@ struct ImportedSongsPickerView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
-                .disabled(importer.isImporting)
+                .disabled(importer.isImporting || isRebuilding)
                 .accessibilityLabel("Import songs")
             }
         }
         .overlay {
-            if importer.isImporting {
+            if importer.isImporting || isRebuilding {
                 ZStack {
                     Color.black.opacity(0.25).ignoresSafeArea()
                     VStack(spacing: DesignTokens.Spacing.sm) {
                         ProgressView()
-                        Text(importer.progressText)
+                        Text(isRebuilding ? "Building the mixes that were waiting…" : importer.progressText)
                             .font(.footnote)
-                        Text("Keep the app open while songs are analysed.")
+                        Text(isRebuilding ? "Keep the app open until this finishes." : "Keep the app open while songs are analysed.")
                             .font(.caption)
                             .foregroundStyle(DesignTokens.Color.textSecondary)
                     }
@@ -140,11 +151,21 @@ struct ImportedSongsPickerView: View {
             switch result {
             case .success(let urls):
                 Task {
+                    // Hold the importer's own message so one alert can report
+                    // the import *and* any waiting mixes built afterwards.
+                    importer.holdSummary = true
                     if importMode == .folder {
                         await importer.reimportMissing(fromFolders: urls, missing: missing, store: store)
                     } else {
                         await importer.importFiles(urls, store: store)
                     }
+                    reload()
+                    var lines: [String] = []
+                    if let held = importer.heldSummary { lines.append(held) }
+                    importer.heldSummary = nil
+                    lines.append(contentsOf: await rebuildWaitingMixes())
+                    importer.holdSummary = false
+                    if !lines.isEmpty { importer.summaryMessage = lines.joined(separator: "\n") }
                     reload()
                 }
             case .failure(let error):
@@ -194,6 +215,24 @@ struct ImportedSongsPickerView: View {
             Text("These songs were imported before your backup but aren't on this phone. Pick the folder you originally imported them from — Seamless DJ finds just these songs in it and re-imports them (everything else in the folder is ignored).")
                 .font(.caption)
                 .foregroundStyle(DesignTokens.Color.textSecondary)
+            let folders = ImportedSongRecord.sourceFolderCounts(of: missing)
+            if !folders.isEmpty {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+                    Text("They were imported from:")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DesignTokens.Color.textPrimary)
+                    ForEach(folders.prefix(4), id: \.folder) { entry in
+                        Text("\(entry.folder) (\(entry.count) song\(entry.count == 1 ? "" : "s"))")
+                            .font(.caption)
+                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                    }
+                    if folders.count > 4 {
+                        Text("…and \(folders.count - 4) other place\(folders.count - 4 == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(DesignTokens.Color.textSecondary)
+                    }
+                }
+            }
             Button {
                 importMode = .folder
                 showImporter = true
@@ -208,7 +247,7 @@ struct ImportedSongsPickerView: View {
                     Text(record.title)
                         .foregroundStyle(DesignTokens.Color.textPrimary)
                         .lineLimit(1)
-                    Text(record.artist)
+                    Text(record.artist + (record.sourceFolder.map { " · " + $0 } ?? ""))
                         .font(.footnote)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .lineLimit(1)
@@ -255,7 +294,7 @@ struct ImportedSongsPickerView: View {
                     Text(track.title)
                         .foregroundStyle(DesignTokens.Color.textPrimary)
                         .lineLimit(1)
-                    Text(track.artist)
+                    Text(track.artist + (sourceFolders[track.persistentID].map { " · From " + $0 } ?? ""))
                         .font(.footnote)
                         .foregroundStyle(DesignTokens.Color.textSecondary)
                         .lineLimit(1)
@@ -286,9 +325,68 @@ struct ImportedSongsPickerView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
+    /// "Mixes waiting for songs" — recipes a restore held back. They are built
+    /// automatically after any import once their songs are in the app; this
+    /// section shows what is waiting, lets the user trigger it by hand, and
+    /// lets them stop waiting (Rule 8).
+    private var waitingMixesSection: some View {
+        Section {
+            Text(missing.isEmpty
+                 ? "These mixes use imported songs and haven't been built yet. They are built automatically after you import songs."
+                 : "These mixes use songs that are still missing. They are built automatically as soon as those songs are back in the app.")
+                .font(.caption)
+                .foregroundStyle(DesignTokens.Color.textSecondary)
+            ForEach(waitingMixNames, id: \.self) { name in
+                Text(name)
+                    .foregroundStyle(DesignTokens.Color.textPrimary)
+                    .lineLimit(1)
+            }
+            Button {
+                Task {
+                    let lines = await rebuildWaitingMixes()
+                    if !lines.isEmpty { importer.summaryMessage = lines.joined(separator: "\n") }
+                    reload()
+                }
+            } label: {
+                Label("Try building them now", systemImage: "arrow.clockwise")
+                    .foregroundStyle(DesignTokens.Color.primaryText)
+            }
+            .disabled(importer.isImporting || isRebuilding)
+            Button(role: .destructive) {
+                PendingMixStore.clear()
+                reload()
+            } label: {
+                Label("Stop waiting for these mixes", systemImage: "xmark.bin")
+            }
+            .disabled(importer.isImporting || isRebuilding)
+        } header: {
+            Text("Mixes waiting for songs (\(waitingMixNames.count))")
+        }
+    }
+
+    /// Builds any held-back mixes whose songs are all in the app now, and
+    /// returns plain-language lines about what happened (empty if nothing was
+    /// waiting).
+    @MainActor
+    private func rebuildWaitingMixes() async -> [String] {
+        guard !PendingMixStore.load().isEmpty else { return [] }
+        isRebuilding = true
+        defer { isRebuilding = false }
+        guard let summary = await MixBackup.rebuildWaitingMixes(store: store, mixBuilder: mixBuilder) else { return [] }
+        return MixBackup.waitingMixesReport(summary)
+    }
+
     private func reload() {
         tracks = (try? store.db?.loadImportedTracks()) ?? []
         missing = ImportedSongsRecordStore.missing(db: store.db)
+        waitingMixNames = PendingMixStore.load().map(\.name)
+        sourceFolders = Dictionary(
+            ImportedSongsRecordStore.load().compactMap { record -> (Int64, String)? in
+                guard let folder = record.sourceFolder else { return nil }
+                return (record.trackID, folder)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         viewModel.refreshImportedSongsCount()
     }
 

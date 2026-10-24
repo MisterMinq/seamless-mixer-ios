@@ -61,6 +61,54 @@ struct LoadedBackup {
     var favoriteSongs: [FavoriteSongRecord] = []
 }
 
+/// Mix recipes that a restore held back because they use imported songs that
+/// aren't in the app yet — remembered here so the app can build them **by
+/// itself** the moment those songs are re-imported, instead of the user having
+/// to run the restore a second time (2026-10-24, CLAUDE.md 0.26.40, Andy's
+/// request: "an automated mechanism"). Like `ImportedSongsRecordStore`, this
+/// lives inside the app's sandbox, so it is wiped with the app; the real backup
+/// is still the file saved outside, and restoring it again refills this list.
+///
+/// A recipe is added when a restore finds it waiting, and removed once the mix
+/// exists, the same-named mix is already there, or none of its sources can be
+/// found any more (`MixBackup.restore(recipes:...)` keeps this in step).
+enum PendingMixStore {
+    private static var fileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("PendingMixRecipes.json")
+    }
+
+    static func load() -> [MixRecipe] {
+        guard let data = try? Data(contentsOf: fileURL) else { return [] }
+        return (try? JSONDecoder().decode([MixRecipe].self, from: data)) ?? []
+    }
+
+    private static func save(_ recipes: [MixRecipe]) {
+        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if recipes.isEmpty {
+            try? FileManager.default.removeItem(at: fileURL)
+        } else if let data = try? JSONEncoder().encode(recipes) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    /// Adds (or refreshes) a waiting recipe; one per mix name.
+    static func add(_ recipe: MixRecipe) {
+        save(load().filter { $0.name != recipe.name } + [recipe])
+    }
+
+    static func remove(name: String) {
+        let all = load()
+        guard all.contains(where: { $0.name == name }) else { return }
+        save(all.filter { $0.name != name })
+    }
+
+    /// Gives up on every waiting mix (the user chose to stop waiting).
+    static func clear() {
+        save([])
+    }
+}
+
 enum MixBackup {
     enum BackupError: Error, LocalizedError {
         case noMixesToExport
@@ -90,6 +138,10 @@ enum MixBackup {
         /// aren't in the app yet (**added 2026-10-21**).
         var recordedImportedSongs = 0
         var missingImportedSongs = 0
+        /// Where the missing imported songs came from (`ImportSourceHint`
+        /// notes, most songs first) — so the message can say which folder to
+        /// pick. Empty when none of them has a note.
+        var missingSourceFolders: [String] = []
         /// Favourite Music-library songs the backup listed, how many were
         /// marked again, and how many couldn't be found in the library.
         var recordedFavorites = 0
@@ -116,7 +168,12 @@ enum MixBackup {
             }
             if recordedImportedSongs > 0 {
                 if missingImportedSongs > 0 {
-                    lines.append("\(recordedImportedSongs) imported song\(recordedImportedSongs == 1 ? "" : "s") recorded; \(missingImportedSongs) not in the app yet. On My Mixes tap Build Mix → Imported songs → \"Re-import from folder…\", pick the folder you originally imported from, then restore again to rebuild any mixes that were waiting.")
+                    var line = "\(recordedImportedSongs) imported song\(recordedImportedSongs == 1 ? "" : "s") recorded; \(missingImportedSongs) not in the app yet. On My Mixes tap Build Mix → Imported songs → \"Re-import from folder…\" and pick the folder you originally imported from"
+                    if !missingSourceFolders.isEmpty {
+                        line += " (\(missingSourceFolders.prefix(3).joined(separator: "; ")))"
+                    }
+                    line += ". Mixes that were waiting for these songs are rebuilt automatically once the songs are back."
+                    lines.append(line)
                 } else {
                     lines.append("All \(recordedImportedSongs) recorded imported song\(recordedImportedSongs == 1 ? " is" : "s are") in the app.")
                 }
@@ -247,10 +304,35 @@ enum MixBackup {
         summary.recordedFavorites = backup.favoriteSongs.count
         summary.restoredFavorites = restoredFavorites
         summary.recordedImportedSongs = backup.importedSongs.count
-        summary.missingImportedSongs = ImportedSongsRecordStore.missing(db: store.db)
+        let missingFromBackup = ImportedSongsRecordStore.missing(db: store.db)
             .filter { record in backup.importedSongs.contains { $0.trackID == record.trackID } }
-            .count
+        summary.missingImportedSongs = missingFromBackup.count
+        summary.missingSourceFolders = ImportedSongRecord.sourceFolderCounts(of: missingFromBackup).map(\.folder)
         return summary
+    }
+
+    /// Builds the mixes a restore held back, if the songs they were waiting
+    /// for are in the app by now. Called after every import (2026-10-24); a
+    /// recipe whose songs are still missing simply stays on the waiting list.
+    /// `nil` when nothing is waiting.
+    @MainActor
+    static func rebuildWaitingMixes(store: PlaylistStore, mixBuilder: MixBuilder) async -> RestoreSummary? {
+        let waiting = PendingMixStore.load()
+        guard !waiting.isEmpty else { return nil }
+        return await restore(recipes: waiting, store: store, mixBuilder: mixBuilder)
+    }
+
+    /// Plain-language lines about the result of `rebuildWaitingMixes`, for the
+    /// import alert. Empty when there is nothing worth saying.
+    static func waitingMixesReport(_ summary: RestoreSummary) -> [String] {
+        var lines: [String] = []
+        if !summary.succeeded.isEmpty {
+            lines.append("Rebuilt \(summary.succeeded.count) mix\(summary.succeeded.count == 1 ? "" : "es") that were waiting for these songs: \(summary.succeeded.joined(separator: ", ")).")
+        }
+        for failure in summary.failed {
+            lines.append("• \(failure.name): \(failure.reason)")
+        }
+        return lines
     }
 
     @MainActor
@@ -273,6 +355,7 @@ enum MixBackup {
             // also catches duplicate names *within* one restore pass.
             if store.playlists.contains(where: { $0.name == recipe.name }) {
                 skipped.append(recipe.name)
+                PendingMixStore.remove(name: recipe.name) // nothing left to wait for
                 continue
             }
 
@@ -291,7 +374,10 @@ enum MixBackup {
                 let presentIDs = Set(((try? db.importedTracks(withIDs: neededImportedIDs)) ?? []).map(\.persistentID))
                 let missingCount = neededImportedIDs.filter { !presentIDs.contains($0) }.count
                 if missingCount > 0 {
-                    failed.append((recipe.name, "Waiting for \(missingCount) imported song\(missingCount == 1 ? "" : "s") that aren't in the app yet — re-import them, then restore again."))
+                    // Remember it (2026-10-24) — it is built automatically as
+                    // soon as those songs are re-imported.
+                    PendingMixStore.add(recipe)
+                    failed.append((recipe.name, "Waiting for \(missingCount) imported song\(missingCount == 1 ? "" : "s") that aren't in the app yet — it will be built automatically once you re-import them."))
                     continue
                 }
             }
@@ -304,6 +390,7 @@ enum MixBackup {
             }
             let allSelectedSources = playlistSources.compactMap(mixBuilder.selectedSource(from:))
             guard !allSelectedSources.isEmpty else {
+                PendingMixStore.remove(name: recipe.name) // can never be built
                 failed.append((recipe.name, "None of this mix's sources could be found in your library anymore."))
                 continue
             }
@@ -320,8 +407,11 @@ enum MixBackup {
 
             if let playlist, let id = playlist.id {
                 store.rename(playlistID: id, to: recipe.name)
+                PendingMixStore.remove(name: recipe.name)
                 succeeded.append(recipe.name)
             } else {
+                // A failed build keeps a waiting recipe waiting (it may have
+                // been a passing problem); the reason is reported either way.
                 failed.append((recipe.name, mixBuilder.buildError ?? "Couldn't be rebuilt."))
             }
         }

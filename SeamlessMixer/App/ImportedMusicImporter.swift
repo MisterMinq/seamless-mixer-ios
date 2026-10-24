@@ -24,6 +24,16 @@ final class ImportedMusicImporter: ObservableObject {
     @Published private(set) var progressText = ""
     /// Set when an import finishes; the picker shows it in an alert.
     @Published var summaryMessage: String?
+    /// While `true`, a finished import leaves its summary in `heldSummary`
+    /// instead of showing it, so the picker can add the result of rebuilding
+    /// any waiting mixes (2026-10-24) and show **one** alert for the whole job.
+    /// The picker is responsible for publishing `heldSummary` afterwards.
+    var holdSummary = false
+    var heldSummary: String?
+
+    private func publish(_ text: String) {
+        if holdSummary { heldSummary = text } else { summaryMessage = text }
+    }
 
     private enum Outcome {
         case imported
@@ -34,7 +44,7 @@ final class ImportedMusicImporter: ObservableObject {
     func importFiles(_ urls: [URL], store: PlaylistStore) async {
         guard !isImporting, !urls.isEmpty else { return }
         guard let db = store.db else {
-            summaryMessage = "Couldn't open the library database."
+            publish("Couldn't open the library database.")
             return
         }
         isImporting = true
@@ -61,7 +71,7 @@ final class ImportedMusicImporter: ObservableObject {
             lines.append(contentsOf: failures.prefix(8))
             if failures.count > 8 { lines.append("…and \(failures.count - 8) more.") }
         }
-        summaryMessage = lines.joined(separator: "\n")
+        publish(lines.joined(separator: "\n"))
         store.refresh()
     }
 
@@ -78,7 +88,7 @@ final class ImportedMusicImporter: ObservableObject {
     func reimportMissing(fromFolders folders: [URL], missing: [ImportedSongRecord], store: PlaylistStore) async {
         guard !isImporting, !folders.isEmpty, !missing.isEmpty else { return }
         guard let db = store.db else {
-            summaryMessage = "Couldn't open the library database."
+            publish("Couldn't open the library database.")
             return
         }
         isImporting = true
@@ -130,10 +140,7 @@ final class ImportedMusicImporter: ObservableObject {
             lines.append("Couldn't import:")
             lines.append(contentsOf: failures.prefix(8))
         }
-        if restoredIDs.count > 0 {
-            lines.append("Any mixes that were waiting for these songs can now be rebuilt: Settings → Restore mixes from backup.")
-        }
-        summaryMessage = lines.joined(separator: "\n")
+        publish(lines.joined(separator: "\n"))
         store.refresh()
     }
 
@@ -190,7 +197,18 @@ final class ImportedMusicImporter: ObservableObject {
                 // Astronomically unlikely id clash with a Music-library track.
                 return .failed("couldn't be given a unique id")
             }
-            if existing.isAnalyzed, ImportedMusicStore.url(forTrackID: trackID) != nil {
+            if existing.isAnalyzed, let storedCopy = ImportedMusicStore.url(forTrackID: trackID) {
+                // Picked again from a folder we can describe: note it (this is
+                // how a song imported before source folders were recorded gets
+                // its note). A fresh note replaces an older one.
+                if let hint = ImportSourceHint.describe(filePath: url.path) {
+                    ImportedSongsRecordStore.merge([
+                        ImportedSongRecord(
+                            track: existing, fileSizeBytes: ImportedSongsRecordStore.fileSize(at: storedCopy),
+                            sourceFolder: hint
+                        )
+                    ])
+                }
                 return .alreadyImported
             }
         }
@@ -265,6 +283,15 @@ final class ImportedMusicImporter: ObservableObject {
             ImportedMusicStore.removeFile(named: storedName)
             return .failed("couldn't be saved")
         }
+        // Remember where it came from (2026-10-24, CLAUDE.md 0.26.40), so a
+        // later restore can tell the user which folder to pick. Stored with the
+        // rest of the song's record; a backup picks it up from there.
+        ImportedSongsRecordStore.merge([
+            ImportedSongRecord(
+                track: finalTrack, fileSizeBytes: ImportedSongsRecordStore.fileSize(at: storedURL),
+                sourceFolder: ImportSourceHint.describe(filePath: url.path)
+            )
+        ])
         // A record's own re-import isn't a *new* import as far as the backup
         // reminder goes — the backup already knows about this song.
         if record == nil {
